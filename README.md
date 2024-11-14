@@ -175,6 +175,6 @@ Flags:
 ovpn-admin was originally created in [Flant](https://github.com/flant/) and used internally for years.
 
 In March 2021, it [went public](https://medium.com/flant-com/introducing-ovpn-admin-a-web-interface-to-manage-openvpn-users-d81705ad8f23) and was still developed in Flant.
-Namely, @vitaliy-sn created its first version in Python, and @pashcovich rewrote it in Go.
+Namely, [@vitaliy-sn](https://github.com/vitaliy-sn) created its first version in Python, and [@pashcovich](https://github.com/pashcovich) rewrote it in Go.
 
-In November 2024, this project was moved to Palark, which is currently responsible for its maintenance and development.
+In November 2024, this project was moved to [Palark](https://github.com/palark/), which is currently responsible for its maintenance and development.
