@@ -2,8 +2,6 @@
 
 Simple web UI to manage OpenVPN users, their certificates & routes in Linux. While backend is written in Go, frontend is based on Vue.js.
 
-Originally created in [Flant](https://flant.com/) for internal needs & used for years, then updated to be more modern and [publicly released](https://medium.com/flant-com/introducing-ovpn-admin-a-web-interface-to-manage-openvpn-users-d81705ad8f23) in March'21. Please note that the project is currently on pause, no new Issues or PRs are accepted.
-
 ***DISCLAIMER!** This project was created for experienced users (system administrators) and private (e.g., protected by network policies) environments only. Thus, it is not implemented with security in mind (e.g., it doesn't strictly check all parameters passed by users, etc.). It also relies heavily on files and fails if required files aren't available.*
 
 ## Features
@@ -21,16 +19,16 @@ Originally created in [Flant](https://flant.com/) for internal needs & used for 
 ### Screenshots
 
 Managing users in ovpn-admin:
-![ovpn-admin UI](https://raw.githubusercontent.com/flant/ovpn-admin/master/img/ovpn-admin-users.png)
+![ovpn-admin UI](https://raw.githubusercontent.com/palark/ovpn-admin/master/img/ovpn-admin-users.png)
 
 An example of dashboard made using ovpn-admin metrics:
-![ovpn-admin metrics](https://raw.githubusercontent.com/flant/ovpn-admin/master/img/ovpn-admin-metrics.png)
+![ovpn-admin metrics](https://raw.githubusercontent.com/palark/ovpn-admin/master/img/ovpn-admin-metrics.png)
 
 ## Installation
 
 ### 1. Docker
 
-There is a ready-to-use [docker-compose.yaml](https://github.com/flant/ovpn-admin/blob/master/docker-compose.yaml), so you can just change/add values you need and start it with [start.sh](https://github.com/flant/ovpn-admin/blob/master/start.sh).
+There is a ready-to-use [docker-compose.yaml](https://github.com/palark/ovpn-admin/blob/master/docker-compose.yaml), so you can just change/add values you need and start it with [start.sh](https://github.com/palark/ovpn-admin/blob/master/start.sh).
 
 Requirements:
 You need [Docker](https://docs.docker.com/get-docker/) and [docker-compose](https://docs.docker.com/compose/install/) installed.
@@ -38,7 +36,7 @@ You need [Docker](https://docs.docker.com/get-docker/) and [docker-compose](http
 Commands to execute:
 
 ```bash
-git clone https://github.com/flant/ovpn-admin.git
+git clone https://github.com/palark/ovpn-admin.git
 cd ovpn-admin
 ./start.sh
 ```
@@ -56,7 +54,7 @@ Requirements. You need Linux with the following components installed:
 Commands to execute:
 
 ```bash
-git clone https://github.com/flant/ovpn-admin.git
+git clone https://github.com/palark/ovpn-admin.git
 cd ovpn-admin
 ./bootstrap.sh
 ./build.sh
@@ -67,7 +65,7 @@ cd ovpn-admin
 
 ### 3. Prebuilt binary
 
-You can also download and use prebuilt binaries from the [releases](https://github.com/flant/ovpn-admin/releases/latest) page — just choose a relevant tar.gz file.
+You can also download and use prebuilt binaries from the [releases](https://github.com/palark/ovpn-admin/releases/latest) page — just choose a relevant tar.gz file.
 
 
 ## Notes
@@ -172,6 +170,11 @@ Flags:
   --version                    show application version
 ```
 
-## Further information
+## Authors
 
-Please feel free to use [issues](https://github.com/flant/ovpn-admin/issues) and [discussions](https://github.com/flant/ovpn-admin/discussions) to get help from maintainers & community.
+ovpn-admin was originally created in [Flant](https://github.com/flant/) and used internally for years.
+
+In March 2021, it [went public](https://medium.com/flant-com/introducing-ovpn-admin-a-web-interface-to-manage-openvpn-users-d81705ad8f23) and was still developed in Flant.
+Namely, @vitaliy-sn created its first version in Python, and @pashcovich rewrote it in Go.
+
+In November 2024, this project was moved to Palark, which is currently responsible for its maintenance and development.
