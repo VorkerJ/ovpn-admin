@@ -8,7 +8,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
+	"strconv"
 	"time"
 )
 
@@ -59,7 +61,6 @@ func genPrivKey() (privKeyPEM *bytes.Buffer, err error) {
 		Type:  "RSA PRIVATE KEY",
 		Bytes: privKeyPKCS8,
 	})
-
 
 	return
 }
@@ -133,6 +134,17 @@ func genClientCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn 
 	serialNumberRange := new(big.Int).Lsh(big.NewInt(1), 128)
 	serial, err := rand.Int(rand.Reader, serialNumberRange)
 
+	certLifetimeDays, err := strconv.Atoi(*clientCertExpirationDays)
+	if err != nil {
+		return nil, fmt.Errorf("can't get client certificate expiration value: %w", err)
+	}
+
+	notBefore := time.Now()
+	notAfter := notBefore.Add(time.Duration(certLifetimeDays) * 24 * time.Hour)
+	if notAfter.After(ca.NotAfter) {
+		notAfter = ca.NotAfter
+	}
+
 	template := x509.Certificate{
 		BasicConstraintsValid: true,
 		DNSNames:              []string{cn},
@@ -142,8 +154,8 @@ func genClientCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn 
 		},
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		NotBefore:   time.Now(),
-		NotAfter:    ca.NotAfter,
+		NotBefore:   notBefore,
+		NotAfter:    notAfter,
 	}
 
 	issuerBytes, err := x509.CreateCertificate(rand.Reader, &template, ca, &privKey.PublicKey, caPrivKey)
