@@ -1,5 +1,11 @@
 project: ovpn-admin
 configVersion: 1
+build:
+  platform:
+  - linux/amd64
+  # TODO(nabokihms): build multiplatform images only for the master branch
+  # - linux/arm64
+  staged: true
 ---
 image: ovpn-admin
 dockerfile: Dockerfile.ovpn-admin
