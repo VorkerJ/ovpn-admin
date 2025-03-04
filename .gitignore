@@ -1,13 +1,11 @@
+bin/
+
 easyrsa
 easyrsa_master
 easyrsa_slave
 ccd
 ccd_master
 ccd_slave
-openvpn-web-ui*
-openvpn-ui*
-openvpn-admin*
-ovpn-admin*
 frontend/node_modules
 
 main-packr.go
