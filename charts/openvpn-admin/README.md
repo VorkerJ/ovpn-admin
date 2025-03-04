@@ -1,6 +1,6 @@
 # openvpn-admin
 
-![Version: 0.0.1](https://img.shields.io/badge/Version-0.0.1-informational?style=flat-square) ![AppVersion: 2.0.2](https://img.shields.io/badge/AppVersion-2.0.2-informational?style=flat-square)
+![Version: 0.0.2](https://img.shields.io/badge/Version-0.0.2-informational?style=flat-square) ![AppVersion: 2.0.2](https://img.shields.io/badge/AppVersion-2.0.2-informational?style=flat-square)
 
 Simple web UI to manage OpenVPN users, their certificates & routes in Linux. While backend is written in Go, frontend is based on Vue.js.
 
@@ -23,10 +23,10 @@ Kubernetes: `>=1.14.0-0`
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | domain | string | `"changeme"` |  |
-| ovpnAdmin.image | string | `"changeme"` |  |
+| ovpnAdmin.repo | string | `"ghcr.io/palark/ovpn-admin/ovpn-admin"` |  |
 | ovpnAdmin.basicAuth.user | string | `"admin"` |  |
 | ovpnAdmin.basicAuth.password | string | `"changeme"` |  |
-| openvpn.image | string | `"changeme"` |  |
+| openvpn.repo | string | `"ghcr.io/palark/ovpn-admin/openvpn"` |  |
 | openvpn.subnet | string | `"172.16.200.0/255.255.255.0"` |  |
 | openvpn.inlet | string | `"HostPort"` |  |
 | openvpn.hostPort | int | `1194` |  |
