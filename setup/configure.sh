@@ -24,7 +24,7 @@ else
     easyrsa --batch init-pki
     cp -R /usr/share/easy-rsa/* $EASY_RSA_LOC/pki
     echo "ca" | easyrsa build-ca nopass
-    easyrsa build-server-full server nopass
+    easyrsa --batch build-server-full server nopass
     easyrsa gen-dh
     openvpn --genkey --secret ./pki/ta.key
   fi
