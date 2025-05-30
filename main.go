@@ -992,7 +992,7 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 			log.Error(err)
 		}
 	} else {
-		o := runBash(fmt.Sprintf("cd %s && %s build-client-full %s nopass 1>/dev/null", *easyrsaDirPath, *easyrsaBinPath, username))
+		o := runBash(fmt.Sprintf("cd %s && %s --batch build-client-full %s nopass 1>/dev/null", *easyrsaDirPath, *easyrsaBinPath, username))
 		log.Debug(o)
 	}
 
