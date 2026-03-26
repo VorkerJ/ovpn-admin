@@ -15,7 +15,7 @@ onUnmounted(() => document.removeEventListener('click', close))
 
 <template>
   <div ref="menuRef" class="relative inline-block">
-    <div @click.stop="open = !open">
+    <div @click.stop="open = !open" :aria-expanded="open">
       <slot name="trigger" />
     </div>
     <Transition name="dropdown">

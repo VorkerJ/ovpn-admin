@@ -1,6 +1,7 @@
 <!-- frontend/src/components/ui/Input.vue -->
 <script setup>
 import { cn } from '@/lib/utils'
+defineOptions({ inheritAttrs: false })
 defineProps({ class: { type: String, default: '' } })
 </script>
 
