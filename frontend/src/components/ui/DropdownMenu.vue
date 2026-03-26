@@ -5,17 +5,37 @@ import { ref, onMounted, onUnmounted } from 'vue'
 const open = ref(false)
 const menuRef = ref(null)
 
-function close(e) {
+// Закрыть по клику вне меню
+function onDocClick(e) {
   if (menuRef.value && !menuRef.value.contains(e.target)) open.value = false
 }
 
-onMounted(() => document.addEventListener('click', close))
-onUnmounted(() => document.removeEventListener('click', close))
+// Закрыть когда другое меню открылось
+function onOtherOpen(e) {
+  if (e.detail !== menuRef.value) open.value = false
+}
+
+function toggle() {
+  open.value = !open.value
+  if (open.value) {
+    // Уведомляем остальные дропдауны закрыться
+    document.dispatchEvent(new CustomEvent('dropdown-open', { detail: menuRef.value }))
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('dropdown-open', onOtherOpen)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('dropdown-open', onOtherOpen)
+})
 </script>
 
 <template>
   <div ref="menuRef" class="relative inline-block">
-    <div @click.stop="open = !open" :aria-expanded="open">
+    <div @click.stop="toggle" :aria-expanded="open">
       <slot name="trigger" />
     </div>
     <Transition name="dropdown">

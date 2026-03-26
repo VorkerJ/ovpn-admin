@@ -923,7 +923,7 @@ func validateUsername(username string) error {
 	if validUsername.MatchString(username) {
 		return nil
 	} else {
-		return errors.New(fmt.Sprintf("Username can only contains %s", usernameRegexp))
+		return errors.New("Имя пользователя может содержать только буквы, цифры и символы: _ . - @")
 	}
 }
 
