@@ -14,7 +14,7 @@ const { isDark, toggle } = useTheme()
 </script>
 
 <template>
-  <header class="sticky top-0 z-40 h-13 border-b border-border bg-card flex items-center justify-between px-6">
+  <header class="sticky top-0 z-40 border-b border-border bg-card flex items-center justify-between px-6 py-2.5">
     <div class="flex items-center gap-3">
       <div class="w-7 h-7 rounded-lg bg-primary flex items-center justify-center text-white font-bold text-sm">
         ⬡
@@ -38,7 +38,7 @@ const { isDark, toggle } = useTheme()
       </button>
 
       <!-- Add user (только master) -->
-      <Button v-if="serverRole === 'master'" @click="$emit('add-user')">
+      <Button v-if="serverRole === 'master'" size="sm" @click="$emit('add-user')">
         + Добавить пользователя
       </Button>
     </div>

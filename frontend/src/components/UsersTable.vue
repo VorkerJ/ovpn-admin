@@ -81,10 +81,10 @@ function badgeLabel(status) {
     </div>
 
     <!-- Table -->
-    <div class="rounded-xl border border-border bg-card overflow-hidden">
+    <div class="rounded-xl border border-border bg-card overflow-visible">
       <table class="w-full text-sm">
         <thead>
-          <tr class="border-b border-border bg-muted/50">
+          <tr class="border-b border-border bg-muted/50 rounded-t-xl">
             <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground w-10">#</th>
             <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Имя</th>
             <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Статус</th>
