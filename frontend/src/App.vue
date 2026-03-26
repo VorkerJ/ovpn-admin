@@ -1,6 +1,7 @@
 <!-- frontend/src/App.vue -->
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useToast } from '@/composables/useToast'
 import AppHeader from '@/components/AppHeader.vue'
 import StatCards from '@/components/StatCards.vue'
 import UsersTable from '@/components/UsersTable.vue'
@@ -23,13 +24,9 @@ const serverRole = ref('master')
 const modulesEnabled = ref([])
 const lastSync = ref('')
 
-// Toast (simple reactive store)
-const toasts = ref([])
-let toastId = 0
+const { toast: _toast } = useToast()
 function notify(title, variant = 'default') {
-  const id = ++toastId
-  toasts.value.push({ id, title, variant })
-  setTimeout(() => { toasts.value = toasts.value.filter(t => t.id !== id) }, 4000)
+  _toast({ title, variant })
 }
 
 // ── Modal state ────────────────────────────────────────────────────
@@ -242,8 +239,3 @@ async function submitCcd(ccd) {
   </div>
 </template>
 
-<style>
-.toast-enter-active, .toast-leave-active { transition: all 0.3s; }
-.toast-enter-from { opacity: 0; transform: translateX(-20px); }
-.toast-leave-to { opacity: 0; transform: translateX(-20px); }
-</style>
