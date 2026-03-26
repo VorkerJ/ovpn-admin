@@ -15,11 +15,16 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'submit'])
 
-const localCcd = ref({ ...props.ccd, CustomRoutes: [...(props.ccd?.CustomRoutes || [])] })
+let routeId = 0
+function withIds(routes) {
+  return (routes || []).map(r => ({ ...r, _id: ++routeId }))
+}
+
+const localCcd = ref({ ...props.ccd, CustomRoutes: withIds(props.ccd?.CustomRoutes) })
 const newRoute = ref({ Address: '', Mask: '', Description: '' })
 
 watch(() => props.ccd, (val) => {
-  localCcd.value = { ...val, CustomRoutes: [...(val?.CustomRoutes || [])] }
+  localCcd.value = { ...val, CustomRoutes: withIds(val?.CustomRoutes) }
 }, { deep: true })
 
 const isMaster = () => props.serverRole === 'master'
@@ -27,7 +32,7 @@ const isDynamic = () => localCcd.value.ClientAddress === 'dynamic'
 
 function addRoute() {
   if (!newRoute.value.Address) return
-  localCcd.value.CustomRoutes.push({ ...newRoute.value })
+  localCcd.value.CustomRoutes.push({ ...newRoute.value, _id: ++routeId })
   newRoute.value = { Address: '', Mask: '', Description: '' }
 }
 
@@ -37,6 +42,14 @@ function removeRoute(index) {
 
 function onClose() {
   emit('close')
+}
+
+function submitCcd() {
+  const payload = {
+    ...localCcd.value,
+    CustomRoutes: localCcd.value.CustomRoutes.map(({ _id, ...r }) => r),
+  }
+  emit('submit', payload)
 }
 </script>
 
@@ -81,7 +94,7 @@ function onClose() {
           <tbody>
             <tr
               v-for="(route, i) in localCcd.CustomRoutes"
-              :key="i"
+              :key="route._id"
               class="border-t border-border"
             >
               <td class="px-3 py-2">
@@ -117,7 +130,7 @@ function onClose() {
     </div>
     <template #footer>
       <Button variant="ghost" @click="onClose">Закрыть</Button>
-      <Button v-if="isMaster()" @click="$emit('submit', localCcd)">Сохранить</Button>
+      <Button v-if="isMaster()" @click="submitCcd">Сохранить</Button>
     </template>
   </Dialog>
 </template>
