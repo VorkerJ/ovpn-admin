@@ -1227,6 +1227,11 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 				log.Debug(o)
 			}
 
+			// Remove old PKI files so easyrsa can regenerate them
+			os.Remove(fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username))
+			os.Remove(fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username))
+			os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username))
+
 			userCreated, userCreateMessage := oAdmin.userCreate(username, newPassword)
 			if !userCreated {
 				usersFromIndexTxt = indexTxtParser(fRead(*indexTxtPath))
@@ -1291,7 +1296,10 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 			if err != nil {
 				log.Error(err)
 			}
-			_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null ", *easyrsaDirPath, *easyrsaBinPath))
+			os.Remove(fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username))
+		os.Remove(fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username))
+		os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username))
+		_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null ", *easyrsaDirPath, *easyrsaBinPath))
 		}
 		crlFix()
 		oAdmin.clients = oAdmin.usersList()

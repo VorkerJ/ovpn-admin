@@ -36,10 +36,10 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
     <Button
       v-else-if="isRevoked() && isMaster()"
       size="sm"
-      variant="success"
+      variant="outline"
       @click="emit('unrevoke', user.Identity)"
     >
-      ✓ Восстановить
+      ↩ Восстановить
     </Button>
 
     <!-- Меню ··· -->
