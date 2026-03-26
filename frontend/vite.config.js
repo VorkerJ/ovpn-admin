@@ -12,9 +12,6 @@ export default defineConfig({
   build: {
     outDir: 'static',
     emptyOutDir: false,
-    rollupOptions: {
-      input: path.resolve(__dirname, 'index.html'),
-    },
   },
   server: {
     proxy: {
