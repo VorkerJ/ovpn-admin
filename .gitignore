@@ -6,7 +6,9 @@ easyrsa_slave
 ccd
 ccd_master
 ccd_slave
-frontend/node_modules
+frontend/node_modules/
+frontend/static/assets/
+.superpowers/
 
 main-packr.go
 packrd/
