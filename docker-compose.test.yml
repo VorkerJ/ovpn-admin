@@ -1,0 +1,54 @@
+version: '3'
+
+services:
+  pki-init:
+    image: alpine:3.23
+    volumes:
+      - pki_data:/pki
+      - ccd_data:/ccd
+    command: >
+      sh -c "
+        if [ -f /pki/pki/index.txt ]; then
+          echo 'PKI already initialized, skipping';
+          exit 0;
+        fi;
+        apk add --no-cache easy-rsa openssl &&
+        ln -s /usr/share/easy-rsa/easyrsa /usr/local/bin/easyrsa &&
+        mkdir -p /pki && cd /pki &&
+        EASYRSA_BATCH=1 easyrsa init-pki &&
+        EASYRSA_BATCH=1 EASYRSA_REQ_CN=TestCA easyrsa build-ca nopass &&
+        EASYRSA_BATCH=1 easyrsa gen-req alice nopass &&
+        EASYRSA_BATCH=1 easyrsa sign-req client alice &&
+        EASYRSA_BATCH=1 easyrsa gen-req bob nopass &&
+        EASYRSA_BATCH=1 easyrsa sign-req client bob &&
+        EASYRSA_BATCH=1 easyrsa gen-req charlie nopass &&
+        EASYRSA_BATCH=1 easyrsa sign-req client charlie &&
+        mkdir -p /ccd &&
+        echo 'PKI initialized'
+      "
+
+  ovpn-admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.ovpn-admin
+    image: ovpn-admin:local
+    command: /app/ovpn-admin
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    ports:
+      - "8088:8080"
+    environment:
+      OVPN_NETWORK: "192.168.100.0/24"
+      OVPN_CCD: "true"
+      OVPN_CCD_PATH: "/mnt/ccd"
+      EASYRSA_PATH: "/mnt/easyrsa"
+      OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"
+      LOG_LEVEL: "debug"
+    volumes:
+      - pki_data:/mnt/easyrsa
+      - ccd_data:/mnt/ccd
+
+volumes:
+  pki_data:
+  ccd_data:
