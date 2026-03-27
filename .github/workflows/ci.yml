@@ -11,10 +11,51 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  # ── Tests ───────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Display coverage
+        run: go tool cover -func=coverage.out
+
+  # ── Lint ────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          args: --timeout=10m
+
   # ── Build ovpn-admin image ──────────────────────────────────────────────────
   build-ovpn-admin:
     name: Build ovpn-admin image
     runs-on: ubuntu-latest
+    needs: [test, lint]
     permissions:
       contents: read
       packages: write
@@ -66,6 +107,7 @@ jobs:
   build-openvpn:
     name: Build openvpn image
     runs-on: ubuntu-latest
+    needs: [test, lint]
     permissions:
       contents: read
       packages: write
@@ -113,22 +155,37 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Release + Helm chart on GitHub Pages ───────────────────────────────────
-  # .tgz attaches to the GitHub Release; index.yaml is served via Pages.
-  # Pages source must be set to "GitHub Actions" in repo settings.
-  release-and-chart:
-    name: Release & Publish Chart
+  # ── GitHub Release ──────────────────────────────────────────────────────────
+  release:
+    name: Create Release
     runs-on: ubuntu-latest
     needs: [build-ovpn-admin, build-openvpn]
     if: github.ref_type == 'tag'
     permissions:
-      contents: write   # create release, upload assets
-      pages: write      # deploy to GitHub Pages
-      id-token: write   # OIDC token for Pages deploy
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+
+  # ── Publish Helm chart to GitHub Pages ─────────────────────────────────────
+  publish-chart:
+    name: Publish Helm Chart
+    runs-on: ubuntu-latest
+    needs: [build-ovpn-admin, build-openvpn]
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
     env:
       CHART_VERSION: ${{ github.ref_name }}
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -138,51 +195,36 @@ jobs:
         with:
           version: v3.17.0
 
-      # Package the chart; the .tgz will be a release asset.
-      # index.yaml will reference the GitHub Releases download URL.
       - name: Package chart
         run: |
           helm package charts/openvpn-admin \
             --version "$CHART_VERSION" \
             --app-version "$CHART_VERSION"
+          mkdir -p /tmp/helm-packages
+          mv openvpn-admin-*.tgz /tmp/helm-packages/
 
-      # Create (or update) the GitHub Release and attach the .tgz
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
         with:
-          generate_release_notes: true
-          files: "openvpn-admin-*.tgz"
+          ref: gh-pages
+          path: gh-pages
 
-      # Fetch the existing index.yaml from Pages so we can merge old entries.
-      # If Pages is not yet published this step silently succeeds with no file.
-      - name: Fetch existing index.yaml
+      - name: Update Helm repo index
         env:
           PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: |
-          mkdir -p pages chart-pkg
-          mv openvpn-admin-*.tgz chart-pkg/
-          curl -sf "$PAGES_URL/index.yaml" -o pages/index.yaml || true
+          cp /tmp/helm-packages/*.tgz gh-pages/
+          helm repo index gh-pages \
+            --url "$PAGES_URL" \
+            --merge gh-pages/index.yaml 2>/dev/null || \
+          helm repo index gh-pages \
+            --url "$PAGES_URL"
 
-      # Generate index.yaml where each entry URL points to the GitHub Releases
-      # download URL so the .tgz files never need to live in Pages storage.
-      - name: Generate Helm repo index
-        env:
-          RELEASE_DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+      - name: Push to gh-pages
         run: |
-          if [ -f pages/index.yaml ]; then
-            helm repo index chart-pkg \
-              --url "$RELEASE_DOWNLOAD_URL" \
-              --merge pages/index.yaml
-          else
-            helm repo index chart-pkg \
-              --url "$RELEASE_DOWNLOAD_URL"
-          fi
-          cp chart-pkg/index.yaml pages/index.yaml
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: pages/
-
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
+          cd gh-pages
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git add .
+          git commit -m "chore: publish chart $CHART_VERSION"
+          git push
