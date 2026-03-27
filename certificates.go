@@ -48,6 +48,9 @@ func decodePrivKey(privKey []byte) (key *rsa.PrivateKey, err error) {
 // return PEM encoded private key
 func genPrivKey() (privKeyPEM *bytes.Buffer, err error) {
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return
+	}
 
 	//privKeyPKCS1 := x509.MarshalPKCS1PrivateKey(privKey)
 
@@ -70,6 +73,9 @@ func genCA(privKey *rsa.PrivateKey) (issuerPEM *bytes.Buffer, err error) {
 	serialNumberRange := new(big.Int).Lsh(big.NewInt(1), 128)
 
 	issuerSerial, err := rand.Int(rand.Reader, serialNumberRange)
+	if err != nil {
+		return
+	}
 
 	issuerTemplate := x509.Certificate{
 		BasicConstraintsValid: true,
@@ -101,6 +107,9 @@ func genCA(privKey *rsa.PrivateKey) (issuerPEM *bytes.Buffer, err error) {
 func genServerCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn string) (issuerPEM *bytes.Buffer, err error) {
 	serialNumberRange := new(big.Int).Lsh(big.NewInt(1), 128)
 	serial, err := rand.Int(rand.Reader, serialNumberRange)
+	if err != nil {
+		return
+	}
 
 	template := x509.Certificate{
 		BasicConstraintsValid: true,
@@ -133,6 +142,9 @@ func genServerCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn 
 func genClientCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn string) (issuerPEM *bytes.Buffer, err error) {
 	serialNumberRange := new(big.Int).Lsh(big.NewInt(1), 128)
 	serial, err := rand.Int(rand.Reader, serialNumberRange)
+	if err != nil {
+		return nil, fmt.Errorf("can't generate serial number: %w", err)
+	}
 
 	certLifetimeDays, err := strconv.Atoi(*clientCertExpirationDays)
 	if err != nil {

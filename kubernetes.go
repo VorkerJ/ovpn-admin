@@ -146,6 +146,9 @@ func (openVPNPKI *OpenVPNPKI) initPKI() (err error) {
 			return
 		}
 		openVPNPKI.CAPrivKeyRSA, err = decodePrivKey(openVPNPKI.CAPrivKeyPEM.Bytes())
+		if err != nil {
+			return
+		}
 
 		openVPNPKI.CACertPEM, _ = genCA(openVPNPKI.CAPrivKeyRSA)
 		openVPNPKI.CACert, err = decodeCert(openVPNPKI.CACertPEM.Bytes())
@@ -189,6 +192,9 @@ func (openVPNPKI *OpenVPNPKI) initPKI() (err error) {
 
 		openVPNPKI.ServerCertPEM, _ = genServerCert(openVPNPKI.ServerPrivKeyRSA, openVPNPKI.CAPrivKeyRSA, openVPNPKI.CACert, "server")
 		openVPNPKI.ServerCert, err = decodeCert(openVPNPKI.ServerCertPEM.Bytes())
+		if err != nil {
+			return
+		}
 
 		secretMetaData := metav1.ObjectMeta{
 			Name: secretServer,
@@ -255,6 +261,9 @@ func (openVPNPKI *OpenVPNPKI) indexTxtUpdate() (err error) {
 
 func (openVPNPKI *OpenVPNPKI) updateIndexTxtOnDisk() (err error) {
 	secret, err := openVPNPKI.secretGetByName(secretIndexTxt)
+	if err != nil {
+		return
+	}
 	indexTxt := secret.Data["index.txt"]
 	err = ioutil.WriteFile(fmt.Sprintf("%s/pki/index.txt", *easyrsaDirPath), indexTxt, 0600)
 	return
@@ -280,6 +289,10 @@ func (openVPNPKI *OpenVPNPKI) easyrsaGenCRL() (err error) {
 				log.Warning(err)
 			}
 			cert, err := decodeCert(secret.Data[certFileName])
+			if err != nil {
+				log.Warning(err)
+				continue
+			}
 			revoked = append(revoked, &RevokedCert{RevokedTime: revokedAt, Cert: cert})
 		}
 	}
@@ -310,7 +323,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaBuildClient(commonName string) (err error) 
 	// check certificate exists
 	_, err = openVPNPKI.secretGetByLabels("name=" + commonName)
 	if err == nil {
-		return errors.New(fmt.Sprintf("certificate for user (%s) already exists", commonName))
+		return fmt.Errorf("certificate for user (%s) already exists", commonName)
 	}
 
 	clientPrivKeyPEM, err := genPrivKey()
@@ -325,6 +338,9 @@ func (openVPNPKI *OpenVPNPKI) easyrsaBuildClient(commonName string) (err error) 
 
 	clientCertPEM, _ := genClientCert(clientPrivKeyRSA, openVPNPKI.CAPrivKeyRSA, openVPNPKI.CACert, commonName)
 	clientCert, err := decodeCert(clientCertPEM.Bytes())
+	if err != nil {
+		return
+	}
 
 	secretMetaData := metav1.ObjectMeta{
 		Name: fmt.Sprintf(secretClientTmpl, clientCert.SerialNumber),
@@ -363,7 +379,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaBuildClient(commonName string) (err error) 
 	return
 }
 
-func (openVPNPKI *OpenVPNPKI) easyrsaGetCACert() string {
+func (openVPNPKI *OpenVPNPKI) easyrsaGetCACert() string { //nolint:unused
 	return openVPNPKI.CACertPEM.String()
 }
 
@@ -455,7 +471,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRotate(commonName, newPassword string) (err
 	if err != nil {
 		log.Error(err)
 	}
-	uniqHash := strings.Replace(uuid.New().String(), "-", "", -1)
+	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 	secret.Annotations["commonName"] = "REVOKED-" + commonName + "-" + uniqHash
 	secret.Labels["name"] = "REVOKED" + commonName
 	secret.Labels["revokedForever"] = "true"
@@ -498,7 +514,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaDelete(commonName string) (err error) {
 	if err != nil {
 		log.Error(err)
 	}
-	uniqHash := strings.Replace(uuid.New().String(), "-", "", -1)
+	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 	secret.Annotations["commonName"] = "REVOKED-" + commonName + "-" + uniqHash
 	secret.Labels["name"] = "REVOKED-" + commonName + "-" + uniqHash
 	secret.Labels["revokedForever"] = "true"
@@ -560,15 +576,22 @@ func (openVPNPKI *OpenVPNPKI) updateFilesFromSecrets() (err error) {
 	}
 
 	secret, err := openVPNPKI.secretGetByName(secretDHandTA)
+	if err != nil {
+		return
+	}
 	takey := secret.Data["ta.key"]
 	dhparam := secret.Data["dh.pem"]
 
-	if _, err := os.Stat(fmt.Sprintf("%s/pki/issued", *easyrsaDirPath)); os.IsNotExist(err) {
-		err = os.MkdirAll(fmt.Sprintf("%s/pki/issued", *easyrsaDirPath), 0755)
+	if _, statErr := os.Stat(fmt.Sprintf("%s/pki/issued", *easyrsaDirPath)); os.IsNotExist(statErr) {
+		if err = os.MkdirAll(fmt.Sprintf("%s/pki/issued", *easyrsaDirPath), 0755); err != nil {
+			return
+		}
 	}
 
-	if _, err := os.Stat(fmt.Sprintf("%s/pki/private", *easyrsaDirPath)); os.IsNotExist(err) {
-		err = os.MkdirAll(fmt.Sprintf("%s/pki/private", *easyrsaDirPath), 0755)
+	if _, statErr := os.Stat(fmt.Sprintf("%s/pki/private", *easyrsaDirPath)); os.IsNotExist(statErr) {
+		if err = os.MkdirAll(fmt.Sprintf("%s/pki/private", *easyrsaDirPath), 0755); err != nil {
+			return
+		}
 	}
 
 	err = ioutil.WriteFile(fmt.Sprintf("%s/pki/ca.crt", *easyrsaDirPath), ca.CertPEM.Bytes(), 0600)
@@ -602,6 +625,9 @@ func (openVPNPKI *OpenVPNPKI) updateFilesFromSecrets() (err error) {
 
 func (openVPNPKI *OpenVPNPKI) updateCRLOnDisk() (err error) {
 	secret, err := openVPNPKI.secretGetByName(secretCRL)
+	if err != nil {
+		return
+	}
 	crl := secret.Data["crl.pem"]
 	err = ioutil.WriteFile(fmt.Sprintf("%s/pki/crl.pem", *easyrsaDirPath), crl, 0644)
 	if err != nil {
@@ -619,6 +645,9 @@ func (openVPNPKI *OpenVPNPKI) secretGenTaKeyAndDHParam() (err error) {
 		return
 	}
 	taKey, err := ioutil.ReadFile(taKeyPath)
+	if err != nil {
+		return
+	}
 
 	dhparamPath := "/tmp/dh.pem"
 	cmd = exec.Command("bash", "-c", fmt.Sprintf("openssl dhparam -out %s 2048", dhparamPath))
@@ -627,6 +656,9 @@ func (openVPNPKI *OpenVPNPKI) secretGenTaKeyAndDHParam() (err error) {
 		return
 	}
 	dhparam, err := ioutil.ReadFile(dhparamPath)
+	if err != nil {
+		return
+	}
 
 	secretMetaData := metav1.ObjectMeta{Name: secretDHandTA}
 
@@ -652,7 +684,7 @@ func (openVPNPKI *OpenVPNPKI) secretGetCcd(commonName string) (ccd string) {
 		return
 	}
 
-	for k, _ := range secret.Data {
+	for k := range secret.Data {
 		if k == "ccd" {
 			ccd = string(secret.Data["ccd"])
 			return
@@ -686,8 +718,10 @@ func (openVPNPKI *OpenVPNPKI) updateCcdOnDisk() (err error) {
 		return
 	}
 
-	if _, err := os.Stat(*ccdDir); os.IsNotExist(err) {
-		err = os.MkdirAll(*ccdDir, 0755)
+	if _, statErr := os.Stat(*ccdDir); os.IsNotExist(statErr) {
+		if err = os.MkdirAll(*ccdDir, 0755); err != nil {
+			return
+		}
 	}
 
 	for _, secret := range secrets.Items {
@@ -757,12 +791,12 @@ func (openVPNPKI *OpenVPNPKI) secretGetByLabels(labels string) (secret *v1.Secre
 	}
 
 	if len(secrets.Items) > 1 {
-		err = errors.New(fmt.Sprintf("found more than one secret with labels %s", labels))
+		err = fmt.Errorf("found more than one secret with labels %s", labels)
 		return
 	}
 
 	if len(secrets.Items) == 0 {
-		err = errors.New(fmt.Sprintf("secret not found"))
+		err = errors.New("secret not found")
 		return
 	}
 

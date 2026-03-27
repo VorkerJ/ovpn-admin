@@ -159,6 +159,9 @@ func fMove(src, dst string) error {
 func fDownload(path, url string, basicAuth bool) error {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
 	if basicAuth {
 		req.SetBasicAuth(*masterBasicAuthUser, *masterBasicAuthPassword)
 	}
@@ -178,8 +181,12 @@ func fDownload(path, url string, basicAuth bool) error {
 		return err
 	}
 
-	fCreate(path)
-	fWrite(path, string(body))
+	if err := fCreate(path); err != nil {
+		log.Error(err)
+	}
+	if err := fWrite(path, string(body)); err != nil {
+		log.Error(err)
+	}
 
 	return nil
 }
@@ -208,9 +215,17 @@ func createArchiveFromDir(dir, path string) error {
 	}
 	defer out.Close()
 	gw := gzip.NewWriter(out)
-	defer gw.Close()
+	defer func() {
+		if cerr := gw.Close(); cerr != nil {
+			log.Warn(cerr)
+		}
+	}()
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
+	defer func() {
+		if cerr := tw.Close(); cerr != nil {
+			log.Warn(cerr)
+		}
+	}()
 
 	// Iterate over files and add them to the tar archive
 	for _, filePath := range files {
@@ -271,7 +286,7 @@ func extractFromArchive(archive, path string) error {
 
 	tarReader := tar.NewReader(uncompressedStream)
 
-	for true {
+	for {
 		header, err := tarReader.Next()
 
 		if err == io.EOF {

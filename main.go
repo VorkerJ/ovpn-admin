@@ -675,12 +675,12 @@ func indexTxtParser(txt string) []indexTxtLine {
 func renderIndexTxt(data []indexTxtLine) string {
 	indexTxt := ""
 	for _, line := range data {
-		switch {
-		case line.Flag == "V":
+		switch line.Flag {
+		case "V":
 			indexTxt += fmt.Sprintf("%s\t%s\t\t%s\t%s\t%s\n", line.Flag, line.ExpirationDate, line.SerialNumber, line.Filename, line.DistinguishedName)
-		case line.Flag == "R":
+		case "R":
 			indexTxt += fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\n", line.Flag, line.ExpirationDate, line.RevocationDate, line.SerialNumber, line.Filename, line.DistinguishedName)
-			// case line.flag == "E":
+			// case "E":
 		}
 	}
 	return indexTxt
@@ -740,7 +740,7 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 			log.Debugf("rendering config for %s failed with error %v", username, err)
 		}
 
-		hosts = nil
+		hosts = nil //nolint:ineffassign
 
 		log.Tracef("Rendered config for user %s: %+v", username, tmp.String())
 
@@ -921,11 +921,7 @@ func checkStaticAddressIsFree(staticAddress string, username string) bool {
 
 	o := runBash(fmt.Sprintf("grep -rl ' %[1]s ' %[2]s | grep -vx %[2]s/%[3]s | wc -l", staticAddress, *ccdDir, username))
 
-	if strings.TrimSpace(o) == "0" {
-		return true
-	}
-
-	return false
+	return strings.TrimSpace(o) == "0"
 }
 
 func validateUsername(username string) error {
@@ -939,7 +935,7 @@ func validateUsername(username string) error {
 
 func validatePassword(password string) error {
 	if utf8.RuneCountInString(password) < passwordMinLength {
-		return errors.New(fmt.Sprintf("Password too short, password length must be greater or equal %d", passwordMinLength))
+		return fmt.Errorf("Password too short, password length must be greater or equal %d", passwordMinLength)
 	} else {
 		return nil
 	}
@@ -969,15 +965,15 @@ func (oAdmin *OvpnAdmin) usersList() []OpenvpnClient {
 		if line.Identity != "server" && !strings.Contains(line.Identity, "REVOKED") {
 			totalCerts += 1
 			ovpnClient := OpenvpnClient{Identity: line.Identity, ExpirationDate: parseDateToString(indexTxtDateLayout, line.ExpirationDate, stringDateFormat)}
-			switch {
-			case line.Flag == "V":
+			switch line.Flag {
+			case "V":
 				ovpnClient.AccountStatus = "Active"
 				validCerts += 1
-			case line.Flag == "R":
+			case "R":
 				ovpnClient.AccountStatus = "Revoked"
 				ovpnClient.RevocationDate = parseDateToString(indexTxtDateLayout, line.RevocationDate, stringDateFormat)
 				revokedCerts += 1
-			case line.Flag == "E":
+			case "E":
 				ovpnClient.AccountStatus = "Expired"
 				expiredCerts += 1
 			}
@@ -1091,7 +1087,7 @@ func (oAdmin *OvpnAdmin) userChangePassword(username, password string) (error, s
 		return nil, "Password changed"
 	}
 
-	return errors.New(fmt.Sprintf("User \"%s\" not found}", username)), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
+	return fmt.Errorf("User \"%s\" not found}", username), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
 }
 
 func (oAdmin *OvpnAdmin) getUserStatistic(username string) []clientStatus {
@@ -1137,7 +1133,7 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 		return nil, fmt.Sprintf("user \"%s\" revoked", username)
 	}
 	log.Infof("user \"%s\" not found", username)
-	return errors.New(fmt.Sprintf("User \"%s\" not found}", username)), fmt.Sprintf("User \"%s\" not found", username)
+	return fmt.Errorf("User \"%s\" not found}", username), fmt.Sprintf("User \"%s\" not found", username)
 }
 
 func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
@@ -1201,7 +1197,7 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 		oAdmin.clients = oAdmin.usersList()
 		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully unrevoked\"}", username)
 	}
-	return errors.New(fmt.Sprintf("user \"%s\" not found", username)), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
+	return fmt.Errorf("user \"%s\" not found", username), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
 }
 
 func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string) {
@@ -1216,7 +1212,7 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 			var oldUserIndex, newUserIndex int
 			var oldUserSerial string
 
-			uniqHash := strings.Replace(uuid.New().String(), "-", "", -1)
+			uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 
 			usersFromIndexTxt := indexTxtParser(fRead(*indexTxtPath))
 			for i := range usersFromIndexTxt {
@@ -1238,9 +1234,15 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 			}
 
 			// Remove old PKI files so easyrsa can regenerate them
-			os.Remove(fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username))
-			os.Remove(fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username))
-			os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username))
+			if err := os.Remove(fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
+				log.Warnf("failed to remove key file for %s: %v", username, err)
+			}
+			if err := os.Remove(fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
+				log.Warnf("failed to remove crt file for %s: %v", username, err)
+			}
+			if err := os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
+				log.Warnf("failed to remove req file for %s: %v", username, err)
+			}
 
 			userCreated, userCreateMessage := oAdmin.userCreate(username, newPassword)
 			if !userCreated {
@@ -1255,7 +1257,7 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 				if err != nil {
 					log.Error(err)
 				}
-				return errors.New(fmt.Sprintf("error rotaing user due:  %s", userCreateMessage)), userCreateMessage
+				return fmt.Errorf("error rotaing user due:  %s", userCreateMessage), userCreateMessage
 			}
 
 			usersFromIndexTxt = indexTxtParser(fRead(*indexTxtPath))
@@ -1280,7 +1282,7 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 		oAdmin.clients = oAdmin.usersList()
 		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully rotated\"}", username)
 	}
-	return errors.New(fmt.Sprintf("user \"%s\" not found", username)), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
+	return fmt.Errorf("user \"%s\" not found", username), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
 }
 
 func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
@@ -1291,7 +1293,7 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 				log.Error(err)
 			}
 		} else {
-			uniqHash := strings.Replace(uuid.New().String(), "-", "", -1)
+			uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 			usersFromIndexTxt := indexTxtParser(fRead(*indexTxtPath))
 			for i := range usersFromIndexTxt {
 				if usersFromIndexTxt[i].DistinguishedName == "/CN="+username {
@@ -1306,16 +1308,22 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 			if err != nil {
 				log.Error(err)
 			}
-			os.Remove(fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username))
-		os.Remove(fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username))
-		os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username))
+			if err := os.Remove(fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
+				log.Warnf("failed to remove key file for %s: %v", username, err)
+			}
+			if err := os.Remove(fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
+				log.Warnf("failed to remove crt file for %s: %v", username, err)
+			}
+			if err := os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
+				log.Warnf("failed to remove req file for %s: %v", username, err)
+			}
 		_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null ", *easyrsaDirPath, *easyrsaBinPath))
 		}
 		crlFix()
 		oAdmin.clients = oAdmin.usersList()
 		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully deleted\"}", username)
 	}
-	return errors.New(fmt.Sprintf("User \"%s\" not found}", username)), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
+	return fmt.Errorf("User \"%s\" not found}", username), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
 }
 
 func (oAdmin *OvpnAdmin) mgmtRead(conn net.Conn) string {
@@ -1399,7 +1407,7 @@ func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) {
 		return
 	}
 	oAdmin.mgmtRead(conn) // read welcome message
-	conn.Write([]byte(fmt.Sprintf("kill %s\n", username)))
+	fmt.Fprintf(conn, "kill %s\n", username)
 	fmt.Printf("%v", oAdmin.mgmtRead(conn))
 	conn.Close()
 }
@@ -1414,7 +1422,7 @@ func (oAdmin *OvpnAdmin) mgmtGetActiveClients() []clientStatus {
 			break
 		}
 		oAdmin.mgmtRead(conn) // read welcome message
-		conn.Write([]byte("status 1\n"))
+		conn.Write([]byte("status 1\n")) //nolint:errcheck
 		activeClients = append(activeClients, oAdmin.mgmtConnectedUsersParser(oAdmin.mgmtRead(conn), srv)...)
 		conn.Close()
 	}
@@ -1451,7 +1459,7 @@ func (oAdmin *OvpnAdmin) mgmtSetTimeFormat() {
 		}
 
 		oAdmin.mgmtRead(conn) // read welcome message
-		conn.Write([]byte("version\n"))
+		conn.Write([]byte("version\n")) //nolint:errcheck
 		out := oAdmin.mgmtRead(conn)
 		conn.Close()
 
