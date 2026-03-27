@@ -8,7 +8,7 @@ defineProps({
   lastSync: { type: String, default: '' },
 })
 
-defineEmits(['add-user'])
+defineEmits(['add-user', 'logout'])
 
 const { isDark, toggle } = useTheme()
 </script>
@@ -41,6 +41,15 @@ const { isDark, toggle } = useTheme()
       <Button v-if="serverRole === 'master'" size="sm" @click="$emit('add-user')">
         + Добавить пользователя
       </Button>
+
+      <!-- Logout -->
+      <button
+        type="button"
+        @click="$emit('logout')"
+        class="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-accent transition-colors"
+      >
+        Выйти
+      </button>
     </div>
   </header>
 </template>

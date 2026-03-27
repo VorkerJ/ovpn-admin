@@ -1,42 +1,117 @@
+# ================================================================
+# openvpn-admin Helm chart — default values
+# ================================================================
+
+# ----------------------------------------------------------------
+# ovpn-admin UI
+# ----------------------------------------------------------------
 ovpnAdmin:
-  repo: ghcr.io/palark/ovpn-admin/ovpn-admin
+  image:
+    repository: ghcr.io/palark/ovpn-admin/ovpn-admin
+    tag: latest
+    pullPolicy: IfNotPresent
 
+  port: 8080
+
+  # CCD (client-config-dir): per-user static IPs and push routes
+  ccdEnabled: true
+
+  # Prometheus metrics endpoint
+  metricsEnabled: true
+  metricsPath: "/metrics"
+
+  # PKI storage backend: "filesystem" or "kubernetes.secrets"
+  # kubernetes.secrets stores all certs in etcd — no PVC needed
+  storageBackend: "kubernetes.secrets"
+
+  # Admin UI authentication via htpasswd file (bcrypt).
+  # Name of a K8s Secret with key "htpasswd".
+  # If empty — a random password is generated at startup and printed to logs.
+  # Create: htpasswd -c -B /tmp/htpasswd admin
+  #         kubectl create secret generic ovpn-admin-ui-auth --from-file=htpasswd=/tmp/htpasswd
+  adminHtpasswdSecret: ""
+
+# ----------------------------------------------------------------
+# OpenVPN server
+# ----------------------------------------------------------------
 openvpn:
-  repo: ghcr.io/palark/ovpn-admin/openvpn
-  subnet: 172.16.200.0/255.255.255.0
-  # LoadBalancer or ExternalIP or HostPort
+  image:
+    repository: ghcr.io/palark/ovpn-admin/openvpn
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # External hostname or IP used in generated .ovpn client configs
+  # serverName: vpn.example.com
+
+  proto: tcp
+  port: 1194
+
+  # VPN subnet (address/mask)
+  network: "172.16.100.0"
+  networkMask: "255.255.255.0"
+  networkPrefix: "172.16.100.0/24"
+
+  logLevel: 3
+
+  # Expose OpenVPN port: HostPort | LoadBalancer | ExternalIP
   inlet: HostPort
-  #
-  # If inlet: ExternalIP
-  # externalIP: 1.2.3.4
-  # externalPort: 1194
-  #
-  # If inlet: HostPort
   hostPort: 1194
-  # Domain or ip for connect to OpenVPN server
-  # externalHost: 1.2.3.4
+  # externalIP: 1.2.3.4      # for ExternalIP inlet
+  # externalPort: 1194        # for LoadBalancer / ExternalIP inlet
 
-# -- [Node selector](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector) configuration.
+# ----------------------------------------------------------------
+# Service for admin UI
+# ----------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8080
+
+# ----------------------------------------------------------------
+# Ingress for admin UI
+# ----------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  hostname: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt
+
+# ----------------------------------------------------------------
+# RBAC
+# ----------------------------------------------------------------
+rbac:
+  create: true
+  serviceAccountName: ovpn-admin
+
+# ----------------------------------------------------------------
+# Resources
+# ----------------------------------------------------------------
+resources:
+  openvpn:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  ovpnAdmin:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# One replica — OpenVPN is stateful, PKI can't be shared between pods
+replicaCount: 1
+
 nodeSelector: {}
-
-# -- [Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) for node taints.
-# See the [API reference](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#scheduling) for details.
 tolerations: []
 
-ingress:
-  # -- Enable [ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/).
+# ----------------------------------------------------------------
+# ServiceMonitor for Prometheus Operator (optional)
+# ----------------------------------------------------------------
+serviceMonitor:
   enabled: false
-
-  # -- Ingress [class name](https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-class).
-  className: ""
-
-  # -- Annotations to be added to the ingress.
-  annotations: {}
-    # kubernetes.io/ingress.class: nginx
-    # kubernetes.io/tls-acme: "true"
-
-  domain: changeme
-
-  basicAuth:
-    user: admin
-    password: changeme
+  interval: 30s
+  namespace: monitoring

@@ -1,117 +1,201 @@
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: openvpn
+  name: {{ include "openvpn-admin.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openvpn-admin.labels" . | nindent 4 }}
 spec:
+  replicas: {{ .Values.replicaCount }}
+  # Recreate — PKI Secrets are ReadWriteOnce-equivalent; OpenVPN can't run in parallel
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: openvpn
+      {{- include "openvpn-admin.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: openvpn
+        {{- include "openvpn-admin.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
-      {{- if .Values.nodeSelector }}
+      serviceAccountName: {{ .Values.rbac.serviceAccountName }}
+
+      {{- with .Values.nodeSelector }}
       nodeSelector:
-      {{- .Values.nodeSelector | toYaml | indent 8 | printf "\n%s" }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.tolerations }}
+      {{- with .Values.tolerations }}
       tolerations:
-      {{- .Values.tolerations | toYaml | indent 8 | printf "\n%s" }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
-      terminationGracePeriodSeconds: 0
-      serviceAccountName: openvpn
+
+      initContainers:
+        - name: init-sysctl
+          image: busybox:1.36
+          command: ["sysctl", "-w", "net.ipv4.ip_forward=1"]
+          securityContext:
+            privileged: true
+
+        - name: init-dirs
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /etc/openvpn/ccd && chmod 700 /etc/openvpn/ccd"]
+          volumeMounts:
+            - name: openvpn-ccd
+              mountPath: /etc/openvpn/ccd
+
       containers:
-      - name: ovpn-admin
-        image: {{ .Values.ovpnAdmin.repo }}:master
-        command:
-        - /bin/sh
-        - -c
-        - /app/ovpn-admin
-            --storage.backend="kubernetes.secrets"
-            --listen.host="0.0.0.0"
-            --listen.port="8000"
-            --role="master"
-            {{- if hasKey .Values.openvpn "inlet" }}
-              {{- if eq .Values.openvpn.inlet "LoadBalancer" }}
-            --ovpn.server.behindLB
-            --ovpn.service="openvpn-external"
+
+        # ── OpenVPN ────────────────────────────────────────────────────
+        - name: openvpn
+          image: "{{ .Values.openvpn.image.repository }}:{{ .Values.openvpn.image.tag }}"
+          imagePullPolicy: {{ .Values.openvpn.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PKI..."
+              until [ -f /etc/openvpn/pki/ca.crt ] && \
+                    [ -f /etc/openvpn/pki/dh.pem ] && \
+                    [ -f /etc/openvpn/pki/issued/server.crt ] && \
+                    [ -f /etc/openvpn/pki/private/server.key ] && \
+                    [ -f /etc/openvpn/pki/ta.key ]; do
+                echo "PKI not ready, retrying in 5s..."
+                sleep 5
+              done
+              exec openvpn --config /etc/openvpn/server.conf
+          ports:
+            - name: openvpn
+              containerPort: {{ .Values.openvpn.port }}
+              protocol: {{ .Values.openvpn.proto | upper }}
+              {{- if eq .Values.openvpn.inlet "HostPort" }}
+              hostPort: {{ .Values.openvpn.hostPort }}
               {{- end }}
-            {{- end }}
-            --mgmt=main="127.0.0.1:8989"
-            --ccd --ccd.path="/mnt/ccd"
-            --easyrsa.path="/mnt/certs"
-            {{- $externalHost := "" }}
-            {{- if hasKey .Values.openvpn "inlet" }}
-              {{- if eq .Values.openvpn.inlet "ExternalIP" }}{{ $externalHost = .Values.openvpn.externalIP }}{{- end }}
-            {{- end }}
-            {{- if hasKey .Values.openvpn "externalHost" }}{{ $externalHost = .Values.openvpn.externalHost }}{{- end }}
-            {{- if ne $externalHost "" }}
-            --ovpn.server="{{ $externalHost }}:{{ .Values.openvpn.externalPort | default 5416 | quote }}:tcp"
-            {{- end }}
-        ports:
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW", "MKNOD"]
+          resources:
+            {{- toYaml .Values.resources.openvpn | nindent 12 }}
+          volumeMounts:
+            - name: server-conf
+              mountPath: /etc/openvpn/server.conf
+              subPath: server.conf
+              readOnly: true
+            - name: openvpn-pki
+              mountPath: /etc/openvpn/pki
+            - name: openvpn-ccd
+              mountPath: /etc/openvpn/ccd
+
+        # ── ovpn-admin UI ──────────────────────────────────────────────
         - name: ovpn-admin
-          protocol: TCP
-          containerPort: 8000
-        volumeMounts:
-          - name: certs
-            mountPath: /mnt/certs
-          - name: ccd
-            mountPath: /mnt/ccd
-      - name: openvpn
-        image: {{ .Values.ovpnAdmin.repo }}:master
-        command: [ '/entrypoint.sh' ]
-        # imagePullPolicy: Always
-        securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            add:
-            - NET_ADMIN
-            - NET_RAW
-            - MKNOD
-            - SETGID
-            - SETUID
-            drop:
-            - ALL
-        ports:
-        - name: openvpn-tcp
-          protocol: TCP
-          containerPort: 1194
-          {{- if eq .Values.openvpn.inlet "HostPort" }}
-          hostPort: {{ .Values.openvpn.hostPort }}
-          {{- end }}
-        volumeMounts:
-        - name: tmp
-          mountPath: /tmp
-        - name: dev-net
-          mountPath: /dev/net
-        - name: certs
-          mountPath: /etc/openvpn/certs
-        - name: ccd
-          mountPath: /etc/openvpn/ccd
-        - name: config
-          mountPath: /etc/openvpn/openvpn.conf
-          subPath: openvpn.conf
-          readOnly: true
-        - name: entrypoint
-          mountPath: /entrypoint.sh
-          subPath: entrypoint.sh
-          readOnly: true
+          image: "{{ .Values.ovpnAdmin.image.repository }}:{{ .Values.ovpnAdmin.image.tag }}"
+          imagePullPolicy: {{ .Values.ovpnAdmin.image.pullPolicy }}
+          command: ["/app/ovpn-admin"]
+          args:
+            - --listen.host=0.0.0.0
+            - --listen.port={{ .Values.ovpnAdmin.port }}
+            - --role=master
+            - --ovpn.network={{ .Values.openvpn.networkPrefix }}
+            - --storage.backend={{ .Values.ovpnAdmin.storageBackend }}
+            - --mgmt=main=127.0.0.1:8989
+            {{- if .Values.ovpnAdmin.ccdEnabled }}
+            - --ccd
+            - --ccd.path=/etc/openvpn/ccd
+            {{- end }}
+            {{- if .Values.openvpn.serverName }}
+            - --ovpn.server={{ .Values.openvpn.serverName }}:{{ .Values.openvpn.port }}:{{ .Values.openvpn.proto }}
+            {{- end }}
+            {{- if .Values.ovpnAdmin.metricsEnabled }}
+            - --metrics.path={{ .Values.ovpnAdmin.metricsPath }}
+            {{- end }}
+            {{- if .Values.ovpnAdmin.adminHtpasswdSecret }}
+            - --admin.htpasswd-file=/etc/ovpn-admin/auth/htpasswd
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ovpnAdmin.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources.ovpnAdmin | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.ovpnAdmin.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.ovpnAdmin.port }}
+            periodSeconds: 15
+            failureThreshold: 3
+          volumeMounts:
+            - name: openvpn-pki
+              mountPath: /etc/openvpn/pki
+            - name: openvpn-ccd
+              mountPath: /etc/openvpn/ccd
+            {{- if .Values.ovpnAdmin.adminHtpasswdSecret }}
+            - name: admin-htpasswd
+              mountPath: /etc/ovpn-admin/auth
+              readOnly: true
+            {{- end }}
+
       volumes:
-      - name: tmp
-        emptyDir: {}
-      - name: dev-net
-        emptyDir: {}
-      - name: certs
-        emptyDir: {}
-      - name: ccd
-        emptyDir: {}
-      - name: config
-        configMap:
-          name: openvpn
-          defaultMode: 0644
-      - name: entrypoint
-        configMap:
-          name: openvpn
-          defaultMode: 0755
+        # ── server.conf from ConfigMap ──────────────────────────────────
+        - name: server-conf
+          configMap:
+            name: {{ include "openvpn-admin.fullname" . }}
+            defaultMode: 0644
+
+        # ── PKI from K8s Secrets ────────────────────────────────────────
+        # ovpn-admin creates and manages these Secrets via kubernetes.secrets backend
+        - name: openvpn-pki
+          projected:
+            defaultMode: 0400
+            sources:
+              - secret:
+                  name: openvpn-pki-ca
+                  optional: true
+                  items:
+                    - key: tls.crt
+                      path: ca.crt
+                    - key: tls.key
+                      path: private/ca.key
+              - secret:
+                  name: openvpn-pki-server
+                  optional: true
+                  items:
+                    - key: tls.crt
+                      path: issued/server.crt
+                    - key: tls.key
+                      path: private/server.key
+              - secret:
+                  name: openvpn-pki-dh-and-ta
+                  optional: true
+                  items:
+                    - key: dh.pem
+                      path: dh.pem
+                    - key: ta.key
+                      path: ta.key
+              - secret:
+                  name: openvpn-pki-crl
+                  optional: true
+                  items:
+                    - key: crl.pem
+                      path: crl.pem
+
+        # ── CCD — managed by ovpn-admin, restored from Secrets on start ─
+        - name: openvpn-ccd
+          emptyDir: {}
+
+        {{- if .Values.ovpnAdmin.adminHtpasswdSecret }}
+        # ── htpasswd from Secret ────────────────────────────────────────
+        - name: admin-htpasswd
+          secret:
+            secretName: {{ .Values.ovpnAdmin.adminHtpasswdSecret }}
+            items:
+              - key: htpasswd
+                path: htpasswd
+        {{- end }}

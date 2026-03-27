@@ -1,82 +1,111 @@
 # ovpn-admin
 
-Simple web UI to manage OpenVPN users, their certificates & routes in Linux. While backend is written in Go, frontend is based on Vue.js.
-
-***DISCLAIMER!** This project was created for experienced users (system administrators) and private (e.g., protected by network policies) environments only. Thus, it is not implemented with security in mind (e.g., it doesn't strictly check all parameters passed by users, etc.). It also relies heavily on files and fails if required files aren't available.*
+Simple web UI to manage OpenVPN users, their certificates & routes in Linux. Backend is written in Go, frontend is built with Vue 3 + Tailwind CSS.
 
 ## Features
 
-* Adding, deleting OpenVPN users (generating certificates for them);
-* Revoking/restoring/rotating users certificates;
-* Generating ready-to-user config files;
-* Providing metrics for Prometheus, including certificates expiration date, number of (connected/total) users, information about connected users;
-* (optionally) Specifying CCD (`client-config-dir`) for each user;
-* (optionally) Operating in a master/slave mode (syncing certs & CCD with other server);
-* (optionally) Specifying/changing password for additional authorization in OpenVPN;
-* (optionally) Specifying the Kubernetes LoadBalancer if it's used in front of the OpenVPN server (to get an automatically defined `remote` in the `client.conf.tpl` template).
-* (optionally) Storing certificates and other files in Kubernetes Secrets (**Attention, this feature is experimental!**).
+* **Web UI authentication** — htpasswd-based login with bcrypt passwords; supports multiple admin users; auto-generates a random password on first start if no htpasswd file is provided
+* Adding, deleting OpenVPN users (generating certificates for them)
+* Revoking / restoring / rotating user certificates
+* Generating ready-to-use `.ovpn` config files
+* Providing metrics for Prometheus, including certificate expiration dates, number of connected/total users, and per-user connection info
+* (optionally) Specifying CCD (`client-config-dir`) per user — static IP address and custom push routes with IP validation
+* (optionally) Operating in master/slave mode (syncing certs & CCD with another server)
+* (optionally) Specifying/changing password for additional OpenVPN auth
+* (optionally) Specifying a Kubernetes LoadBalancer in front of the OpenVPN server (auto-defined `remote` in `client.conf.tpl`)
+* (optionally) Storing certificates and other files in Kubernetes Secrets
 
-### Screenshots
+## Screenshots
 
-Managing users in ovpn-admin:
-![ovpn-admin UI](https://raw.githubusercontent.com/palark/ovpn-admin/master/img/ovpn-admin-users.png)
+Login page:
 
-An example of dashboard made using ovpn-admin metrics:
-![ovpn-admin metrics](https://raw.githubusercontent.com/palark/ovpn-admin/master/img/ovpn-admin-metrics.png)
+![ovpn-admin login](docs/screenshot-login.png)
+
+Managing users (light theme):
+
+![ovpn-admin UI](docs/screenshot-users.png)
+
+Managing users (dark theme):
+
+![ovpn-admin dark](docs/screenshot-users-dark.png)
 
 ## Installation
 
-### 1. Docker
-
-There is a ready-to-use [docker-compose.yaml](https://github.com/palark/ovpn-admin/blob/master/docker-compose.yaml), so you can just change/add values you need and start it with [start.sh](https://github.com/palark/ovpn-admin/blob/master/start.sh).
-
-Requirements:
-You need [Docker](https://docs.docker.com/get-docker/) and [docker-compose](https://docs.docker.com/compose/install/) installed.
-
-Commands to execute:
+### Docker (quick start)
 
 ```bash
 git clone https://github.com/palark/ovpn-admin.git
 cd ovpn-admin
-./start.sh
+docker compose -f docker-compose.test.yml build --no-cache
+docker compose -f docker-compose.test.yml up -d
 ```
-#### 1.1
-Ready docker images available on [Docker Hub](https://hub.docker.com/r/flant/ovpn-admin/tags) 
-. Tags are simple: `$VERSION` or `latest` for ovpn-admin and `openvpn-$VERSION` or `openvpn-latest` for openvpn-server
 
-### 2. Building from source
+The admin password is auto-generated on first start. Check the logs:
 
-Requirements. You need Linux with the following components installed:
-- [golang](https://golang.org/doc/install)
-- [packr2](https://github.com/gobuffalo/packr#installation)
-- [nodejs/npm](https://nodejs.org/en/download/package-manager/)
+```bash
+docker compose -f docker-compose.test.yml logs ovpn-admin | grep "Временный пароль"
+```
 
-Commands to execute:
+### Helm (Kubernetes)
+
+```bash
+helm upgrade --install ovpn-admin ./charts/openvpn-admin \
+  -f your-values.yaml \
+  --namespace vpn --create-namespace
+```
+
+See [charts/openvpn-admin/values.yaml](charts/openvpn-admin/values.yaml) for all available options.
+
+### Building from source
+
+Requirements: Go 1.25+, packr2, Node.js 20+
 
 ```bash
 git clone https://github.com/palark/ovpn-admin.git
 cd ovpn-admin
-./bootstrap.sh
-./build.sh
-./ovpn-admin 
+cd frontend && npm install && npm run build && cd ..
+packr2
+go build -o ovpn-admin
+./ovpn-admin
 ```
 
-(Please don't forget to configure all needed params in advance.)
+## Authentication
 
-### 3. Prebuilt binary
+ovpn-admin uses **htpasswd** (Apache format with bcrypt) for admin UI authentication.
 
-You can also download and use prebuilt binaries from the [releases](https://github.com/palark/ovpn-admin/releases/latest) page — just choose a relevant tar.gz file.
+**If `ADMIN_HTPASSWD_FILE` is not set**, a random 16-character password is generated at startup and printed to the log:
 
+```
+level=warning msg="ADMIN_HTPASSWD_FILE не задан. Временный пароль для admin: XxXxXxXxXxXxXxXx"
+```
 
-## Notes
-* This tool uses external calls for `bash`, `coreutils` and `easy-rsa`, thus **Linux systems only are supported** at the moment.
-* To enable additional password authentication, provide `--auth` and `--auth.db="/etc/easyrsa/pki/users.db`" flags and install [openvpn-user](https://github.com/pashcovich/openvpn-user/releases/latest). This tool should be available in your `$PATH` and its binary should be executable (`+x`).
-* If you use `--ccd` and `--ccd.path="/etc/openvpn/ccd"` and plan to use static address setup for users, do not forget to provide `--ovpn.network="172.16.100.0/24"` with valid openvpn-server network.
-* If you want to pass all the traffic generated by the user, you need to edit `ovpn-admin/templates/client.conf.tpl` and uncomment `redirect-gateway def1`.
-* Tested with openvpn-server versions 2.4 and 2.5 and with tls-auth mode only.
-* Not tested with Easy-RSA version > 3.0.8.
-* Status of user connections update every 28 seconds.
-* Master-replica synchronization and additional password authentication do not work with `--storage.backend=kubernetes.secrets` - **WIP**
+**To set a permanent password:**
+
+```bash
+# Create htpasswd file (add -B for bcrypt)
+htpasswd -c -B ./htpasswd admin
+# Add more users if needed
+htpasswd -B ./htpasswd ops_user
+
+# Pass to the app
+export ADMIN_HTPASSWD_FILE=/path/to/htpasswd
+```
+
+**In Kubernetes**, store as a Secret:
+
+```bash
+kubectl create secret generic ovpn-admin-ui-auth \
+  --from-file=htpasswd=./htpasswd -n <namespace>
+```
+
+Then in your `values.yaml`:
+
+```yaml
+ovpnAdmin:
+  adminHtpasswdSecret: "ovpn-admin-ui-auth"
+```
+
+Sessions are signed with HMAC-SHA256 and expire after 12 hours. Logout immediately revokes the token server-side.
 
 ## Usage
 
@@ -84,8 +113,6 @@ You can also download and use prebuilt binaries from the [releases](https://gith
 usage: ovpn-admin [<flags>]
 
 Flags:
-  --help                       show context-sensitive help (try also --help-long and --help-man)
-
   --listen.host="0.0.0.0"      host for ovpn-admin
   (or OVPN_LISTEN_HOST)
 
@@ -93,91 +120,102 @@ Flags:
   (or OVPN_LISTEN_PORT)
 
   --listen.base-url="/"        base URL for ovpn-admin web files
-  (or $OVPN_LISTEN_BASE_URL)
+  (or OVPN_LISTEN_BASE_URL)
 
   --role="master"              server role, master or slave
   (or OVPN_ROLE)
 
-  --master.host="http://127.0.0.1"  
-  (or OVPN_MASTER_HOST)       URL for the master server
+  --master.host="http://127.0.0.1"
+  (or OVPN_MASTER_HOST)        URL for the master server
 
-  --master.basic-auth.user=""  user for master server's Basic Auth
-  (or OVPN_MASTER_USER)
- 
-  --master.basic-auth.password=""  
-  (or OVPN_MASTER_PASSWORD)   password for master server's Basic Auth
+  --master.basic-auth.user=""
+  (or OVPN_MASTER_USER)        user for master server's Basic Auth
 
-  --master.sync-frequency=600  master host data sync frequency in seconds
-  (or OVPN_MASTER_SYNC_FREQUENCY)
+  --master.basic-auth.password=""
+  (or OVPN_MASTER_PASSWORD)    password for master server's Basic Auth
 
-  --master.sync-token=TOKEN    master host data sync security token
-  (or OVPN_MASTER_TOKEN)
+  --master.sync-frequency=600
+  (or OVPN_MASTER_SYNC_FREQUENCY)  master host data sync frequency in seconds
 
-  --ovpn.network="172.16.100.0/24"  
-  (or OVPN_NETWORK)           NETWORK/MASK_PREFIX for OpenVPN server
+  --master.sync-token=TOKEN
+  (or OVPN_MASTER_TOKEN)       master host data sync security token
 
-  --ovpn.server=HOST:PORT:PROTOCOL ...  
-  (or OVPN_SERVER)            HOST:PORT:PROTOCOL for OpenVPN server
-                               can have multiple values
+  --ovpn.network="172.16.100.0/24"
+  (or OVPN_NETWORK)            NETWORK/MASK_PREFIX for OpenVPN server
 
-  --ovpn.server.behindLB       enable if your OpenVPN server is behind Kubernetes
-  (or OVPN_LB)                Service having the LoadBalancer type
+  --ovpn.server=HOST:PORT:PROTOCOL
+  (or OVPN_SERVER)             HOST:PORT:PROTOCOL for OpenVPN server (repeatable)
 
-  --ovpn.service="openvpn-external"  
-  (or OVPN_LB_SERVICE)        the name of Kubernetes Service having the LoadBalancer
-                               type if your OpenVPN server is behind it
+  --ovpn.server.behindLB
+  (or OVPN_LB)                 enable if OpenVPN is behind a K8s LoadBalancer Service
 
-  --mgmt=main=127.0.0.1:8989 ...  
-  (or OVPN_MGMT)              ALIAS=HOST:PORT for OpenVPN server mgmt interface;
-                               can have multiple values
+  --ovpn.service="openvpn-external"
+  (or OVPN_LB_SERVICE)         name of the K8s LoadBalancer Service (repeatable)
 
-  --metrics.path="/metrics"    URL path for exposing collected metrics
-  (or OVPN_METRICS_PATH)
+  --mgmt=main=127.0.0.1:8989
+  (or OVPN_MGMT)               ALIAS=HOST:PORT for OpenVPN mgmt interface (repeatable)
 
-  --easyrsa.path="./easyrsa/"  path to easyrsa dir
-  (or EASYRSA_PATH)
+  --metrics.path="/metrics"
+  (or OVPN_METRICS_PATH)       URL path for Prometheus metrics
 
-  --easyrsa.index-path="./easyrsa/pki/index.txt"  
-  (or OVPN_INDEX_PATH)        path to easyrsa index file
+  --easyrsa.path="./easyrsa"
+  (or EASYRSA_PATH)            path to easyrsa dir
 
-  --ccd                        enable client-config-dir
-  (or OVPN_CCD)
+  --easyrsa.index-path=""
+  (or OVPN_INDEX_PATH)         path to easyrsa index file
 
-  --ccd.path="./ccd"           path to client-config-dir
-  (or OVPN_CCD_PATH)
+  --easyrsa.bin-path="easyrsa"
+  (or EASYRSA_BIN_PATH)        path to easyrsa binary
 
-  --templates.clientconfig-path=""  
-  (or OVPN_TEMPLATES_CC_PATH) path to custom client.conf.tpl
+  --ccd
+  (or OVPN_CCD)                enable client-config-dir
 
-  --templates.ccd-path=""      path to custom ccd.tpl
-  (or OVPN_TEMPLATES_CCD_PATH)
+  --ccd.path="./ccd"
+  (or OVPN_CCD_PATH)           path to client-config-dir
 
-  --auth.password              enable additional password authorization
-  (or OVPN_AUTH)
+  --templates.clientconfig-path=""
+  (or OVPN_TEMPLATES_CC_PATH)  path to custom client.conf.tpl
+
+  --templates.ccd-path=""
+  (or OVPN_TEMPLATES_CCD_PATH) path to custom ccd.tpl
+
+  --auth.password
+  (or OVPN_AUTH)               enable per-user OpenVPN password authentication
 
   --auth.db="./easyrsa/pki/users.db"
-  (or OVPN_AUTH_DB_PATH)      database path for password authorization
+  (or OVPN_AUTH_DB_PATH)       database path for password authentication
 
   --auth.db-init
-  (or OVPN_AUTH_DB_INIT)      enable database init if user db not exists or size is 0
-   
-  --log.level                  set log level: trace, debug, info, warn, error (default info)
-  (or LOG_LEVEL)
-  
-  --log.format                 set log format: text, json (default text)
-  (or LOG_FORMAT)
-  
-  --storage.backend            storage backend: filesystem, kubernetes.secrets (default filesystem)
-  (or STORAGE_BACKEND)
- 
-  --version                    show application version
+  (or OVPN_AUTH_DB_INIT)       initialize auth DB if missing or empty
+
+  --admin.htpasswd-file=""
+  (or ADMIN_HTPASSWD_FILE)     path to htpasswd file for admin UI; if empty, a random password is generated
+
+  --storage.backend="filesystem"
+  (or STORAGE_BACKEND)         storage backend: filesystem or kubernetes.secrets
+
+  --client-cert.expiration-days=3650
+  (or CLIENT_CERT_EXPIRATION_DAYS)  client certificate validity in days
+
+  --log.level="info"
+  (or LOG_LEVEL)               log level: trace, debug, info, warn, error
+
+  --log.format="text"
+  (or LOG_FORMAT)              log format: text or json
 ```
+
+## Notes
+
+* This tool uses external calls to `bash`, `coreutils`, and `easy-rsa` — **Linux only**.
+* For per-user OpenVPN password auth, install [openvpn-user](https://github.com/pashcovich/openvpn-user/releases/latest) and pass `--auth.password`.
+* When using `--ccd`, set `--ovpn.network` to match your OpenVPN server network.
+* Master/slave sync and per-user password auth do not work with `--storage.backend=kubernetes.secrets`.
+* Connected user status refreshes every 28 seconds.
 
 ## Authors
 
 ovpn-admin was originally created in [Flant](https://github.com/flant/) and used internally for years.
 
-In March 2021, it [went public](https://medium.com/flant-com/introducing-ovpn-admin-a-web-interface-to-manage-openvpn-users-d81705ad8f23) and was still developed in Flant.
-Namely, [@vitaliy-sn](https://github.com/vitaliy-sn) created its first version in Python, and [@pashcovich](https://github.com/pashcovich) rewrote it in Go.
+In March 2021 it [went public](https://medium.com/flant-com/introducing-ovpn-admin-a-web-interface-to-manage-openvpn-users-d81705ad8f23). [@vitaliy-sn](https://github.com/vitaliy-sn) created its first version in Python; [@pashcovich](https://github.com/pashcovich) rewrote it in Go.
 
-In November 2024, this project was moved to [Palark](https://github.com/palark/), which is currently responsible for its maintenance and development.
+In November 2024 the project moved to [Palark](https://github.com/palark/), which is currently responsible for maintenance and development.

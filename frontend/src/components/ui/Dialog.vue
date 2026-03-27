@@ -2,7 +2,7 @@
 <script setup>
 import { onMounted, onUnmounted } from 'vue'
 
-const props = defineProps({ open: Boolean, title: String, description: String })
+const props = defineProps({ open: Boolean, title: String, description: String, size: { type: String, default: 'md' } })
 const emit = defineEmits(['close'])
 
 function onKeydown(e) {
@@ -23,7 +23,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
           role="dialog"
           aria-modal="true"
           :aria-labelledby="title ? 'dialog-title' : undefined"
-          class="relative z-50 w-full max-w-lg mx-4 bg-card text-card-foreground rounded-lg shadow-2xl border border-border"
+          :class="['relative z-50 w-full mx-4 bg-card text-card-foreground rounded-lg shadow-2xl border border-border', size === 'lg' ? 'max-w-3xl' : size === 'xl' ? 'max-w-5xl' : 'max-w-lg']"
         >
           <div class="flex flex-col space-y-1.5 p-6 border-b border-border">
             <h2 id="dialog-title" class="text-lg font-semibold leading-none">{{ title }}</h2>

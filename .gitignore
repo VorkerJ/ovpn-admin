@@ -19,3 +19,12 @@ packrd/
 *.ntvs*
 *.njsproj
 *.sln
+
+# Compiled binary
+/ovpn-admin
+
+# Test screenshots in root (moved to docs/)
+/[0-9]*.png
+
+# Playwright MCP artifacts
+.playwright-mcp/

@@ -1,57 +1,84 @@
 ---
+# ── Admin UI service ────────────────────────────────────────────────────────
 apiVersion: v1
 kind: Service
 metadata:
-  name: ovpn-admin
+  name: {{ include "openvpn-admin.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openvpn-admin.labels" . | nindent 4 }}
 spec:
-  clusterIP: None
+  type: {{ .Values.service.type }}
   ports:
-  - name: http
-    port: 8000
-    protocol: TCP
-    targetPort: 8000
-  selector:
-    app: openvpn
----
-{{- if hasKey .Values.openvpn "inlet" }}
-
-  {{- if eq .Values.openvpn.inlet "LoadBalancer" }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: openvpn-external
-spec:
-  externalTrafficPolicy: Local
-  type: LoadBalancer
-  ports:
-    - name: openvpn-tcp
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.ovpnAdmin.port }}
       protocol: TCP
-      port: {{ .Values.openvpn.externalPort | default 1194 }}
-      targetPort: openvpn-tcp
   selector:
-    app: openvpn
-  {{- else if eq .Values.openvpn.inlet "ExternalIP" }}
+    {{- include "openvpn-admin.selectorLabels" . | nindent 4 }}
+
+{{- if eq .Values.openvpn.inlet "LoadBalancer" }}
 ---
+# ── OpenVPN external LoadBalancer ───────────────────────────────────────────
 apiVersion: v1
 kind: Service
 metadata:
-  name: openvpn-external
+  name: {{ include "openvpn-admin.fullname" . }}-openvpn
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openvpn-admin.labels" . | nindent 4 }}
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+    - name: openvpn
+      port: {{ .Values.openvpn.externalPort | default .Values.openvpn.port }}
+      targetPort: {{ .Values.openvpn.port }}
+      protocol: {{ .Values.openvpn.proto | upper }}
+  selector:
+    {{- include "openvpn-admin.selectorLabels" . | nindent 4 }}
+{{- else if eq .Values.openvpn.inlet "ExternalIP" }}
+---
+# ── OpenVPN external ExternalIP ─────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "openvpn-admin.fullname" . }}-openvpn
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openvpn-admin.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   externalIPs:
-  - {{ .Values.openvpn.externalIP }}
+    - {{ required "openvpn.externalIP is required for ExternalIP inlet" .Values.openvpn.externalIP }}
   ports:
-  - name: openvpn-tcp
-    port: {{ .Values.openvpn.externalPort | default 1194 }}
-    protocol: TCP
-    targetPort: openvpn-tcp
+    - name: openvpn
+      port: {{ .Values.openvpn.externalPort | default .Values.openvpn.port }}
+      targetPort: {{ .Values.openvpn.port }}
+      protocol: {{ .Values.openvpn.proto | upper }}
   selector:
-    app: openvpn
-  {{- else if eq .Values.openvpn.inlet "HostPort" }}
----
-  {{- else }}
-    {{- cat "Unsupported inlet type" .inlet | fail }}
-  {{- end }}
+    {{- include "openvpn-admin.selectorLabels" . | nindent 4 }}
+{{- end }}
 
+{{- if .Values.serviceMonitor.enabled }}
+---
+# ── ServiceMonitor for Prometheus Operator ──────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "openvpn-admin.fullname" . }}
+  namespace: {{ .Values.serviceMonitor.namespace }}
+  labels:
+    {{- include "openvpn-admin.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "openvpn-admin.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: http
+      path: {{ .Values.ovpnAdmin.metricsPath }}
+      interval: {{ .Values.serviceMonitor.interval }}
 {{- end }}

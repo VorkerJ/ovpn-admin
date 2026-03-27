@@ -84,6 +84,7 @@ var (
 	logFormat                = kingpin.Flag("log.format", "set log format: text, json (default text)").Default("text").Envar("LOG_FORMAT").String()
 	storageBackend           = kingpin.Flag("storage.backend", "storage backend: filesystem, kubernetes.secrets (default filesystem)").Default("filesystem").Envar("STORAGE_BACKEND").String()
 	clientCertExpirationDays = kingpin.Flag("client-cert.expiration-days", "Expiration period of OpenVPN client certificates in days, the period will shrink automatically to the CA expiration period").Default("3650").Envar("CLIENT_CERT_EXPIRATION_DAYS").String()
+	adminHtpasswdFile = kingpin.Flag("admin.htpasswd-file", "path to htpasswd file with admin UI credentials; if empty, a random password is generated").Default("").Envar("ADMIN_HTPASSWD_FILE").String()
 
 	certsArchivePath = "/tmp/" + certsArchiveFileName
 	ccdArchivePath   = "/tmp/" + ccdArchiveFileName
@@ -503,6 +504,8 @@ func main() {
 	log.SetLevel(logLevels[*logLevel])
 	log.SetFormatter(logFormats[*logFormat])
 
+	initAuth()
+
 	if *storageBackend == "kubernetes.secrets" {
 		err := app.run()
 		if err != nil {
@@ -572,24 +575,31 @@ func main() {
 	static := CacheControlWrapper(http.FileServer(staticBox))
 
 	http.Handle(*listenBaseUrl, http.StripPrefix(strings.TrimRight(*listenBaseUrl, "/"), static))
-	http.HandleFunc(*listenBaseUrl+"api/server/settings", ovpnAdmin.serverSettingsHandler)
-	http.HandleFunc(*listenBaseUrl+"api/users/list", ovpnAdmin.userListHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/create", ovpnAdmin.userCreateHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/change-password", ovpnAdmin.userChangePasswordHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/rotate", ovpnAdmin.userRotateHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/delete", ovpnAdmin.userDeleteHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/revoke", ovpnAdmin.userRevokeHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", ovpnAdmin.userUnrevokeHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/config/show", ovpnAdmin.userShowConfigHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", ovpnAdmin.userDisconnectHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/statistic", ovpnAdmin.userStatisticHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/ccd", ovpnAdmin.userShowCcdHandler)
-	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", ovpnAdmin.userApplyCcdHandler)
 
-	http.HandleFunc(*listenBaseUrl+"api/sync/last/try", ovpnAdmin.lastSyncTimeHandler)
-	http.HandleFunc(*listenBaseUrl+"api/sync/last/successful", ovpnAdmin.lastSuccessfulSyncTimeHandler)
-	http.HandleFunc(*listenBaseUrl+downloadCertsApiUrl, ovpnAdmin.downloadCertsHandler)
-	http.HandleFunc(*listenBaseUrl+downloadCcdApiUrl, ovpnAdmin.downloadCcdHandler)
+	// Public auth endpoints
+	http.HandleFunc(*listenBaseUrl+"api/login", ovpnAdmin.loginHandler)
+	http.HandleFunc(*listenBaseUrl+"api/logout", ovpnAdmin.requireAuth(ovpnAdmin.logoutHandler))
+	http.HandleFunc(*listenBaseUrl+"api/auth/check", ovpnAdmin.requireAuth(ovpnAdmin.authCheckHandler))
+
+	// Protected API endpoints
+	http.HandleFunc(*listenBaseUrl+"api/server/settings", ovpnAdmin.requireAuth(ovpnAdmin.serverSettingsHandler))
+	http.HandleFunc(*listenBaseUrl+"api/users/list", ovpnAdmin.requireAuth(ovpnAdmin.userListHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/create", ovpnAdmin.requireAuth(ovpnAdmin.userCreateHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/change-password", ovpnAdmin.requireAuth(ovpnAdmin.userChangePasswordHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/rotate", ovpnAdmin.requireAuth(ovpnAdmin.userRotateHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/delete", ovpnAdmin.requireAuth(ovpnAdmin.userDeleteHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/revoke", ovpnAdmin.requireAuth(ovpnAdmin.userRevokeHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", ovpnAdmin.requireAuth(ovpnAdmin.userUnrevokeHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/config/show", ovpnAdmin.requireAuth(ovpnAdmin.userShowConfigHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", ovpnAdmin.requireAuth(ovpnAdmin.userDisconnectHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/statistic", ovpnAdmin.requireAuth(ovpnAdmin.userStatisticHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd", ovpnAdmin.requireAuth(ovpnAdmin.userShowCcdHandler))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", ovpnAdmin.requireAuth(ovpnAdmin.userApplyCcdHandler))
+
+	http.HandleFunc(*listenBaseUrl+"api/sync/last/try", ovpnAdmin.requireAuth(ovpnAdmin.lastSyncTimeHandler))
+	http.HandleFunc(*listenBaseUrl+"api/sync/last/successful", ovpnAdmin.requireAuth(ovpnAdmin.lastSuccessfulSyncTimeHandler))
+	http.HandleFunc(*listenBaseUrl+downloadCertsApiUrl, ovpnAdmin.requireAuth(ovpnAdmin.downloadCertsHandler))
+	http.HandleFunc(*listenBaseUrl+downloadCcdApiUrl, ovpnAdmin.requireAuth(ovpnAdmin.downloadCcdHandler))
 
 	http.Handle(*metricsPath, promhttp.HandlerFor(ovpnAdmin.promRegistry, promhttp.HandlerOpts{}))
 	http.HandleFunc(*listenBaseUrl+"ping", func(w http.ResponseWriter, r *http.Request) {

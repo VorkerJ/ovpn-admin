@@ -11,12 +11,42 @@ import DeleteUserModal from '@/components/modals/DeleteUserModal.vue'
 import RotateUserModal from '@/components/modals/RotateUserModal.vue'
 import ChangePasswordModal from '@/components/modals/ChangePasswordModal.vue'
 import CcdModal from '@/components/modals/CcdModal.vue'
+import LoginPage from '@/components/LoginPage.vue'
 
 import {
   fetchUsers, fetchServerSettings, fetchLastSync,
   createUser, revokeUser, unrevokeUser, rotateUser, deleteUser,
   changePassword, fetchUserConfig, fetchUserCcd, applyCcd
 } from '@/api.js'
+
+// ── Auth ───────────────────────────────────────────────────────────
+const authenticated = ref(false)
+const authChecked = ref(false)
+
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/auth/check')
+    authenticated.value = res.ok
+  } catch {
+    authenticated.value = false
+  }
+  authChecked.value = true
+  if (authenticated.value) {
+    loadUsers()
+    loadSettings()
+  }
+}
+
+async function handleLogout() {
+  await fetch('/api/logout', { method: 'POST' })
+  authenticated.value = false
+}
+
+function handleLogin() {
+  authenticated.value = true
+  loadUsers()
+  loadSettings()
+}
 
 // ── State ──────────────────────────────────────────────────────────
 const users = ref([])
@@ -75,8 +105,7 @@ async function loadSettings() {
 }
 
 onMounted(() => {
-  loadUsers()
-  loadSettings()
+  checkAuth()
 })
 
 // ── Actions ────────────────────────────────────────────────────────
@@ -165,10 +194,14 @@ async function submitCcd(ccd) {
 
 <template>
   <div class="min-h-screen bg-background">
+    <LoginPage v-if="authChecked && !authenticated" @login="handleLogin" />
+
+    <template v-else-if="authenticated">
     <AppHeader
       :server-role="serverRole"
       :last-sync="lastSync"
       @add-user="openModal('addUser')"
+      @logout="handleLogout"
     />
 
     <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
@@ -236,6 +269,7 @@ async function submitCcd(ccd) {
 
     <!-- Toast notifications -->
     <Toast />
+    </template>
   </div>
 </template>
 
