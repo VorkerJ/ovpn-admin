@@ -1018,7 +1018,7 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 	defer oAdmin.createUserMutex.Unlock()
 
 	if checkUserExist(username) {
-		ucErr = fmt.Sprintf("User \"%s\" already exists\n", username)
+		ucErr = fmt.Sprintf("Пользователь \"%s\" уже существует\n", username)
 		log.Debugf("userCreate: checkUserExist():  %s", ucErr)
 		return false, ucErr
 	}

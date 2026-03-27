@@ -33,14 +33,14 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
     >
       ⬇ Конфиг
     </Button>
-    <Button
+    <button
       v-else-if="isRevoked() && isMaster()"
-      size="sm"
-      variant="outline"
+      type="button"
+      class="inline-flex items-center gap-1 h-7 px-3 text-xs font-medium rounded-md border border-border bg-background text-foreground hover:bg-accent transition-colors"
       @click="emit('unrevoke', user.Identity)"
     >
       ↩ Восстановить
-    </Button>
+    </button>
 
     <!-- Меню ··· -->
     <DropdownMenu v-if="isMaster() || (isActive() && hasModule('ccd'))">
@@ -61,6 +61,14 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           ⚠ Отозвать
         </button>
         <button
+          v-if="isMaster() && hasModule('core')"
+          type="button"
+          class="w-full flex items-center gap-2 px-3 py-2 text-sm text-orange-600 dark:text-orange-400 hover:bg-accent cursor-pointer"
+          @click="emit('rotate', user.Identity)"
+        >
+          ↻ Ротация
+        </button>
+        <button
           v-if="hasModule('ccd')"
           type="button"
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-violet-600 dark:text-violet-400 hover:bg-accent cursor-pointer"
@@ -75,6 +83,15 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           @click="emit('change-password', user.Identity)"
         >
           🔑 Сменить пароль
+        </button>
+        <div v-if="isMaster()" class="h-px bg-border mx-2" />
+        <button
+          v-if="isMaster() && hasModule('core')"
+          type="button"
+          class="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-accent cursor-pointer"
+          @click="emit('delete', user.Identity)"
+        >
+          ✕ Удалить
         </button>
       </template>
 

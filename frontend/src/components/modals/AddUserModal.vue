@@ -1,6 +1,6 @@
 <!-- frontend/src/components/modals/AddUserModal.vue -->
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import Dialog from '@/components/ui/Dialog.vue'
 import Input from '@/components/ui/Input.vue'
 import Button from '@/components/ui/Button.vue'
@@ -20,9 +20,14 @@ function submit() {
   emit('submit', { username: username.value, password: password.value })
 }
 
+watch(() => props.open, (val) => {
+  if (!val) {
+    username.value = ''
+    password.value = ''
+  }
+})
+
 function onClose() {
-  username.value = ''
-  password.value = ''
   emit('close')
 }
 </script>
