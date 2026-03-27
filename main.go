@@ -271,14 +271,14 @@ func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	usersList, _ := json.Marshal(oAdmin.clients)
-	fmt.Fprintf(w, "%s", usersList)
+	fmt.Fprint(w, string(usersList))
 }
 
 func (oAdmin *OvpnAdmin) userStatisticHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	_ = r.ParseForm()
 	userStatistic, _ := json.Marshal(oAdmin.getUserStatistic(r.FormValue("username")))
-	fmt.Fprintf(w, "%s", userStatistic)
+	fmt.Fprint(w, string(userStatistic))
 }
 
 func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Request) {
@@ -293,7 +293,7 @@ func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Reques
 	if userCreated {
 		oAdmin.clients = oAdmin.usersList()
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, userCreateStatus)
+		fmt.Fprint(w, userCreateStatus)
 		return
 	} else {
 		http.Error(w, userCreateStatus, http.StatusUnprocessableEntity)
@@ -311,7 +311,7 @@ func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	} else {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, msg)
+		fmt.Fprint(w, msg)
 	}
 }
 
@@ -327,7 +327,7 @@ func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	} else {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, msg)
+		fmt.Fprint(w, msg)
 	}
 }
 
@@ -343,7 +343,7 @@ func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	} else {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, msg)
+		fmt.Fprint(w, msg)
 	}
 }
 
@@ -359,7 +359,7 @@ func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	} else {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, msg)
+		fmt.Fprint(w, msg)
 	}
 }
 
@@ -423,7 +423,7 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 
 	if ccdApplied {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, applyStatus)
+		fmt.Fprint(w, applyStatus)
 		return
 	} else {
 		http.Error(w, applyStatus, http.StatusUnprocessableEntity)

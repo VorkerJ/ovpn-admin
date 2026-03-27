@@ -299,7 +299,7 @@ func extractFromArchive(archive, path string) error {
 
 		default:
 			log.Fatalf(
-				"extractFromArchive: uknown type: %s in %s", header.Typeflag, header.Name)
+				"extractFromArchive: uknown type: %d in %s", header.Typeflag, header.Name)
 		}
 	}
 	return nil

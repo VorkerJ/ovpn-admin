@@ -1,0 +1,24 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+  settings:
+    staticcheck:
+      checks:
+        - "all"
+        - "-SA1019"  # deprecated ioutil — lots of it in legacy code
+        - "-ST1003"  # naming: ApiUrl vs APIUrl — legacy code
+        - "-ST1005"  # error string capitalization — intentional Russian strings
+        - "-ST1008"  # error as last return value — changing breaks all callers
+        - "-S1005"   # blank identifier in range — preference
+        - "-S1006"   # for true {} style — preference
+        - "-S1008"   # simplify bool return — preference
+        - "-S1028"   # errors.New(fmt.Sprintf) — preference
+        - "-S1039"   # unnecessary fmt.Sprintf in errors.New — preference
+        - "-QF1002"  # tagged switch — preference
+        - "-QF1004"  # strings.ReplaceAll — preference
+        - "-QF1012"  # fmt.Fprintf vs Write+Sprintf — preference
+        - "-SA4006"  # unused value after reassignment — legacy code
