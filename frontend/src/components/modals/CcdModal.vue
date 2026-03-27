@@ -115,9 +115,9 @@ function submitCcd() {
             </tr>
             <!-- Add row (только master) -->
             <tr v-if="isMaster()" class="border-t border-border bg-muted/20">
-              <td class="px-3 py-2"><Input v-model="newRoute.Address" placeholder="10.0.0.0" class="h-7 text-xs" /></td>
-              <td class="px-3 py-2"><Input v-model="newRoute.Mask" placeholder="255.255.255.0" class="h-7 text-xs" /></td>
-              <td class="px-3 py-2"><Input v-model="newRoute.Description" placeholder="Описание" class="h-7 text-xs" /></td>
+              <td class="px-3 py-2"><Input v-model="newRoute.Address" placeholder="10.0.0.0" /></td>
+              <td class="px-3 py-2"><Input v-model="newRoute.Mask" placeholder="255.255.255.0" /></td>
+              <td class="px-3 py-2"><Input v-model="newRoute.Description" placeholder="Описание" /></td>
               <td class="px-3 py-2 text-right w-32"><Button size="sm" variant="success" @click="addRoute" class="whitespace-nowrap">+ Добавить</Button></td>
             </tr>
           </tbody>
