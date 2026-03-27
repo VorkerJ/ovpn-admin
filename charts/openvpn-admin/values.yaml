@@ -7,8 +7,9 @@
 # ----------------------------------------------------------------
 ovpnAdmin:
   image:
-    repository: ghcr.io/palark/ovpn-admin/ovpn-admin
-    tag: latest
+    repository: ghcr.io/vorkerj/ovpn-admin/ovpn-admin
+    # tag: defaults to .Chart.AppVersion when empty
+    tag: ""
     pullPolicy: IfNotPresent
 
   port: 8080
@@ -36,8 +37,9 @@ ovpnAdmin:
 # ----------------------------------------------------------------
 openvpn:
   image:
-    repository: ghcr.io/palark/ovpn-admin/openvpn
-    tag: latest
+    repository: ghcr.io/vorkerj/ovpn-admin/openvpn
+    # tag: defaults to .Chart.AppVersion when empty
+    tag: ""
     pullPolicy: IfNotPresent
 
   # External hostname or IP used in generated .ovpn client configs

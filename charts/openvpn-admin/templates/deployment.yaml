@@ -49,7 +49,7 @@ spec:
 
         # ── OpenVPN ────────────────────────────────────────────────────
         - name: openvpn
-          image: "{{ .Values.openvpn.image.repository }}:{{ .Values.openvpn.image.tag }}"
+          image: "{{ .Values.openvpn.image.repository }}:{{ .Values.openvpn.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.openvpn.image.pullPolicy }}
           command:
             - sh
@@ -89,7 +89,7 @@ spec:
 
         # ── ovpn-admin UI ──────────────────────────────────────────────
         - name: ovpn-admin
-          image: "{{ .Values.ovpnAdmin.image.repository }}:{{ .Values.ovpnAdmin.image.tag }}"
+          image: "{{ .Values.ovpnAdmin.image.repository }}:{{ .Values.ovpnAdmin.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.ovpnAdmin.image.pullPolicy }}
           command: ["/app/ovpn-admin"]
           args:
