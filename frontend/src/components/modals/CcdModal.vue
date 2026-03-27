@@ -88,7 +88,7 @@ function submitCcd() {
               <th class="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Адрес</th>
               <th class="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Маска</th>
               <th class="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Описание</th>
-              <th v-if="isMaster()" class="px-3 py-2 w-20" />
+              <th v-if="isMaster()" class="px-3 py-2 w-32" />
             </tr>
           </thead>
           <tbody>
@@ -118,7 +118,7 @@ function submitCcd() {
               <td class="px-3 py-2"><Input v-model="newRoute.Address" placeholder="10.0.0.0" class="h-7 text-xs" /></td>
               <td class="px-3 py-2"><Input v-model="newRoute.Mask" placeholder="255.255.255.0" class="h-7 text-xs" /></td>
               <td class="px-3 py-2"><Input v-model="newRoute.Description" placeholder="Описание" class="h-7 text-xs" /></td>
-              <td class="px-3 py-2 text-right"><Button size="sm" variant="success" @click="addRoute">+ Добавить</Button></td>
+              <td class="px-3 py-2 text-right w-32"><Button size="sm" variant="success" @click="addRoute" class="whitespace-nowrap">+ Добавить</Button></td>
             </tr>
           </tbody>
         </table>
