@@ -31,37 +31,37 @@ Managing users (dark theme):
 
 ## Installation
 
+### Helm (Kubernetes) — recommended
+
+```bash
+helm repo add ovpn-admin https://VorkerJ.github.io/ovpn-admin
+helm repo update
+helm upgrade --install ovpn-admin ovpn-admin/openvpn-admin \
+  --namespace vpn --create-namespace
+```
+
+See [charts/openvpn-admin/values.yaml](charts/openvpn-admin/values.yaml) for all available options.
+
 ### Docker (quick start)
 
 ```bash
-git clone https://github.com/palark/ovpn-admin.git
+git clone https://github.com/VorkerJ/ovpn-admin.git
 cd ovpn-admin
-docker compose -f docker-compose.test.yml build --no-cache
-docker compose -f docker-compose.test.yml up -d
+docker compose up -d
 ```
 
 The admin password is auto-generated on first start. Check the logs:
 
 ```bash
-docker compose -f docker-compose.test.yml logs ovpn-admin | grep "Временный пароль"
+docker compose logs ovpn-admin | grep "Временный пароль"
 ```
-
-### Helm (Kubernetes)
-
-```bash
-helm upgrade --install ovpn-admin ./charts/openvpn-admin \
-  -f your-values.yaml \
-  --namespace vpn --create-namespace
-```
-
-See [charts/openvpn-admin/values.yaml](charts/openvpn-admin/values.yaml) for all available options.
 
 ### Building from source
 
 Requirements: Go 1.25+, packr2, Node.js 20+
 
 ```bash
-git clone https://github.com/palark/ovpn-admin.git
+git clone https://github.com/VorkerJ/ovpn-admin.git
 cd ovpn-admin
 cd frontend && npm install && npm run build && cd ..
 packr2
@@ -218,4 +218,6 @@ ovpn-admin was originally created in [Flant](https://github.com/flant/) and used
 
 In March 2021 it [went public](https://medium.com/flant-com/introducing-ovpn-admin-a-web-interface-to-manage-openvpn-users-d81705ad8f23). [@vitaliy-sn](https://github.com/vitaliy-sn) created its first version in Python; [@pashcovich](https://github.com/pashcovich) rewrote it in Go.
 
-In November 2024 the project moved to [Palark](https://github.com/palark/), which is currently responsible for maintenance and development.
+In November 2024 the project moved to [Palark](https://github.com/palark/).
+
+This fork is maintained by [@VorkerJ](https://github.com/VorkerJ) with added authentication support and Kubernetes-native PKI storage.
