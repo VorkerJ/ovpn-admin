@@ -382,6 +382,7 @@ jobs:
             <div class="logo">&#x1F512; <span>ovpn-admin</span></div>
             <div class="tagline">Simple web UI to manage OpenVPN users, certificates &amp; routes in Kubernetes</div>
             <div class="badges">
+              <img src="https://img.shields.io/badge/Made%20with-Claude-8A2BE2?logo=anthropic" alt="Made with Claude" />
               <a href="REPO_URL_PLACEHOLDER/actions/workflows/ci.yml"><img src="https://github.com/VorkerJ/ovpn-admin/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
               <a href="REPO_URL_PLACEHOLDER/releases"><img src="https://img.shields.io/github/v/release/VorkerJ/ovpn-admin" alt="Release" /></a>
               <a href="https://github.com/VorkerJ/ovpn-admin/pkgs/container/ovpn-admin%2Fovpn-admin"><img src="https://img.shields.io/badge/ghcr.io-ovpn--admin-blue?logo=docker" alt="Docker" /></a>

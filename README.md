@@ -1,5 +1,6 @@
 # ovpn-admin
 
+[![Made with Claude](https://img.shields.io/badge/Made%20with-Claude-8A2BE2?logo=anthropic)](https://claude.ai)
 [![CI](https://github.com/VorkerJ/ovpn-admin/actions/workflows/ci.yml/badge.svg)](https://github.com/VorkerJ/ovpn-admin/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/VorkerJ/ovpn-admin)](https://github.com/VorkerJ/ovpn-admin/releases)
 [![Docker Image](https://img.shields.io/badge/ghcr.io-ovpn--admin-blue?logo=docker)](https://github.com/VorkerJ/ovpn-admin/pkgs/container/ovpn-admin%2Fovpn-admin)
