@@ -13,7 +13,7 @@ keywords:
   - vpn
   - ovpn-admin
 sources:
-  - https://github.com/palark/ovpn-admin
+  - https://github.com/VorkerJ/ovpn-admin
 maintainers:
-  - name: palark
-    url: https://github.com/palark
+  - name: VorkerJ
+    url: https://github.com/VorkerJ
