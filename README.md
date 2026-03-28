@@ -1,6 +1,12 @@
 # ovpn-admin
 
-Simple web UI to manage OpenVPN users, their certificates & routes in Linux. Backend is written in Go, frontend is built with Vue 3 + Tailwind CSS.
+[![CI](https://github.com/VorkerJ/ovpn-admin/actions/workflows/ci.yml/badge.svg)](https://github.com/VorkerJ/ovpn-admin/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/VorkerJ/ovpn-admin)](https://github.com/VorkerJ/ovpn-admin/releases)
+[![Docker Image](https://img.shields.io/badge/ghcr.io-ovpn--admin-blue?logo=docker)](https://github.com/VorkerJ/ovpn-admin/pkgs/container/ovpn-admin%2Fovpn-admin)
+[![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev/)
+[![License](https://img.shields.io/github/license/VorkerJ/ovpn-admin)](LICENSE)
+
+Simple web UI to manage OpenVPN users, their certificates & routes in Kubernetes. Backend is written in Go, frontend is built with Vue 3 + Tailwind CSS.
 
 ## Features
 
