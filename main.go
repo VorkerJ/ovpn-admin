@@ -85,6 +85,7 @@ var (
 	storageBackend           = kingpin.Flag("storage.backend", "storage backend: filesystem, kubernetes.secrets (default filesystem)").Default("filesystem").Envar("STORAGE_BACKEND").String()
 	clientCertExpirationDays = kingpin.Flag("client-cert.expiration-days", "Expiration period of OpenVPN client certificates in days, the period will shrink automatically to the CA expiration period").Default("3650").Envar("CLIENT_CERT_EXPIRATION_DAYS").String()
 	adminHtpasswdFile = kingpin.Flag("admin.htpasswd-file", "path to htpasswd file with admin UI credentials; if empty, a random password is generated").Default("").Envar("ADMIN_HTPASSWD_FILE").String()
+	commonRoutesEnabled = kingpin.Flag("common-routes", "enable common routes feature").Default("true").Envar("OVPN_COMMON_ROUTES").Bool()
 
 	certsArchivePath = "/tmp/" + certsArchiveFileName
 	ccdArchivePath   = "/tmp/" + ccdArchiveFileName
@@ -572,6 +573,35 @@ func main() {
 		ovpnAdmin.modules = append(ovpnAdmin.modules, "ccd")
 	}
 
+	if *commonRoutesEnabled {
+		ovpnAdmin.modules = append(ovpnAdmin.modules, "common-routes")
+
+		// Use ccdDir as the config location for filesystem backend (same dir as CCD files)
+		ovpnAdmin.commonRoutesPath = *ccdDir + "/_common_routes.json"
+
+		var initial CommonRoutesConfig
+		if *storageBackend == "kubernetes.secrets" {
+			data, err := app.secretGetCommonRoutes()
+			if err != nil {
+				log.Warnf("loading common routes from secret: %v (starting with empty)", err)
+			}
+			if c, err := deserializeCommonRoutes(data); err != nil {
+				log.Warnf("deserializing common routes: %v (starting with empty)", err)
+			} else {
+				initial = c
+			}
+		} else {
+			if c, err := loadCommonRoutesFromFile(ovpnAdmin.commonRoutesPath); err != nil {
+				log.Warnf("loading common routes from %s: %v (starting with empty)", ovpnAdmin.commonRoutesPath, err)
+			} else {
+				initial = c
+			}
+		}
+		ovpnAdmin.commonRoutes.replace(initial)
+
+		go ovpnAdmin.runCommonRoutesScheduler()
+	}
+
 	if ovpnAdmin.role == "slave" {
 		ovpnAdmin.syncDataFromMaster()
 		go ovpnAdmin.syncWithMaster()
@@ -603,6 +633,9 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/user/statistic", ovpnAdmin.requireAuth(ovpnAdmin.userStatisticHandler))
 	http.HandleFunc(*listenBaseUrl+"api/user/ccd", ovpnAdmin.requireAuth(ovpnAdmin.userShowCcdHandler))
 	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", ovpnAdmin.requireAuth(ovpnAdmin.userApplyCcdHandler))
+	http.HandleFunc(*listenBaseUrl+"api/common-routes", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesHandler))
+	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesRefreshHandler))
+	http.HandleFunc(*listenBaseUrl+"api/common-routes/", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesItemHandler))
 
 	http.HandleFunc(*listenBaseUrl+"api/sync/last/try", ovpnAdmin.requireAuth(ovpnAdmin.lastSyncTimeHandler))
 	http.HandleFunc(*listenBaseUrl+"api/sync/last/successful", ovpnAdmin.requireAuth(ovpnAdmin.lastSuccessfulSyncTimeHandler))
@@ -856,6 +889,41 @@ func (oAdmin *OvpnAdmin) rerenderAllCcds(commonExpanded []ccdCommonRoute) {
 		count++
 	}
 	log.Infof("rerenderAllCcds: rerendered %d CCDs in %s", count, time.Since(start))
+}
+
+func (oAdmin *OvpnAdmin) runCommonRoutesScheduler() {
+	ctx := context.Background()
+
+	runOnce := func() {
+		current := oAdmin.commonRoutes.snapshot()
+		hasDomain := false
+		for _, r := range current.Routes {
+			if r.Kind == "domain" {
+				hasDomain = true
+				break
+			}
+		}
+		if !hasDomain {
+			return
+		}
+		updated, changed, okCount, failed := refreshAllDomains(ctx, current, time.Now())
+		oAdmin.commonRoutes.replace(updated)
+		if err := oAdmin.persistCommonRoutes(updated); err != nil {
+			log.Errorf("scheduler persist: %v", err)
+		}
+		log.Infof("common-routes scheduler: resolved=%d failed=%d changed=%v", okCount, failed, changed)
+		if changed {
+			oAdmin.rerenderAllCcds(expandCommonRoutes(updated))
+		}
+	}
+
+	runOnce()
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		runOnce()
+	}
 }
 
 func validateCcd(ccd Ccd) (bool, string) {
