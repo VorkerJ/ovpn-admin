@@ -63,10 +63,53 @@ func validateCommonRoute(e CommonRouteEntry) error {
 	}
 }
 
-// Concurrency primitives — будут использоваться в следующих задачах.
+// commonRoutesStore — потокобезопасный держатель CommonRoutesConfig.
 type commonRoutesStore struct {
 	mu  sync.RWMutex
 	cfg CommonRoutesConfig
+}
+
+// snapshot возвращает deep-copy конфига, безопасную для чтения без блокировки.
+func (s *commonRoutesStore) snapshot() CommonRoutesConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := CommonRoutesConfig{Routes: make([]CommonRouteEntry, len(s.cfg.Routes))}
+	for i, r := range s.cfg.Routes {
+		c := r
+		if r.ResolvedIPs != nil {
+			c.ResolvedIPs = append([]string(nil), r.ResolvedIPs...)
+		}
+		out.Routes[i] = c
+	}
+	return out
+}
+
+// replace заменяет конфиг целиком под write-lock'ом.
+func (s *commonRoutesStore) replace(cfg CommonRoutesConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cfg.Routes == nil {
+		cfg.Routes = []CommonRouteEntry{}
+	}
+	s.cfg = cfg
+}
+
+// withWrite берёт write-lock, передаёт указатель на cfg в callback (внутри — модификации).
+// Возвращает копию изменённого конфига, чтобы можно было сохранить наружу без удержания lock'а.
+func (s *commonRoutesStore) withWrite(fn func(cfg *CommonRoutesConfig) error) (CommonRoutesConfig, error) {
+	s.mu.Lock()
+	if err := fn(&s.cfg); err != nil {
+		s.mu.Unlock()
+		return CommonRoutesConfig{}, err
+	}
+	cfgCopy := s.cfg
+	s.mu.Unlock()
+	return cfgCopy, nil
+}
+
+// newCommonRoutesStoreForTesting — конструктор для тестов; в проде создаётся в main.go.
+func newCommonRoutesStoreForTesting() *commonRoutesStore {
+	return &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}
 }
 
 // File-level lock на запись CCD-файлов (используется в задаче с rerenderAllCcds).

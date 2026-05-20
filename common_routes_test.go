@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -160,5 +161,37 @@ func TestCommonRoutesDeserialize_EmptyInput(t *testing.T) {
 	}
 	if len(cfg.Routes) != 0 {
 		t.Fatalf("expected empty, got %+v", cfg)
+	}
+}
+
+func TestCommonRoutesStore_ConcurrentReadWrite(t *testing.T) {
+	store := newCommonRoutesStoreForTesting()
+	store.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "a", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"}}})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = store.snapshot()
+		}()
+		go func() {
+			defer wg.Done()
+			store.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "b", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"}}})
+		}()
+	}
+	wg.Wait()
+}
+
+func TestCommonRoutesStore_SnapshotIsCopy(t *testing.T) {
+	store := newCommonRoutesStoreForTesting()
+	store.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "a", Kind: "domain", Domain: "x.io", ResolvedIPs: []string{"1.1.1.1"}}}})
+
+	snap := store.snapshot()
+	snap.Routes[0].ResolvedIPs[0] = "9.9.9.9"
+
+	again := store.snapshot()
+	if again.Routes[0].ResolvedIPs[0] == "9.9.9.9" {
+		t.Fatal("snapshot must not share underlying slice")
 	}
 }
