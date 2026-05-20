@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"regexp"
 	"net"
+	"regexp"
 	"sync"
 )
 
