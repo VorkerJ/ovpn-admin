@@ -3,8 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/gobuffalo/packr/v2"
 )
 
 func TestValidateCommonRoute_IP_OK(t *testing.T) {
@@ -286,5 +289,47 @@ push "route 8.8.8.8 255.255.255.255" # dns
 		if r.Address == "142.250.1.1" || r.Address == "142.250.1.2" {
 			t.Errorf("__common__ route leaked into user routes: %+v", r)
 		}
+	}
+}
+
+func TestModifyCcd_RendersCommonRoutes(t *testing.T) {
+	dir := t.TempDir()
+	originalCcdDir := *ccdDir
+	tmp := dir
+	ccdDir = &tmp
+	defer func() { ccdDir = &originalCcdDir }()
+
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	app := &OvpnAdmin{}
+	app.templates = packr.New("template", "./templates")
+
+	ccd := Ccd{
+		User:          "bob",
+		ClientAddress: "dynamic",
+		CustomRoutes:  []ccdRoute{{Address: "10.0.0.0", Mask: "255.255.255.0", Description: "lan"}},
+	}
+	common := []ccdCommonRoute{
+		{Address: "1.1.1.1", Mask: "255.255.255.255", Tag: "yt.com", Description: "youtube"},
+	}
+
+	ok, msg := app.modifyCcd(ccd, common)
+	if !ok {
+		t.Fatalf("modifyCcd failed: %s", msg)
+	}
+
+	data, err := os.ReadFile(dir + "/bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `push "route 10.0.0.0 255.255.255.0"`) {
+		t.Errorf("user route missing:\n%s", content)
+	}
+	if !strings.Contains(content, `push "route 1.1.1.1 255.255.255.255" # __common__:yt.com`) {
+		t.Errorf("common route missing:\n%s", content)
 	}
 }

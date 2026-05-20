@@ -198,6 +198,8 @@ type OvpnAdmin struct {
 	modules                []string
 	mgmtStatusTimeFormat   string
 	createUserMutex        *sync.Mutex
+	commonRoutes           *commonRoutesStore
+	commonRoutesPath       string
 }
 
 type OpenvpnServer struct {
@@ -420,7 +422,11 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 		log.Errorln(err)
 	}
 
-	ccdApplied, applyStatus := oAdmin.modifyCcd(ccd)
+	var expanded []ccdCommonRoute
+	if oAdmin.commonRoutes != nil {
+		expanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
+	}
+	ccdApplied, applyStatus := oAdmin.modifyCcd(ccd, expanded)
 
 	if ccdApplied {
 		w.WriteHeader(http.StatusOK)
@@ -532,6 +538,7 @@ func main() {
 	ovpnAdmin.modules = []string{}
 	ovpnAdmin.createUserMutex = &sync.Mutex{}
 	ovpnAdmin.mgmtInterfaces = make(map[string]string)
+	ovpnAdmin.commonRoutes = &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}
 
 	for _, mgmtInterface := range *mgmtAddress {
 		parts := strings.SplitN(mgmtInterface, "=", 2)
@@ -801,32 +808,33 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 	return ccd
 }
 
-func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd) (bool, string) {
+func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bool, string) {
 	ccdValid, err := validateCcd(ccd)
 	if err != "" {
 		return false, err
 	}
-
-	if ccdValid {
-		t := oAdmin.getCcdTemplate()
-		var tmp bytes.Buffer
-		err := t.Execute(&tmp, ccd)
-		if err != nil {
-			log.Error(err)
-		}
-		if *storageBackend == "kubernetes.secrets" {
-			app.secretUpdateCcd(ccd.User, tmp.Bytes())
-		} else {
-			err = fWrite(*ccdDir+"/"+ccd.User, tmp.String())
-			if err != nil {
-				log.Errorf("modifyCcd: fWrite(): %v", err)
-			}
-		}
-
-		return true, "ccd updated successfully"
+	if !ccdValid {
+		return false, "something goes wrong"
 	}
 
-	return false, "something goes wrong"
+	ccd.CommonRoutes = commonExpanded
+
+	t := oAdmin.getCcdTemplate()
+	var tmp bytes.Buffer
+	if err := t.Execute(&tmp, ccd); err != nil {
+		log.Error(err)
+		return false, "template render failed"
+	}
+
+	if *storageBackend == "kubernetes.secrets" {
+		app.secretUpdateCcd(ccd.User, tmp.Bytes())
+	} else {
+		if err := fWrite(*ccdDir+"/"+ccd.User, tmp.String()); err != nil {
+			log.Errorf("modifyCcd: fWrite(): %v", err)
+			return false, "write failed"
+		}
+	}
+	return true, "ccd updated successfully"
 }
 
 func validateCcd(ccd Ccd) (bool, string) {
