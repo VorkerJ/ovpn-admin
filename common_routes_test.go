@@ -248,3 +248,43 @@ func TestExpandCommonRoutes_Mixed(t *testing.T) {
 		t.Fatalf("want 2, got %d", len(out))
 	}
 }
+
+func TestParseCcd_FiltersCommonMarker(t *testing.T) {
+	dir := t.TempDir()
+	username := "alice"
+	path := dir + "/" + username
+	content := `ifconfig-push 10.0.0.5 255.255.255.0
+push "route 192.168.1.0 255.255.255.0" # corp
+push "route 142.250.1.1 255.255.255.255" # __common__:yt.com youtube
+push "route 142.250.1.2 255.255.255.255" # __common__:yt.com youtube
+push "route 8.8.8.8 255.255.255.255" # dns
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	original := *ccdDir
+	tmp := dir
+	ccdDir = &tmp
+	defer func() { ccdDir = &original }()
+
+	// We also need to force storage backend to filesystem (in case it was changed by other tests)
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	oAdmin := &OvpnAdmin{}
+	ccd := oAdmin.parseCcd(username)
+	if ccd.ClientAddress != "10.0.0.5" {
+		t.Errorf("ClientAddress: got %s", ccd.ClientAddress)
+	}
+	if len(ccd.CustomRoutes) != 2 {
+		t.Fatalf("expected 2 user routes (192.168.x and 8.8.8.8), got %d: %+v", len(ccd.CustomRoutes), ccd.CustomRoutes)
+	}
+	for _, r := range ccd.CustomRoutes {
+		if r.Address == "142.250.1.1" || r.Address == "142.250.1.2" {
+			t.Errorf("__common__ route leaked into user routes: %+v", r)
+		}
+	}
+}

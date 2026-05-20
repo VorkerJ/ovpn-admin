@@ -231,9 +231,10 @@ type ccdRoute struct {
 }
 
 type Ccd struct {
-	User          string     `json:"User"`
-	ClientAddress string     `json:"ClientAddress"`
-	CustomRoutes  []ccdRoute `json:"CustomRoutes"`
+	User          string           `json:"User"`
+	ClientAddress string           `json:"ClientAddress"`
+	CustomRoutes  []ccdRoute       `json:"CustomRoutes"`
+	CommonRoutes  []ccdCommonRoute `json:"-"` // not serialized over API, render-only
 }
 
 type indexTxtLine struct {
@@ -779,13 +780,21 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 
 	for _, v := range txtLinesArray {
 		str := strings.Fields(v)
-		if len(str) > 0 {
-			switch {
-			case strings.HasPrefix(str[0], "ifconfig-push"):
-				ccd.ClientAddress = str[1]
-			case strings.HasPrefix(str[0], "push"):
-				ccd.CustomRoutes = append(ccd.CustomRoutes, ccdRoute{Address: strings.Trim(str[2], "\""), Mask: strings.Trim(str[3], "\""), Description: strings.Trim(strings.Join(str[4:], ""), "#")})
+		if len(str) == 0 {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(str[0], "ifconfig-push"):
+			ccd.ClientAddress = str[1]
+		case strings.HasPrefix(str[0], "push"):
+			if strings.Contains(v, "# __common__:") {
+				continue // строка добавлена common-routes — пропускаем при чтении user-уровня
 			}
+			ccd.CustomRoutes = append(ccd.CustomRoutes, ccdRoute{
+				Address:     strings.Trim(str[2], "\""),
+				Mask:        strings.Trim(str[3], "\""),
+				Description: strings.Trim(strings.Join(str[4:], ""), "#"),
+			})
 		}
 	}
 
