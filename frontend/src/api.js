@@ -83,3 +83,31 @@ export async function applyCcd(ccd) {
   })
   return data
 }
+
+export async function fetchCommonRoutes() {
+  const { data } = await axios.get('api/common-routes')
+  return data // { routes: [...], refreshIntervalHours: 24 }
+}
+
+export async function createCommonRoute(payload) {
+  const { data } = await axios.post('api/common-routes', JSON.stringify(payload), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data.route
+}
+
+export async function updateCommonRoute(id, payload) {
+  const { data } = await axios.put(`api/common-routes/${id}`, JSON.stringify(payload), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data.route
+}
+
+export async function deleteCommonRoute(id) {
+  await axios.delete(`api/common-routes/${id}`)
+}
+
+export async function refreshCommonRoutesDns() {
+  const { data } = await axios.post('api/common-routes/refresh')
+  return data // { resolved, failed, changed }
+}
