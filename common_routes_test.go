@@ -131,3 +131,34 @@ func TestCommonRoutesFileStore_AtomicWrite(t *testing.T) {
 		t.Fatalf("temp file not cleaned: %v", err)
 	}
 }
+
+func TestCommonRoutesSecret_KeyName(t *testing.T) {
+	if commonRoutesSecretName != "ovpn-admin-common-routes" {
+		t.Fatalf("unexpected secret name: %s", commonRoutesSecretName)
+	}
+}
+
+func TestCommonRoutesSerialize(t *testing.T) {
+	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"}}}
+	data, err := serializeCommonRoutes(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := deserializeCommonRoutes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Routes[0].ID != "x" {
+		t.Fatalf("roundtrip mismatch")
+	}
+}
+
+func TestCommonRoutesDeserialize_EmptyInput(t *testing.T) {
+	cfg, err := deserializeCommonRoutes(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Routes) != 0 {
+		t.Fatalf("expected empty, got %+v", cfg)
+	}
+}

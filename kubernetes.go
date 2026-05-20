@@ -737,6 +737,43 @@ func (openVPNPKI *OpenVPNPKI) updateCcdOnDisk() (err error) {
 	return
 }
 
+// common-routes
+
+func (openVPNPKI *OpenVPNPKI) secretGetCommonRoutes() ([]byte, error) {
+	secret, err := openVPNPKI.secretGetByName(commonRoutesSecretName)
+	if err != nil {
+		// если secret отсутствует — возвращаем nil, nil (deserializeCommonRoutes отдаст пустой config)
+		if strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return secret.Data[commonRoutesSecretDataKey], nil
+}
+
+func (openVPNPKI *OpenVPNPKI) secretUpdateCommonRoutes(data []byte) error {
+	secret, err := openVPNPKI.secretGetByName(commonRoutesSecretName)
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		// create
+		objectMeta := metav1.ObjectMeta{
+			Name: commonRoutesSecretName,
+			Labels: map[string]string{
+				labelKeyType:      "common-routes",
+				labelKeyManagedBy: labelValueManagedByApp,
+			},
+		}
+		return openVPNPKI.secretCreate(objectMeta, map[string][]byte{commonRoutesSecretDataKey: data}, v1.SecretTypeOpaque)
+	}
+	if err != nil {
+		return err
+	}
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
+	}
+	secret.Data[commonRoutesSecretDataKey] = data
+	return openVPNPKI.secretUpdate(secret.ObjectMeta, secret.Data, v1.SecretTypeOpaque)
+}
+
 //
 
 func (openVPNPKI *OpenVPNPKI) secretCreate(objectMeta metav1.ObjectMeta, data map[string][]byte, secretType v1.SecretType) (err error) {

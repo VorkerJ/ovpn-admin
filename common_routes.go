@@ -101,3 +101,27 @@ func saveCommonRoutesToFile(path string, cfg CommonRoutesConfig) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+const commonRoutesSecretName = "ovpn-admin-common-routes"
+const commonRoutesSecretDataKey = "data"
+
+func serializeCommonRoutes(cfg CommonRoutesConfig) ([]byte, error) {
+	if cfg.Routes == nil {
+		cfg.Routes = []CommonRouteEntry{}
+	}
+	return json.MarshalIndent(cfg, "", "  ")
+}
+
+func deserializeCommonRoutes(data []byte) (CommonRoutesConfig, error) {
+	if len(data) == 0 {
+		return CommonRoutesConfig{Routes: []CommonRouteEntry{}}, nil
+	}
+	var cfg CommonRoutesConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return CommonRoutesConfig{}, err
+	}
+	if cfg.Routes == nil {
+		cfg.Routes = []CommonRouteEntry{}
+	}
+	return cfg, nil
+}
