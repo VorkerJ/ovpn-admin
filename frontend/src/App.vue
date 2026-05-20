@@ -1,6 +1,6 @@
 <!-- frontend/src/App.vue -->
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useToast } from '@/composables/useToast'
 import AppHeader from '@/components/AppHeader.vue'
 import StatCards from '@/components/StatCards.vue'
@@ -12,6 +12,8 @@ import RotateUserModal from '@/components/modals/RotateUserModal.vue'
 import ChangePasswordModal from '@/components/modals/ChangePasswordModal.vue'
 import CcdModal from '@/components/modals/CcdModal.vue'
 import LoginPage from '@/components/LoginPage.vue'
+import TabBar from '@/components/TabBar.vue'
+import CommonRoutesView from '@/components/CommonRoutesView.vue'
 
 import {
   fetchUsers, fetchServerSettings, fetchLastSync,
@@ -53,6 +55,16 @@ const users = ref([])
 const serverRole = ref('master')
 const modulesEnabled = ref([])
 const lastSync = ref('')
+
+const activeTab = ref('users')
+
+const visibleTabs = computed(() => {
+  const tabs = [{ key: 'users', label: 'Пользователи' }]
+  if (modulesEnabled.value.includes('common-routes')) {
+    tabs.push({ key: 'common-routes', label: 'Общие маршруты' })
+  }
+  return tabs
+})
 
 const { toast: _toast } = useToast()
 function notify(title, variant = 'default') {
@@ -204,27 +216,34 @@ async function submitCcd(ccd) {
       @logout="handleLogout"
     />
 
-    <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
-      <div>
-        <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">Обзор</p>
-        <StatCards :users="users" />
-      </div>
+    <TabBar v-model="activeTab" :tabs="visibleTabs" />
 
-      <div>
-        <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">Пользователи</p>
-        <UsersTable
-          :users="users"
-          :server-role="serverRole"
-          :modules-enabled="modulesEnabled"
-          @revoke="handleRevoke"
-          @unrevoke="handleUnrevoke"
-          @rotate="(u) => openModal('rotateUser', u)"
-          @delete="(u) => openModal('deleteUser', u)"
-          @download-config="handleDownloadConfig"
-          @edit-ccd="handleEditCcd"
-          @change-password="(u) => openModal('changePassword', u)"
-        />
-      </div>
+    <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
+      <template v-if="activeTab === 'users'">
+        <div>
+          <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">Обзор</p>
+          <StatCards :users="users" />
+        </div>
+
+        <div>
+          <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">Пользователи</p>
+          <UsersTable
+            :users="users"
+            :server-role="serverRole"
+            :modules-enabled="modulesEnabled"
+            @revoke="handleRevoke"
+            @unrevoke="handleUnrevoke"
+            @rotate="(u) => openModal('rotateUser', u)"
+            @delete="(u) => openModal('deleteUser', u)"
+            @download-config="handleDownloadConfig"
+            @edit-ccd="handleEditCcd"
+            @change-password="(u) => openModal('changePassword', u)"
+          />
+        </div>
+      </template>
+      <template v-else-if="activeTab === 'common-routes'">
+        <CommonRoutesView :server-role="serverRole" />
+      </template>
     </main>
 
     <!-- Modals -->
