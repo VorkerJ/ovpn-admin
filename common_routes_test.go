@@ -195,3 +195,56 @@ func TestCommonRoutesStore_SnapshotIsCopy(t *testing.T) {
 		t.Fatal("snapshot must not share underlying slice")
 	}
 }
+
+func TestExpandCommonRoutes_IP(t *testing.T) {
+	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{ID: "a", Kind: "ip", Address: "10.0.0.0", Mask: "255.255.0.0", Description: "lan"},
+	}}
+	out := expandCommonRoutes(cfg)
+	if len(out) != 1 {
+		t.Fatalf("want 1, got %d", len(out))
+	}
+	if out[0].Address != "10.0.0.0" || out[0].Mask != "255.255.0.0" || out[0].Tag != "static" {
+		t.Fatalf("got %+v", out[0])
+	}
+}
+
+func TestExpandCommonRoutes_Domain_MultipleIPs(t *testing.T) {
+	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{ID: "b", Kind: "domain", Domain: "yt.com", ResolvedIPs: []string{"1.1.1.1", "2.2.2.2"}, Description: "youtube"},
+	}}
+	out := expandCommonRoutes(cfg)
+	if len(out) != 2 {
+		t.Fatalf("want 2, got %d", len(out))
+	}
+	for _, r := range out {
+		if r.Mask != "255.255.255.255" {
+			t.Errorf("expected /32 mask, got %s", r.Mask)
+		}
+		if r.Tag != "yt.com" {
+			t.Errorf("expected tag=yt.com, got %s", r.Tag)
+		}
+	}
+}
+
+func TestExpandCommonRoutes_Domain_EmptyResolved(t *testing.T) {
+	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{ID: "c", Kind: "domain", Domain: "fail.com", ResolvedIPs: nil},
+	}}
+	out := expandCommonRoutes(cfg)
+	if len(out) != 0 {
+		t.Fatalf("expected nothing for unresolved domain, got %d", len(out))
+	}
+}
+
+func TestExpandCommonRoutes_Mixed(t *testing.T) {
+	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
+		{Kind: "domain", Domain: "yt.com", ResolvedIPs: []string{"1.1.1.1"}},
+		{Kind: "domain", Domain: "unresolved.com"},
+	}}
+	out := expandCommonRoutes(cfg)
+	if len(out) != 2 {
+		t.Fatalf("want 2, got %d", len(out))
+	}
+}

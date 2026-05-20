@@ -168,3 +168,28 @@ func deserializeCommonRoutes(data []byte) (CommonRoutesConfig, error) {
 	}
 	return cfg, nil
 }
+
+func expandCommonRoutes(cfg CommonRoutesConfig) []ccdCommonRoute {
+	out := make([]ccdCommonRoute, 0, len(cfg.Routes))
+	for _, r := range cfg.Routes {
+		switch r.Kind {
+		case "ip":
+			out = append(out, ccdCommonRoute{
+				Address:     r.Address,
+				Mask:        r.Mask,
+				Tag:         "static",
+				Description: r.Description,
+			})
+		case "domain":
+			for _, ip := range r.ResolvedIPs {
+				out = append(out, ccdCommonRoute{
+					Address:     ip,
+					Mask:        "255.255.255.255",
+					Tag:         r.Domain,
+					Description: r.Description,
+				})
+			}
+		}
+	}
+	return out
+}
