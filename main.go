@@ -837,6 +837,27 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 	return true, "ccd updated successfully"
 }
 
+func (oAdmin *OvpnAdmin) rerenderAllCcds(commonExpanded []ccdCommonRoute) {
+	ccdMu.Lock()
+	defer ccdMu.Unlock()
+
+	start := time.Now()
+	count := 0
+	for _, u := range oAdmin.clients {
+		if u.AccountStatus != "Active" {
+			continue
+		}
+		ccd := oAdmin.getCcd(u.Identity)
+		ok, msg := oAdmin.modifyCcd(ccd, commonExpanded)
+		if !ok {
+			log.Warnf("rerenderAllCcds: %s: %s", u.Identity, msg)
+			continue
+		}
+		count++
+	}
+	log.Infof("rerenderAllCcds: rerendered %d CCDs in %s", count, time.Since(start))
+}
+
 func validateCcd(ccd Ccd) (bool, string) {
 
 	ccdErr := ""
