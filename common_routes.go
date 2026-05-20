@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"regexp"
+	"sort"
 	"sync"
+	"time"
 )
 
 type CommonRouteEntry struct {
@@ -167,6 +170,73 @@ func deserializeCommonRoutes(data []byte) (CommonRoutesConfig, error) {
 		cfg.Routes = []CommonRouteEntry{}
 	}
 	return cfg, nil
+}
+
+func sortedIPv4Strings(ips []string) []string {
+	out := append([]string(nil), ips...)
+	sort.Strings(out)
+	return out
+}
+
+func sameIPSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := sortedIPv4Strings(a)
+	bc := sortedIPv4Strings(b)
+	for i := range ac {
+		if ac[i] != bc[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveOneDomain выполняет один LookupIP с таймаутом и возвращает только IPv4.
+func resolveOneDomain(ctx context.Context, domain string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip4", domain)
+	if err != nil {
+		return nil, err
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no A records")
+	}
+	out := make([]string, 0, len(addrs))
+	for _, ip := range addrs {
+		out = append(out, ip.String())
+	}
+	return sortedIPv4Strings(out), nil
+}
+
+// domainResolver — переменная для возможности подмены в тестах.
+var domainResolver = resolveOneDomain
+
+// refreshAllDomains итерирует cfg, резолвит каждый kind=domain.
+// Возвращает: (изменённый cfg, changed?, resolvedCount, failedCount).
+func refreshAllDomains(ctx context.Context, cfg CommonRoutesConfig, now time.Time) (CommonRoutesConfig, bool, int, int) {
+	changed := false
+	resolved, failed := 0, 0
+	for i, r := range cfg.Routes {
+		if r.Kind != "domain" {
+			continue
+		}
+		ips, err := domainResolver(ctx, r.Domain)
+		cfg.Routes[i].LastResolveAt = now.UTC().Format(time.RFC3339)
+		if err != nil {
+			cfg.Routes[i].LastResolveErr = err.Error()
+			failed++
+			continue
+		}
+		cfg.Routes[i].LastResolveErr = ""
+		if !sameIPSet(r.ResolvedIPs, ips) {
+			cfg.Routes[i].ResolvedIPs = ips
+			changed = true
+		}
+		resolved++
+	}
+	return cfg, changed, resolved, failed
 }
 
 func expandCommonRoutes(cfg CommonRoutesConfig) []ccdCommonRoute {

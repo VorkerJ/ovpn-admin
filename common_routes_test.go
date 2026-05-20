@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gobuffalo/packr/v2"
 )
@@ -331,5 +334,65 @@ func TestModifyCcd_RendersCommonRoutes(t *testing.T) {
 	}
 	if !strings.Contains(content, `push "route 1.1.1.1 255.255.255.255" # __common__:yt.com`) {
 		t.Errorf("common route missing:\n%s", content)
+	}
+}
+
+func TestSameIPSet(t *testing.T) {
+	if !sameIPSet([]string{"1.1.1.1", "2.2.2.2"}, []string{"2.2.2.2", "1.1.1.1"}) {
+		t.Fatal("set equality must ignore order")
+	}
+	if sameIPSet([]string{"1.1.1.1"}, []string{"1.1.1.1", "2.2.2.2"}) {
+		t.Fatal("different lengths must differ")
+	}
+	if sameIPSet([]string{"1.1.1.1"}, []string{"2.2.2.2"}) {
+		t.Fatal("different values must differ")
+	}
+}
+
+func TestSortedIPv4Strings(t *testing.T) {
+	out := sortedIPv4Strings([]string{"10.0.0.1", "1.1.1.1", "192.168.1.1"})
+	want := []string{"1.1.1.1", "10.0.0.1", "192.168.1.1"} // lexicographic
+	for i := range out {
+		if out[i] != want[i] {
+			t.Fatalf("got %v, want %v", out, want)
+		}
+	}
+}
+
+func TestRefreshAllDomains_MarksChangedAndStatus(t *testing.T) {
+	original := domainResolver
+	defer func() { domainResolver = original }()
+
+	domainResolver = func(ctx context.Context, d string) ([]string, error) {
+		switch d {
+		case "good.com":
+			return []string{"1.1.1.1"}, nil
+		case "fail.com":
+			return nil, fmt.Errorf("dns timeout")
+		}
+		return nil, fmt.Errorf("unexpected domain %s", d)
+	}
+
+	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{ID: "a", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
+		{ID: "b", Kind: "domain", Domain: "good.com", ResolvedIPs: []string{"9.9.9.9"}},
+		{ID: "c", Kind: "domain", Domain: "fail.com", ResolvedIPs: []string{"7.7.7.7"}},
+	}}
+
+	out, changed, ok, failed := refreshAllDomains(context.Background(), cfg, time.Now())
+	if !changed {
+		t.Errorf("expected changed=true (good.com IPs changed)")
+	}
+	if ok != 1 || failed != 1 {
+		t.Errorf("counters wrong: ok=%d failed=%d", ok, failed)
+	}
+	if out.Routes[1].ResolvedIPs[0] != "1.1.1.1" {
+		t.Errorf("good.com IP not updated")
+	}
+	if out.Routes[2].ResolvedIPs[0] != "7.7.7.7" {
+		t.Errorf("fail.com IPs should be preserved on error")
+	}
+	if out.Routes[2].LastResolveErr == "" {
+		t.Errorf("fail.com LastResolveErr should be set")
 	}
 }
