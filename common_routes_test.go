@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -394,5 +398,113 @@ func TestRefreshAllDomains_MarksChangedAndStatus(t *testing.T) {
 	}
 	if out.Routes[2].LastResolveErr == "" {
 		t.Errorf("fail.com LastResolveErr should be set")
+	}
+}
+
+func newTestAdmin(t *testing.T) *OvpnAdmin {
+	t.Helper()
+	app := &OvpnAdmin{
+		role:         "master",
+		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}},
+	}
+	dir := t.TempDir()
+	tmp := dir
+	ccdDir = &tmp
+	storage := "filesystem"
+	storageBackend = &storage
+	app.commonRoutesPath = dir + "/_common_routes.json"
+	return app
+}
+
+func TestCommonRoutesHandler_GET_Empty(t *testing.T) {
+	app := newTestAdmin(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/common-routes", nil)
+	rec := httptest.NewRecorder()
+	app.commonRoutesHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	var got struct {
+		Routes []CommonRouteEntry `json:"routes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Routes == nil {
+		t.Fatal("routes must be non-nil slice")
+	}
+}
+
+func TestCommonRoutesHandler_POST_CreatesEntry(t *testing.T) {
+	app := newTestAdmin(t)
+	body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.255.0.0","description":"lan"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/common-routes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.commonRoutesHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	snap := app.commonRoutes.snapshot()
+	if len(snap.Routes) != 1 || snap.Routes[0].ID == "" {
+		t.Fatalf("entry not stored: %+v", snap)
+	}
+}
+
+func TestCommonRoutesHandler_POST_RejectsDuplicate(t *testing.T) {
+	app := newTestAdmin(t)
+	body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.255.0.0"}`)
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/common-routes", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		app.commonRoutesHandler(rec, req)
+		if i == 1 && rec.Code != http.StatusConflict {
+			t.Fatalf("expected 409 on duplicate, got %d", rec.Code)
+		}
+	}
+}
+
+func TestCommonRoutesHandler_Slave_Locked(t *testing.T) {
+	app := newTestAdmin(t)
+	app.role = "slave"
+	body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.0.0.0"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/common-routes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.commonRoutesHandler(rec, req)
+	if rec.Code != http.StatusLocked {
+		t.Fatalf("expected 423, got %d", rec.Code)
+	}
+}
+
+func TestCommonRoutesItemHandler_DELETE(t *testing.T) {
+	app := newTestAdmin(t)
+	id := "test-uuid"
+	app.commonRoutes.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: id, Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"}}})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/common-routes/"+id, nil)
+	rec := httptest.NewRecorder()
+	app.commonRoutesItemHandler(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if len(app.commonRoutes.snapshot().Routes) != 0 {
+		t.Fatal("entry not deleted")
+	}
+}
+
+func TestCommonRoutesItemHandler_PUT(t *testing.T) {
+	app := newTestAdmin(t)
+	id := "test-uuid"
+	app.commonRoutes.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: id, Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0", Description: "old"}}})
+
+	body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.255.0.0","description":"new"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/common-routes/"+id, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.commonRoutesItemHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	snap := app.commonRoutes.snapshot()
+	if snap.Routes[0].Description != "new" || snap.Routes[0].Mask != "255.255.0.0" {
+		t.Fatalf("update not applied: %+v", snap.Routes[0])
 	}
 }

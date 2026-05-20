@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
 )
 
 type CommonRouteEntry struct {
@@ -237,6 +242,259 @@ func refreshAllDomains(ctx context.Context, cfg CommonRoutesConfig, now time.Tim
 		resolved++
 	}
 	return cfg, changed, resolved, failed
+}
+
+const commonRoutesRefreshIntervalHours = 24
+
+func (oAdmin *OvpnAdmin) commonRoutesHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	switch r.Method {
+	case http.MethodGet:
+		snap := oAdmin.commonRoutes.snapshot()
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"routes":               snap.Routes,
+			"refreshIntervalHours": commonRoutesRefreshIntervalHours,
+		})
+	case http.MethodPost:
+		if oAdmin.role == "slave" {
+			http.Error(w, `{"status":"error","message":"slave is read-only"}`, http.StatusLocked)
+			return
+		}
+		oAdmin.handleCreateCommonRoute(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	// Strip prefix to extract id. listenBaseUrl may add a prefix.
+	id := strings.TrimPrefix(r.URL.Path, "/api/common-routes/")
+	if idx := strings.Index(id, "/"); idx != -1 {
+		id = id[:idx]
+	}
+	if id == "" || id == "refresh" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	if oAdmin.role == "slave" {
+		http.Error(w, `{"status":"error","message":"slave is read-only"}`, http.StatusLocked)
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		oAdmin.handleUpdateCommonRoute(w, r, id)
+	case http.MethodDelete:
+		oAdmin.handleDeleteCommonRoute(w, r, id)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (oAdmin *OvpnAdmin) commonRoutesRefreshHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if oAdmin.role == "slave" {
+		http.Error(w, `{"status":"error","message":"slave is read-only"}`, http.StatusLocked)
+		return
+	}
+
+	current := oAdmin.commonRoutes.snapshot()
+	updated, changed, okCount, failed := refreshAllDomains(r.Context(), current, time.Now())
+
+	oAdmin.commonRoutes.replace(updated)
+	if err := oAdmin.persistCommonRoutes(updated); err != nil {
+		log.Errorf("persistCommonRoutes: %v", err)
+	}
+
+	if changed {
+		expanded := expandCommonRoutes(updated)
+		go oAdmin.rerenderAllCcds(expanded)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"resolved": okCount,
+		"failed":   failed,
+		"changed":  changed,
+	})
+}
+
+func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.Request) {
+	var in CommonRouteEntry
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	in.ID = uuid.New().String()
+	if err := validateCommonRoute(in); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	current := oAdmin.commonRoutes.snapshot()
+	if isDuplicateCommonRoute(current, in) {
+		http.Error(w, "duplicate entry", http.StatusConflict)
+		return
+	}
+
+	if in.Kind == "domain" {
+		ips, err := domainResolver(r.Context(), in.Domain)
+		in.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+		if err != nil {
+			in.LastResolveErr = err.Error()
+		} else {
+			in.ResolvedIPs = ips
+			in.LastResolveErr = ""
+		}
+	}
+
+	current.Routes = append(current.Routes, in)
+	oAdmin.commonRoutes.replace(current)
+	if err := oAdmin.persistCommonRoutes(current); err != nil {
+		log.Errorf("persist: %v", err)
+		http.Error(w, "persist failed", http.StatusInternalServerError)
+		return
+	}
+
+	expanded := expandCommonRoutes(current)
+	go oAdmin.rerenderAllCcds(expanded)
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{"route": in})
+}
+
+func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.Request, id string) {
+	var in CommonRouteEntry
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	in.ID = id
+	if err := validateCommonRoute(in); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	current := oAdmin.commonRoutes.snapshot()
+	idx := -1
+	for i, rt := range current.Routes {
+		if rt.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// preserve DNS state if domain didn't change
+	if in.Kind == "domain" && current.Routes[idx].Kind == "domain" && current.Routes[idx].Domain == in.Domain {
+		in.ResolvedIPs = current.Routes[idx].ResolvedIPs
+		in.LastResolveAt = current.Routes[idx].LastResolveAt
+		in.LastResolveErr = current.Routes[idx].LastResolveErr
+	} else if in.Kind == "domain" {
+		ips, err := domainResolver(r.Context(), in.Domain)
+		in.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+		if err != nil {
+			in.LastResolveErr = err.Error()
+		} else {
+			in.ResolvedIPs = ips
+		}
+	}
+
+	if isDuplicateCommonRoute(removeAt(current, idx), in) {
+		http.Error(w, "duplicate entry", http.StatusConflict)
+		return
+	}
+
+	current.Routes[idx] = in
+	oAdmin.commonRoutes.replace(current)
+	if err := oAdmin.persistCommonRoutes(current); err != nil {
+		http.Error(w, "persist failed", http.StatusInternalServerError)
+		return
+	}
+
+	expanded := expandCommonRoutes(current)
+	go oAdmin.rerenderAllCcds(expanded)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"route": in})
+}
+
+func (oAdmin *OvpnAdmin) handleDeleteCommonRoute(w http.ResponseWriter, r *http.Request, id string) {
+	current := oAdmin.commonRoutes.snapshot()
+	idx := -1
+	for i, rt := range current.Routes {
+		if rt.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	current.Routes = append(current.Routes[:idx], current.Routes[idx+1:]...)
+	oAdmin.commonRoutes.replace(current)
+	if err := oAdmin.persistCommonRoutes(current); err != nil {
+		http.Error(w, "persist failed", http.StatusInternalServerError)
+		return
+	}
+
+	expanded := expandCommonRoutes(current)
+	go oAdmin.rerenderAllCcds(expanded)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeJSON(w http.ResponseWriter, code int, body interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func isDuplicateCommonRoute(cfg CommonRoutesConfig, e CommonRouteEntry) bool {
+	for _, r := range cfg.Routes {
+		if r.ID == e.ID {
+			continue
+		}
+		switch e.Kind {
+		case "ip":
+			if r.Kind == "ip" && r.Address == e.Address && r.Mask == e.Mask {
+				return true
+			}
+		case "domain":
+			if r.Kind == "domain" && r.Domain == e.Domain {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func removeAt(cfg CommonRoutesConfig, idx int) CommonRoutesConfig {
+	out := CommonRoutesConfig{Routes: make([]CommonRouteEntry, 0, len(cfg.Routes)-1)}
+	for i, r := range cfg.Routes {
+		if i == idx {
+			continue
+		}
+		out.Routes = append(out.Routes, r)
+	}
+	return out
+}
+
+// persistCommonRoutes saves config to the configured backend.
+func (oAdmin *OvpnAdmin) persistCommonRoutes(cfg CommonRoutesConfig) error {
+	if *storageBackend == "kubernetes.secrets" {
+		data, err := serializeCommonRoutes(cfg)
+		if err != nil {
+			return err
+		}
+		return app.secretUpdateCommonRoutes(data)
+	}
+	return saveCommonRoutesToFile(oAdmin.commonRoutesPath, cfg)
 }
 
 func expandCommonRoutes(cfg CommonRoutesConfig) []ccdCommonRoute {
