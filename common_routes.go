@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"regexp"
 	"sync"
 )
@@ -69,3 +71,33 @@ type commonRoutesStore struct {
 
 // File-level lock на запись CCD-файлов (используется в задаче с rerenderAllCcds).
 var ccdMu sync.Mutex
+
+func loadCommonRoutesFromFile(path string) (CommonRoutesConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return CommonRoutesConfig{Routes: []CommonRouteEntry{}}, nil
+		}
+		return CommonRoutesConfig{}, err
+	}
+	var cfg CommonRoutesConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return CommonRoutesConfig{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if cfg.Routes == nil {
+		cfg.Routes = []CommonRouteEntry{}
+	}
+	return cfg, nil
+}
+
+func saveCommonRoutesToFile(path string, cfg CommonRoutesConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -71,5 +73,61 @@ func TestValidateCommonRoute_DescriptionTooLong(t *testing.T) {
 	e := CommonRouteEntry{Kind: "ip", Address: "10.0.0.0", Mask: "255.255.0.0", Description: string(long)}
 	if err := validateCommonRoute(e); err == nil {
 		t.Fatal("expected error on description > 200")
+	}
+}
+
+func TestCommonRoutesFileStore_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "_common_routes.json")
+
+	original := CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{ID: "abc", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0", Description: "lan"},
+		{ID: "def", Kind: "domain", Domain: "x.io", ResolvedIPs: []string{"1.2.3.4"}},
+	}}
+
+	if err := saveCommonRoutesToFile(path, original); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := loadCommonRoutesFromFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(loaded.Routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(loaded.Routes))
+	}
+	if loaded.Routes[1].Domain != "x.io" || loaded.Routes[1].ResolvedIPs[0] != "1.2.3.4" {
+		t.Fatalf("data mismatch: %+v", loaded.Routes[1])
+	}
+}
+
+func TestCommonRoutesFileStore_LoadMissingReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing.json")
+
+	cfg, err := loadCommonRoutesFromFile(path)
+	if err != nil {
+		t.Fatalf("expected no error on missing, got: %v", err)
+	}
+	if len(cfg.Routes) != 0 {
+		t.Fatalf("expected empty routes, got: %+v", cfg.Routes)
+	}
+}
+
+func TestCommonRoutesFileStore_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "_common_routes.json")
+
+	// Первая запись
+	if err := saveCommonRoutesToFile(path, CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// Вторая запись
+	if err := saveCommonRoutesToFile(path, CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "2"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// .tmp файла быть не должно после успеха
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file not cleaned: %v", err)
 	}
 }
