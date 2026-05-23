@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"sync"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // ipMaskToCIDR конвертирует пару IP + dotted-quad netmask в CIDR-нотацию.
@@ -140,4 +142,44 @@ func (fc *firewallController) removeCatchAllDrop() error {
 		"-s", fc.vpnNet.String(),
 		"-j", "DROP",
 		"-m", "comment", "--comment", "ovpn-admin: default-deny")
+}
+
+// installRulesFor добавляет ACCEPT-правила для одной сессии (CN, VPN_IP, набор разрешённых CIDR).
+// Атомарно через pivot: снимает catch-all DROP → добавляет ACCEPT'ы → возвращает catch-all DROP.
+// Caller должен держать fc.mu.
+func (fc *firewallController) installRulesFor(cn, vpnIP string, cidrs []string) error {
+	comment := "ovpn-admin: " + cn
+	if err := fc.removeCatchAllDrop(); err != nil {
+		// Catch-all может отсутствовать в момент install (например, при первичной reconcile).
+		log.Debugf("installRulesFor: removeCatchAllDrop (might not exist): %v", err)
+	}
+	for _, cidr := range cidrs {
+		if err := fc.iptCmd("-A", fc.chainName,
+			"-s", vpnIP, "-d", cidr, "-j", "ACCEPT",
+			"-m", "comment", "--comment", comment); err != nil {
+			// При ошибке пытаемся восстановить catch-all и пробрасываем
+			_ = fc.installCatchAllDrop()
+			return fmt.Errorf("install rule %s→%s: %w", vpnIP, cidr, err)
+		}
+	}
+	return fc.installCatchAllDrop()
+}
+
+// uninstallRulesFor удаляет ACCEPT-правила сессии. Catch-all DROP не трогаем — он остаётся последним.
+// Best-effort: если какое-то правило уже отсутствует, логируем и продолжаем.
+// Caller должен держать fc.mu.
+func (fc *firewallController) uninstallRulesFor(cn, vpnIP string, cidrs []string) error {
+	comment := "ovpn-admin: " + cn
+	var firstErr error
+	for _, cidr := range cidrs {
+		if err := fc.iptCmd("-D", fc.chainName,
+			"-s", vpnIP, "-d", cidr, "-j", "ACCEPT",
+			"-m", "comment", "--comment", comment); err != nil {
+			log.Debugf("uninstallRulesFor: -D failed (rule may be missing): %v", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }

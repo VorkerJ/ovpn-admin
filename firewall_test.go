@@ -132,6 +132,67 @@ func TestInitChain_IdempotentOnExistingChain(t *testing.T) {
 	}
 }
 
+func TestInstallRulesFor_PivotsCatchAllDrop(t *testing.T) {
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+
+	cidrs := []string{"10.0.0.0/8", "8.8.8.8/32"}
+	if err := fc.installRulesFor("alice", "172.16.100.5", cidrs); err != nil {
+		t.Fatalf("installRulesFor: %v", err)
+	}
+
+	// Expected sequence:
+	// 1. -D catch-all (pivot)
+	// 2. -A OVPN_FW -s 172.16.100.5 -d 10.0.0.0/8 -j ACCEPT ovpn-admin: alice
+	// 3. -A OVPN_FW -s 172.16.100.5 -d 8.8.8.8/32 -j ACCEPT ovpn-admin: alice
+	// 4. -A catch-all DROP back
+	if len(cmds) != 4 {
+		t.Fatalf("expected 4 commands, got %d: %v", len(cmds), cmds)
+	}
+	if !containsAll(joinSpace(cmds[0]), "-D OVPN_FW") || !containsAll(joinSpace(cmds[0]), "-j DROP") {
+		t.Errorf("command[0] should remove catch-all DROP, got %v", cmds[0])
+	}
+	for i, cidr := range cidrs {
+		c := joinSpace(cmds[i+1])
+		if !containsAll(c, "-A OVPN_FW") || !containsAll(c, "-s 172.16.100.5") || !containsAll(c, "-d "+cidr) || !containsAll(c, "ovpn-admin: alice") {
+			t.Errorf("command[%d] missing expected pattern: %v", i+1, cmds[i+1])
+		}
+	}
+	if !containsAll(joinSpace(cmds[3]), "-A OVPN_FW") || !containsAll(joinSpace(cmds[3]), "-j DROP") {
+		t.Errorf("command[3] should restore catch-all DROP, got %v", cmds[3])
+	}
+}
+
+func TestUninstallRulesFor_RemovesAllEntries(t *testing.T) {
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+
+	cidrs := []string{"10.0.0.0/8", "8.8.8.8/32"}
+	if err := fc.uninstallRulesFor("alice", "172.16.100.5", cidrs); err != nil {
+		t.Fatalf("uninstallRulesFor: %v", err)
+	}
+
+	if len(cmds) != len(cidrs) {
+		t.Fatalf("expected %d commands, got %d: %v", len(cidrs), len(cmds), cmds)
+	}
+	for i, cidr := range cidrs {
+		c := joinSpace(cmds[i])
+		if !containsAll(c, "-D OVPN_FW") || !containsAll(c, "-s 172.16.100.5") || !containsAll(c, "-d "+cidr) || !containsAll(c, "ovpn-admin: alice") {
+			t.Errorf("command[%d] missing expected pattern: %v", i, cmds[i])
+		}
+	}
+}
+
 // helpers in test file
 func joinSpace(parts []string) string {
 	out := ""
