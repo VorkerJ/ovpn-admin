@@ -379,6 +379,99 @@ func TestComputeAllowedCIDRs_Dedup(t *testing.T) {
 	}
 }
 
+func TestParseMgmtClientEvent_Connect(t *testing.T) {
+	lines := []string{
+		">CLIENT:CONNECT,2,123",
+		">CLIENT:ENV,common_name=alice",
+		">CLIENT:ENV,ifconfig_pool_remote_ip=172.16.100.5",
+		">CLIENT:ENV,END",
+	}
+	p := newMgmtEventParser()
+	var got *fwEvent
+	for _, l := range lines {
+		if ev := p.feed(l); ev != nil {
+			got = ev
+		}
+	}
+	if got == nil {
+		t.Fatal("expected a fwEvent after END")
+	}
+	if got.Kind != EvConnect {
+		t.Errorf("kind: got %v, want EvConnect", got.Kind)
+	}
+	if got.CN != "alice" {
+		t.Errorf("CN: got %q, want alice", got.CN)
+	}
+	if got.VpnIP != "172.16.100.5" {
+		t.Errorf("VpnIP: got %q, want 172.16.100.5", got.VpnIP)
+	}
+}
+
+func TestParseMgmtClientEvent_Disconnect(t *testing.T) {
+	lines := []string{
+		">CLIENT:DISCONNECT,2",
+		">CLIENT:ENV,common_name=bob",
+		">CLIENT:ENV,END",
+	}
+	p := newMgmtEventParser()
+	var got *fwEvent
+	for _, l := range lines {
+		if ev := p.feed(l); ev != nil {
+			got = ev
+		}
+	}
+	if got == nil {
+		t.Fatal("expected a fwEvent after END")
+	}
+	if got.Kind != EvDisconnect {
+		t.Errorf("kind: got %v, want EvDisconnect", got.Kind)
+	}
+	if got.CN != "bob" {
+		t.Errorf("CN: got %q, want bob", got.CN)
+	}
+}
+
+func TestParseMgmtClientEvent_Garbage(t *testing.T) {
+	lines := []string{
+		"SUCCESS: log enabled",
+		">INFO:OpenVPN Management Interface Version 1",
+		">BYTECOUNT:0,0",
+		"random line",
+	}
+	p := newMgmtEventParser()
+	for _, l := range lines {
+		if ev := p.feed(l); ev != nil {
+			t.Errorf("garbage line should not produce an event: %q → %+v", l, ev)
+		}
+	}
+}
+
+func TestParseMgmtClientEvent_InterleavedSessions(t *testing.T) {
+	lines := []string{
+		">CLIENT:CONNECT,2,1",
+		">CLIENT:ENV,common_name=alice",
+		">CLIENT:ENV,ifconfig_pool_remote_ip=172.16.100.5",
+		">CLIENT:ENV,END",
+		">CLIENT:CONNECT,3,1",
+		">CLIENT:ENV,common_name=bob",
+		">CLIENT:ENV,ifconfig_pool_remote_ip=172.16.100.6",
+		">CLIENT:ENV,END",
+	}
+	p := newMgmtEventParser()
+	var events []*fwEvent
+	for _, l := range lines {
+		if ev := p.feed(l); ev != nil {
+			events = append(events, ev)
+		}
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].CN != "alice" || events[1].CN != "bob" {
+		t.Errorf("event order: %+v, %+v", events[0], events[1])
+	}
+}
+
 // helpers in test file
 func joinSpace(parts []string) string {
 	out := ""

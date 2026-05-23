@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	log "github.com/sirupsen/logrus"
@@ -273,4 +274,53 @@ func (fc *firewallController) computeAllowedCIDRs(cn string) ([]string, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// mgmtEventParser — простой стейт-машина для строк mgmt-протокола.
+// Один parser на одно TCP-соединение; вызывается feed() для каждой полученной строки.
+type mgmtEventParser struct {
+	current *fwEvent
+	env     map[string]string
+}
+
+func newMgmtEventParser() *mgmtEventParser {
+	return &mgmtEventParser{}
+}
+
+// feed возвращает готовый fwEvent, если эта строка завершила сессию (>CLIENT:ENV,END).
+// nil — для промежуточных или нерелевантных строк.
+func (p *mgmtEventParser) feed(line string) *fwEvent {
+	line = strings.TrimRight(line, "\r\n")
+
+	if strings.HasPrefix(line, ">CLIENT:CONNECT,") {
+		p.current = &fwEvent{Kind: EvConnect}
+		p.env = make(map[string]string)
+		return nil
+	}
+	if strings.HasPrefix(line, ">CLIENT:DISCONNECT,") {
+		p.current = &fwEvent{Kind: EvDisconnect}
+		p.env = make(map[string]string)
+		return nil
+	}
+	if !strings.HasPrefix(line, ">CLIENT:ENV,") {
+		return nil
+	}
+	payload := strings.TrimPrefix(line, ">CLIENT:ENV,")
+
+	if payload == "END" {
+		if p.current == nil {
+			return nil
+		}
+		p.current.CN = p.env["common_name"]
+		p.current.VpnIP = p.env["ifconfig_pool_remote_ip"]
+		ev := p.current
+		p.current = nil
+		p.env = nil
+		return ev
+	}
+
+	if idx := strings.IndexByte(payload, '='); idx > 0 && p.env != nil {
+		p.env[payload[:idx]] = payload[idx+1:]
+	}
+	return nil
 }
