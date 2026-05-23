@@ -782,6 +782,11 @@ func (openVPNPKI *OpenVPNPKI) secretCreate(objectMeta metav1.ObjectMeta, data ma
 		return
 	}
 
+	if objectMeta.Annotations == nil {
+		objectMeta.Annotations = make(map[string]string)
+	}
+	objectMeta.Annotations["helm.sh/resource-policy"] = "keep"
+
 	secret := &v1.Secret{
 		TypeMeta:   metav1.TypeMeta{},
 		ObjectMeta: objectMeta,
