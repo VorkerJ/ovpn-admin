@@ -16,6 +16,7 @@ data:
     proto {{ .Values.openvpn.proto }}-server
     port {{ .Values.openvpn.port }}
     management 127.0.0.1 8989
+    management-client-auth
 
     tun-mtu 1500
     mssfix

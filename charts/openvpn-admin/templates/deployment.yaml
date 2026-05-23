@@ -91,6 +91,9 @@ spec:
         - name: ovpn-admin
           image: "{{ .Values.ovpnAdmin.image.repository }}:{{ .Values.ovpnAdmin.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.ovpnAdmin.image.pullPolicy }}
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
           command: ["/app/ovpn-admin"]
           args:
             - --listen.host=0.0.0.0
@@ -111,6 +114,13 @@ spec:
             {{- end }}
             {{- if .Values.ovpnAdmin.adminHtpasswdSecret }}
             - --admin.htpasswd-file=/etc/ovpn-admin/auth/htpasswd
+            {{- end }}
+            {{- if .Values.ovpnAdmin.firewall.enabled }}
+            - --firewall
+            - --firewall.chain-name={{ .Values.ovpnAdmin.firewall.chainName }}
+            - --firewall.iptables-bin={{ .Values.ovpnAdmin.firewall.iptablesBin }}
+            - --firewall.startup-timeout={{ .Values.ovpnAdmin.firewall.startupTimeout }}
+            - --firewall.reconcile-interval={{ .Values.ovpnAdmin.firewall.reconcileInterval }}
             {{- end }}
           ports:
             - name: http

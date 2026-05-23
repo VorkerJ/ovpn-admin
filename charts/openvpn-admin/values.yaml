@@ -32,6 +32,19 @@ ovpnAdmin:
   #         kubectl create secret generic ovpn-admin-ui-auth --from-file=htpasswd=/tmp/htpasswd
   adminHtpasswdSecret: ""
 
+  # Server-side per-client route enforcement via iptables.
+  # When enabled, ovpn-admin installs FORWARD rules so that each connected client
+  # can only reach destinations explicitly allowed via:
+  #  - per-user CCD CustomRoutes
+  #  - global Common Routes
+  # Requires NET_ADMIN capability on the container and iptables binary in image.
+  firewall:
+    enabled: true               # default ON for new installs; existing users see CHANGELOG
+    chainName: "OVPN_FW"
+    iptablesBin: "/sbin/iptables"
+    startupTimeout: "30s"
+    reconcileInterval: "5m"
+
 # ----------------------------------------------------------------
 # OpenVPN server
 # ----------------------------------------------------------------
