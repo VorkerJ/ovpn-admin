@@ -183,3 +183,59 @@ func (fc *firewallController) uninstallRulesFor(cn, vpnIP string, cidrs []string
 	}
 	return firstErr
 }
+
+// applyDiff приводит установленные правила сессии к newCIDRs минимальным числом команд.
+// Обновляет s.AllowedCIDRs на newCIDRs при успехе. Caller держит fc.mu.
+func (fc *firewallController) applyDiff(s *fwSession, newCIDRs []string) error {
+	oldSet := make(map[string]struct{}, len(s.AllowedCIDRs))
+	for _, c := range s.AllowedCIDRs {
+		oldSet[c] = struct{}{}
+	}
+	newSet := make(map[string]struct{}, len(newCIDRs))
+	for _, c := range newCIDRs {
+		newSet[c] = struct{}{}
+	}
+
+	var toDel, toAdd []string
+	for c := range oldSet {
+		if _, ok := newSet[c]; !ok {
+			toDel = append(toDel, c)
+		}
+	}
+	for c := range newSet {
+		if _, ok := oldSet[c]; !ok {
+			toAdd = append(toAdd, c)
+		}
+	}
+
+	if len(toDel) == 0 && len(toAdd) == 0 {
+		return nil
+	}
+
+	if err := fc.removeCatchAllDrop(); err != nil {
+		log.Debugf("applyDiff: removeCatchAllDrop: %v", err)
+	}
+
+	comment := "ovpn-admin: " + s.CN
+	for _, cidr := range toDel {
+		if err := fc.iptCmd("-D", fc.chainName,
+			"-s", s.VpnIP, "-d", cidr, "-j", "ACCEPT",
+			"-m", "comment", "--comment", comment); err != nil {
+			log.Debugf("applyDiff: -D %s: %v", cidr, err)
+		}
+	}
+	for _, cidr := range toAdd {
+		if err := fc.iptCmd("-A", fc.chainName,
+			"-s", s.VpnIP, "-d", cidr, "-j", "ACCEPT",
+			"-m", "comment", "--comment", comment); err != nil {
+			log.Warnf("applyDiff: -A %s: %v", cidr, err)
+		}
+	}
+
+	if err := fc.installCatchAllDrop(); err != nil {
+		return fmt.Errorf("restore catch-all DROP: %w", err)
+	}
+
+	s.AllowedCIDRs = append([]string(nil), newCIDRs...)
+	return nil
+}

@@ -193,6 +193,102 @@ func TestUninstallRulesFor_RemovesAllEntries(t *testing.T) {
 	}
 }
 
+func TestApplyDiff_Add(t *testing.T) {
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+	s := &fwSession{CN: "alice", VpnIP: "172.16.100.5", AllowedCIDRs: []string{"10.0.0.0/8"}}
+
+	if err := fc.applyDiff(s, []string{"10.0.0.0/8", "8.8.8.8/32"}); err != nil {
+		t.Fatalf("applyDiff: %v", err)
+	}
+
+	// Expected: -D catch-all, -A для 8.8.8.8/32, -A catch-all
+	// Удалений нет — 10.0.0.0/8 в обоих set'ах.
+	if len(cmds) != 3 {
+		t.Fatalf("expected 3 commands, got %d: %v", len(cmds), cmds)
+	}
+	added := joinSpace(cmds[1])
+	if !containsAll(added, "-A OVPN_FW") || !containsAll(added, "-d 8.8.8.8/32") {
+		t.Errorf("expected -A for 8.8.8.8/32, got %v", cmds[1])
+	}
+}
+
+func TestApplyDiff_Remove(t *testing.T) {
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+	s := &fwSession{CN: "alice", VpnIP: "172.16.100.5", AllowedCIDRs: []string{"10.0.0.0/8", "8.8.8.8/32", "1.1.1.1/32"}}
+
+	if err := fc.applyDiff(s, []string{"10.0.0.0/8"}); err != nil {
+		t.Fatalf("applyDiff: %v", err)
+	}
+
+	// Expected: -D catch-all, -D for 8.8.8.8/32, -D for 1.1.1.1/32, -A catch-all
+	if len(cmds) != 4 {
+		t.Fatalf("expected 4 commands, got %d: %v", len(cmds), cmds)
+	}
+	deletedAccepts := 0
+	for _, c := range cmds {
+		j := joinSpace(c)
+		if containsAll(j, "-D OVPN_FW") && containsAll(j, "-j ACCEPT") {
+			deletedAccepts++
+		}
+	}
+	if deletedAccepts != 2 {
+		t.Errorf("expected 2 ACCEPT -D commands, got %d", deletedAccepts)
+	}
+}
+
+func TestApplyDiff_Mixed(t *testing.T) {
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+	s := &fwSession{CN: "alice", VpnIP: "172.16.100.5", AllowedCIDRs: []string{"10.0.0.0/8", "1.1.1.1/32"}}
+
+	if err := fc.applyDiff(s, []string{"10.0.0.0/8", "8.8.8.8/32"}); err != nil {
+		t.Fatalf("applyDiff: %v", err)
+	}
+
+	// -D catch-all, -D 1.1.1.1, -A 8.8.8.8, -A catch-all
+	if len(cmds) != 4 {
+		t.Fatalf("expected 4 commands, got %d: %v", len(cmds), cmds)
+	}
+	if len(s.AllowedCIDRs) != 2 {
+		t.Errorf("expected 2 CIDRs after diff, got %d: %v", len(s.AllowedCIDRs), s.AllowedCIDRs)
+	}
+}
+
+func TestApplyDiff_NoChange(t *testing.T) {
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+	s := &fwSession{CN: "alice", VpnIP: "172.16.100.5", AllowedCIDRs: []string{"10.0.0.0/8"}}
+
+	if err := fc.applyDiff(s, []string{"10.0.0.0/8"}); err != nil {
+		t.Fatalf("applyDiff: %v", err)
+	}
+	if len(cmds) != 0 {
+		t.Errorf("expected 0 commands for no-change diff, got %d: %v", len(cmds), cmds)
+	}
+}
+
 // helpers in test file
 func joinSpace(parts []string) string {
 	out := ""
