@@ -21,6 +21,7 @@ Simple web UI to manage OpenVPN users, their certificates & routes in Kubernetes
 * (optionally) Specifying/changing password for additional OpenVPN auth
 * (optionally) Specifying a Kubernetes LoadBalancer in front of the OpenVPN server (auto-defined `remote` in `client.conf.tpl`)
 * (optionally) Storing certificates and other files in Kubernetes Secrets
+* **Server-side route enforcement** — when enabled (default in Helm), ovpn-admin installs per-client iptables rules so that each VPN client can only reach destinations explicitly allowed via per-user CCD routes or global Common Routes. Requires `NET_ADMIN` capability.
 
 ## Screenshots
 
@@ -218,6 +219,40 @@ Flags:
 * When using `--ccd`, set `--ovpn.network` to match your OpenVPN server network.
 * Master/slave sync and per-user password auth do not work with `--storage.backend=kubernetes.secrets`.
 * Connected user status refreshes every 28 seconds.
+
+## Server-side route enforcement (firewall)
+
+By default, OpenVPN push routes are only a recommendation to the client — a user can manually `ip route add` any subnet via the tun device and reach it through the VPN, regardless of what was pushed by the server.
+
+ovpn-admin's firewall feature **enforces** the allowed routes server-side. For each connected client, ovpn-admin installs iptables rules in the `OVPN_FW` chain (jumped from `FORWARD`) that:
+
+- ACCEPT traffic from the client's VPN IP to each CIDR allowed by their CCD `CustomRoutes` ∪ global Common Routes
+- DROP everything else from the VPN subnet (catch-all default-deny)
+
+Rules are updated in real-time:
+- On client connect/disconnect (via OpenVPN management interface)
+- When per-user CCD is edited
+- When global Common Routes are added/edited/deleted
+- When DNS-resolved IPs for a domain-based common route change
+
+### Requirements
+
+- `NET_ADMIN` capability on the ovpn-admin container (already in Helm chart and docker-compose.yaml when feature is enabled)
+- `iptables` binary in the ovpn-admin image (already included)
+- OpenVPN `server.conf` includes `management-client-auth` directive (set automatically by the Helm chart)
+- Feature is **off by default in code** (`--firewall=false`), but **on by default in the Helm chart** for new installs
+
+### Disabling
+
+To keep the legacy behavior (push routes are advisory, no server-side enforcement), set in your `values.yaml`:
+
+```yaml
+ovpnAdmin:
+  firewall:
+    enabled: false
+```
+
+Or set `OVPN_FIREWALL=false` via env if running in compose.
 
 ## Authors
 
