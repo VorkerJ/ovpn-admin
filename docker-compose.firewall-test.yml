@@ -59,6 +59,11 @@ services:
       EASYRSA_PATH: "/mnt/easyrsa"
       OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"
       OVPN_FIREWALL: "true"
+      # NOTE: Docker Desktop on Mac/Windows runs containers in a minimal Linux VM
+      # that does NOT load `iptable_filter` / `nf_tables` kernel modules — neither
+      # /usr/sbin/iptables (nft) nor /usr/sbin/iptables-legacy will work for this
+      # smoke compose on Docker Desktop. Tested end-to-end only on real Linux hosts
+      # (CI runners, K8s nodes via the Helm chart).
       OVPN_FIREWALL_IPTABLES_BIN: "/usr/sbin/iptables"
       LOG_LEVEL: "debug"
     network_mode: service:openvpn

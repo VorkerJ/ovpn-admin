@@ -254,6 +254,12 @@ ovpnAdmin:
 
 Or set `OVPN_FIREWALL=false` via env if running in compose.
 
+### Limitations
+
+- IPv4 only (no `ip6tables` support in v1)
+- CIDR-level rules only (no per-port or per-protocol filtering in v1)
+- **Docker Desktop on Mac/Windows cannot run the firewall end-to-end**: Docker Desktop's Linux VM does not load the `iptable_filter` / `nf_tables` kernel modules, so any iptables invocation from inside a container returns "Failed to initialize" / "table doesn't exist". The feature works correctly on real Linux hosts (CI runners, Kubernetes nodes). For local development you can still iterate on the Go code and run unit tests; full end-to-end smoke needs a Linux VM or actual cluster.
+
 ## Authors
 
 ovpn-admin was originally created in [Flant](https://github.com/flant/) and used internally for years.
