@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -599,6 +600,20 @@ func (fc *firewallController) Stop() {
 		fc.cancel()
 	}
 	fc.cleanupChain()
+}
+
+// realIptCmd возвращает функцию, вызывающую реальный iptables бинарь.
+// Используется в проде; в тестах — мок.
+func realIptCmd(iptBin string) iptCmdFunc {
+	return func(args ...string) error {
+		cmd := exec.Command(iptBin, args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			ovpnFirewallIptablesErrors.Inc()
+			return fmt.Errorf("%s %v: %w (output: %s)", iptBin, args, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
 }
 
 // selfHealLoop периодически пушит EvReconcile для self-heal'а от дрифта.

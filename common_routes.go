@@ -313,6 +313,9 @@ func (oAdmin *OvpnAdmin) commonRoutesRefreshHandler(w http.ResponseWriter, r *ht
 	if changed {
 		expanded := expandCommonRoutes(updated)
 		go oAdmin.rerenderAllCcds(expanded)
+		if oAdmin.firewall != nil {
+			oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -361,6 +364,9 @@ func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.
 
 	expanded := expandCommonRoutes(current)
 	go oAdmin.rerenderAllCcds(expanded)
+	if oAdmin.firewall != nil {
+		oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"route": in})
 }
@@ -419,6 +425,9 @@ func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.
 
 	expanded := expandCommonRoutes(current)
 	go oAdmin.rerenderAllCcds(expanded)
+	if oAdmin.firewall != nil {
+		oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"route": in})
 }
@@ -445,6 +454,9 @@ func (oAdmin *OvpnAdmin) handleDeleteCommonRoute(w http.ResponseWriter, r *http.
 
 	expanded := expandCommonRoutes(current)
 	go oAdmin.rerenderAllCcds(expanded)
+	if oAdmin.firewall != nil {
+		oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -86,6 +87,26 @@ var (
 	clientCertExpirationDays = kingpin.Flag("client-cert.expiration-days", "Expiration period of OpenVPN client certificates in days, the period will shrink automatically to the CA expiration period").Default("3650").Envar("CLIENT_CERT_EXPIRATION_DAYS").String()
 	adminHtpasswdFile = kingpin.Flag("admin.htpasswd-file", "path to htpasswd file with admin UI credentials; if empty, a random password is generated").Default("").Envar("ADMIN_HTPASSWD_FILE").String()
 	commonRoutesEnabled = kingpin.Flag("common-routes", "enable common routes feature").Default("true").Envar("OVPN_COMMON_ROUTES").Bool()
+
+	firewallEnabled = kingpin.Flag("firewall",
+		"enable per-client iptables enforcement").
+		Default("false").Envar("OVPN_FIREWALL").Bool()
+
+	firewallChainName = kingpin.Flag("firewall.chain-name",
+		"iptables chain name for ovpn-admin rules").
+		Default("OVPN_FW").Envar("OVPN_FIREWALL_CHAIN").String()
+
+	firewallIptablesBin = kingpin.Flag("firewall.iptables-bin",
+		"path to iptables binary").
+		Default("iptables").Envar("OVPN_FIREWALL_IPTABLES_BIN").String()
+
+	firewallStartupTimeout = kingpin.Flag("firewall.startup-timeout",
+		"max time to wait for first mgmt connection before failing startup").
+		Default("30s").Envar("OVPN_FIREWALL_STARTUP_TIMEOUT").Duration()
+
+	firewallReconcileInterval = kingpin.Flag("firewall.reconcile-interval",
+		"self-heal reconcile period").
+		Default("5m").Envar("OVPN_FIREWALL_RECONCILE_INTERVAL").Duration()
 
 	certsArchivePath = "/tmp/" + certsArchiveFileName
 	ccdArchivePath   = "/tmp/" + ccdArchiveFileName
@@ -201,6 +222,7 @@ type OvpnAdmin struct {
 	createUserMutex        *sync.Mutex
 	commonRoutes           *commonRoutesStore
 	commonRoutesPath       string
+	firewall               *firewallController
 }
 
 type OpenvpnServer struct {
@@ -430,6 +452,10 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 	ccdApplied, applyStatus := oAdmin.modifyCcd(ccd, expanded)
 
 	if ccdApplied {
+		// Триггер пересчёта firewall-правил для этого CN
+		if oAdmin.firewall != nil {
+			oAdmin.firewall.push(fwEvent{Kind: EvUserChanged, CN: ccd.User})
+		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, applyStatus)
 		return
@@ -600,6 +626,38 @@ func main() {
 		ovpnAdmin.commonRoutes.replace(initial)
 
 		go ovpnAdmin.runCommonRoutesScheduler()
+	}
+
+	if *firewallEnabled {
+		ovpnAdmin.modules = append(ovpnAdmin.modules, "firewall")
+
+		// fail-fast: проверим что iptables бинарь доступен
+		if _, err := exec.LookPath(*firewallIptablesBin); err != nil {
+			log.Fatalf("firewall enabled but iptables binary %q not found: %v", *firewallIptablesBin, err)
+		}
+
+		_, vpnNet, err := net.ParseCIDR(*openvpnNetwork)
+		if err != nil {
+			log.Fatalf("firewall: cannot parse --ovpn.network=%s: %v", *openvpnNetwork, err)
+		}
+
+		mgmtAddr, ok := ovpnAdmin.mgmtInterfaces["main"]
+		if !ok {
+			log.Fatalf("firewall: no mgmt interface 'main' configured; got %v", ovpnAdmin.mgmtInterfaces)
+		}
+
+		ovpnAdmin.firewall = newFirewallController(
+			ovpnAdmin,
+			*firewallChainName,
+			*firewallIptablesBin,
+			vpnNet,
+			realIptCmd(*firewallIptablesBin),
+		)
+
+		ctx := context.Background()
+		if err := ovpnAdmin.firewall.Start(ctx, mgmtAddr, *firewallReconcileInterval); err != nil {
+			log.Fatalf("firewall: Start failed: %v", err)
+		}
 	}
 
 	if ovpnAdmin.role == "slave" {
