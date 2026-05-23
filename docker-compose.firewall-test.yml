@@ -1,0 +1,75 @@
+version: '3'
+
+services:
+  pki-init:
+    image: alpine:3.23
+    volumes:
+      - pki_data:/pki
+      - ccd_data:/ccd
+    command: >
+      sh -c "
+        if [ -f /pki/pki/index.txt ]; then
+          echo 'PKI already initialized';
+          exit 0;
+        fi;
+        apk add --no-cache easy-rsa openssl &&
+        ln -s /usr/share/easy-rsa/easyrsa /usr/local/bin/easyrsa &&
+        mkdir -p /pki && cd /pki &&
+        EASYRSA_BATCH=1 easyrsa init-pki &&
+        EASYRSA_BATCH=1 EASYRSA_REQ_CN=TestCA easyrsa build-ca nopass &&
+        EASYRSA_BATCH=1 easyrsa gen-req alice nopass &&
+        EASYRSA_BATCH=1 easyrsa sign-req client alice &&
+        mkdir -p /ccd &&
+        echo 'PKI initialized'
+      "
+
+  openvpn:
+    build:
+      context: .
+      dockerfile: Dockerfile.openvpn
+    image: openvpn:local
+    command: /etc/openvpn/setup/configure.sh
+    environment:
+      OVPN_SERVER_NET: "192.168.100.0"
+      OVPN_SERVER_MASK: "255.255.255.0"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - "/dev/net/tun:/dev/net/tun"
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    ports:
+      - "1194:1194/udp"
+      - "8088:8080"
+    volumes:
+      - pki_data:/etc/openvpn/easyrsa
+      - ccd_data:/etc/openvpn/ccd
+
+  ovpn-admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.ovpn-admin
+    image: ovpn-admin:local
+    command: /app/ovpn-admin
+    environment:
+      OVPN_NETWORK: "192.168.100.0/24"
+      OVPN_CCD: "true"
+      OVPN_CCD_PATH: "/mnt/ccd"
+      EASYRSA_PATH: "/mnt/easyrsa"
+      OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"
+      OVPN_FIREWALL: "true"
+      OVPN_FIREWALL_IPTABLES_BIN: "/sbin/iptables"
+      LOG_LEVEL: "debug"
+    network_mode: service:openvpn
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - openvpn
+    volumes:
+      - pki_data:/mnt/easyrsa
+      - ccd_data:/mnt/ccd
+
+volumes:
+  pki_data:
+  ccd_data:
