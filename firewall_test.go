@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestIpMaskToCIDR(t *testing.T) {
@@ -470,6 +473,110 @@ func TestParseMgmtClientEvent_InterleavedSessions(t *testing.T) {
 	if events[0].CN != "alice" || events[1].CN != "bob" {
 		t.Errorf("event order: %+v, %+v", events[0], events[1])
 	}
+}
+
+func TestEventHandlerLoop_ConnectThenDisconnect(t *testing.T) {
+	dir := t.TempDir()
+	originalCcdDir := *ccdDir
+	tmp := dir
+	ccdDir = &tmp
+	defer func() { ccdDir = &originalCcdDir }()
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	app := &OvpnAdmin{
+		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
+			{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
+		}}},
+	}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var calls int32
+	iptMock := func(args ...string) error {
+		atomic.AddInt32(&calls, 1)
+		return nil
+	}
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fc.eventHandlerLoop(ctx)
+
+	fc.push(fwEvent{Kind: EvConnect, CN: "alice", VpnIP: "172.16.100.5"})
+	waitForCalls(t, &calls, 1, 2*time.Second)
+
+	fc.mu.Lock()
+	if _, ok := fc.sessions["alice"]; !ok {
+		fc.mu.Unlock()
+		t.Fatal("session for alice not registered after Connect")
+	}
+	fc.mu.Unlock()
+
+	prev := atomic.LoadInt32(&calls)
+	fc.push(fwEvent{Kind: EvDisconnect, CN: "alice"})
+	waitForCalls(t, &calls, prev+1, 2*time.Second)
+
+	fc.mu.Lock()
+	if _, ok := fc.sessions["alice"]; ok {
+		fc.mu.Unlock()
+		t.Fatal("session for alice not removed after Disconnect")
+	}
+	fc.mu.Unlock()
+}
+
+func TestEventHandlerLoop_Coalescing(t *testing.T) {
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	iptMock := func(args ...string) error { return nil }
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+
+	// Толкаем 10 EvConnect для alice ПЕРЕД запуском обработчика — должны коалесцироваться.
+	for i := 0; i < 10; i++ {
+		fc.push(fwEvent{Kind: EvConnect, CN: "alice", VpnIP: "172.16.100.5"})
+	}
+
+	fc.mu.Lock()
+	if len(fc.pending) != 1 {
+		fc.mu.Unlock()
+		t.Fatalf("expected 1 pending event after coalescing, got %d", len(fc.pending))
+	}
+	fc.mu.Unlock()
+}
+
+func TestEventHandlerLoop_NoOpIfDisconnected(t *testing.T) {
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var calls int32
+	iptMock := func(args ...string) error {
+		atomic.AddInt32(&calls, 1)
+		return nil
+	}
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fc.eventHandlerLoop(ctx)
+
+	// alice не в sessions; EvUserChanged для неё должен быть no-op
+	fc.push(fwEvent{Kind: EvUserChanged, CN: "alice"})
+	time.Sleep(200 * time.Millisecond)
+
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Errorf("expected 0 iptables calls for UserChanged on disconnected CN, got %d", calls)
+	}
+}
+
+func waitForCalls(t *testing.T, calls *int32, want int32, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(calls) >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %d iptables calls (got %d)", want, atomic.LoadInt32(calls))
 }
 
 // helpers in test file

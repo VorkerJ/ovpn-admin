@@ -324,3 +324,108 @@ func (p *mgmtEventParser) feed(line string) *fwEvent {
 	}
 	return nil
 }
+
+// push добавляет событие в очередь с дедупликацией per-CN.
+// Если событие для того же CN уже в очереди — заменяет его.
+// EvCommonChanged использует фиксированный ключ "__common__", EvReconcile — "__reconcile__".
+func (fc *firewallController) push(ev fwEvent) {
+	if !fc.enabled {
+		return
+	}
+	key := ev.CN
+	if ev.Kind == EvCommonChanged {
+		key = "__common__"
+	}
+	if ev.Kind == EvReconcile {
+		key = "__reconcile__"
+	}
+	fc.mu.Lock()
+	fc.pending[key] = ev
+	fc.mu.Unlock()
+	select {
+	case fc.kick <- struct{}{}:
+	default:
+	}
+}
+
+// eventHandlerLoop — единственная горутина-обработчик очереди событий.
+func (fc *firewallController) eventHandlerLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-fc.kick:
+		}
+		fc.mu.Lock()
+		batch := fc.pending
+		fc.pending = make(map[string]fwEvent)
+		fc.mu.Unlock()
+		for _, ev := range batch {
+			fc.handleEvent(ev)
+		}
+	}
+}
+
+// handleEvent — обработка одного события.
+// Лочит fc.mu на время операций.
+func (fc *firewallController) handleEvent(ev fwEvent) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+
+	switch ev.Kind {
+	case EvConnect:
+		cidrs, err := fc.computeAllowedCIDRs(ev.CN)
+		if err != nil {
+			log.Warnf("firewall: computeAllowedCIDRs(%s) on connect: %v", ev.CN, err)
+			return
+		}
+		if err := fc.installRulesFor(ev.CN, ev.VpnIP, cidrs); err != nil {
+			log.Warnf("firewall: installRulesFor(%s): %v", ev.CN, err)
+		}
+		fc.sessions[ev.CN] = &fwSession{CN: ev.CN, VpnIP: ev.VpnIP, AllowedCIDRs: cidrs, RulesInstalled: true}
+
+	case EvDisconnect:
+		s, ok := fc.sessions[ev.CN]
+		if !ok {
+			return
+		}
+		if err := fc.uninstallRulesFor(s.CN, s.VpnIP, s.AllowedCIDRs); err != nil {
+			log.Warnf("firewall: uninstallRulesFor(%s): %v", ev.CN, err)
+		}
+		delete(fc.sessions, ev.CN)
+
+	case EvUserChanged:
+		s, ok := fc.sessions[ev.CN]
+		if !ok {
+			return
+		}
+		newCIDRs, err := fc.computeAllowedCIDRs(ev.CN)
+		if err != nil {
+			log.Warnf("firewall: computeAllowedCIDRs(%s) on user-changed: %v", ev.CN, err)
+			return
+		}
+		if err := fc.applyDiff(s, newCIDRs); err != nil {
+			log.Warnf("firewall: applyDiff(%s): %v", ev.CN, err)
+		}
+
+	case EvCommonChanged:
+		for cn, s := range fc.sessions {
+			newCIDRs, err := fc.computeAllowedCIDRs(cn)
+			if err != nil {
+				log.Warnf("firewall: computeAllowedCIDRs(%s) on common-changed: %v", cn, err)
+				continue
+			}
+			if err := fc.applyDiff(s, newCIDRs); err != nil {
+				log.Warnf("firewall: applyDiff(%s): %v", cn, err)
+			}
+		}
+
+	case EvReconcile:
+		fc.reconcileLocked() // см. Task 9
+	}
+}
+
+// reconcileLocked — будет реализован в Task 9.
+func (fc *firewallController) reconcileLocked() {
+	// TODO Task 9
+}
