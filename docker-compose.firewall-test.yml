@@ -59,7 +59,7 @@ services:
       EASYRSA_PATH: "/mnt/easyrsa"
       OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"
       OVPN_FIREWALL: "true"
-      OVPN_FIREWALL_IPTABLES_BIN: "/sbin/iptables"
+      OVPN_FIREWALL_IPTABLES_BIN: "/usr/sbin/iptables"
       LOG_LEVEL: "debug"
     network_mode: service:openvpn
     cap_add:
