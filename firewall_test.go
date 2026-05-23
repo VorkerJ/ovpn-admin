@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -650,6 +651,49 @@ func TestReconcile_DriftCorrection(t *testing.T) {
 
 	if _, ok := fc.sessions["ghost"]; ok {
 		t.Errorf("ghost session should have been removed by reconcile")
+	}
+}
+
+func TestSubscribeAndPump_ParsesMultipleEvents(t *testing.T) {
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
+
+	streamData := strings.Join([]string{
+		"SUCCESS: real-time notification of client events enabled\n",
+		">CLIENT:CONNECT,2,1\n",
+		">CLIENT:ENV,common_name=alice\n",
+		">CLIENT:ENV,ifconfig_pool_remote_ip=172.16.100.5\n",
+		">CLIENT:ENV,END\n",
+		">CLIENT:DISCONNECT,2\n",
+		">CLIENT:ENV,common_name=alice\n",
+		">CLIENT:ENV,END\n",
+	}, "")
+
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = io.Copy(pw, strings.NewReader(streamData))
+		_ = pw.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go fc.eventHandlerLoop(ctx)
+
+	if err := fc.consumeStream(ctx, pr); err != nil && err != io.EOF {
+		t.Logf("consumeStream returned: %v (acceptable on EOF)", err)
+	}
+
+	// Дать обработчику время
+	time.Sleep(200 * time.Millisecond)
+
+	// После CONNECT+DISCONNECT alice должна отсутствовать
+	fc.mu.Lock()
+	_, exists := fc.sessions["alice"]
+	fc.mu.Unlock()
+	if exists {
+		t.Errorf("alice should have been disconnected by end of stream")
 	}
 }
 

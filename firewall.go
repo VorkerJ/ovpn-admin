@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -464,5 +467,64 @@ func (fc *firewallController) reconcileLocked() {
 			continue
 		}
 		fc.sessions[cn] = &fwSession{CN: cn, VpnIP: c.VirtualAddress, AllowedCIDRs: cidrs, RulesInstalled: true}
+	}
+}
+
+// consumeStream читает строки из соединения mgmt-interface и пушит события в очередь.
+// Возвращает при EOF, ошибке чтения или ctx cancel.
+func (fc *firewallController) consumeStream(ctx context.Context, r io.Reader) error {
+	parser := newMgmtEventParser()
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		line := scanner.Text()
+		if ev := parser.feed(line); ev != nil {
+			fc.push(*ev)
+		}
+	}
+	return scanner.Err()
+}
+
+// mgmtEventLoop держит постоянное TCP-подключение к mgmt-interface, парсит real-time
+// события connect/disconnect. На обрыве — reconnect с backoff'ом + reconcile.
+func (fc *firewallController) mgmtEventLoop(ctx context.Context, mgmtAddr string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		conn, err := net.Dial("tcp", mgmtAddr)
+		if err != nil {
+			log.Warnf("firewall: mgmt connect %s failed: %v; retry in 5s", mgmtAddr, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+		// Включаем подписку на лог-события. В server.conf для real-time >CLIENT: событий
+		// должно стоять `management-client-auth` (или эквивалент).
+		fmt.Fprintln(conn, "log on")
+
+		if err := fc.consumeStream(ctx, conn); err != nil && err != io.EOF {
+			log.Warnf("firewall: mgmt stream error: %v; reconnect", err)
+		}
+		conn.Close()
+
+		// При reconnect делаем reconcile для сверки.
+		fc.push(fwEvent{Kind: EvReconcile})
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(1 * time.Second):
+		}
 	}
 }
