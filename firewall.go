@@ -10,8 +10,48 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
+
+var (
+	ovpnFirewallEnabledGauge = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "ovpn_firewall_enabled",
+		Help: "1 if server-side route enforcement is enabled",
+	})
+	ovpnFirewallActiveSessions = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "ovpn_firewall_active_sessions",
+		Help: "Number of VPN sessions with installed iptables rules",
+	})
+	ovpnFirewallIptablesErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ovpn_firewall_iptables_errors_total",
+		Help: "Number of failed iptables invocations",
+	})
+	ovpnFirewallEventsProcessed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "ovpn_firewall_events_processed_total",
+		Help: "Number of firewall events processed, labeled by type",
+	}, []string{"type"})
+	ovpnFirewallReconciles = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ovpn_firewall_reconciles_total",
+		Help: "Number of full reconcile operations",
+	})
+)
+
+func eventKindName(k fwEventKind) string {
+	switch k {
+	case EvConnect:
+		return "connect"
+	case EvDisconnect:
+		return "disconnect"
+	case EvUserChanged:
+		return "user_changed"
+	case EvCommonChanged:
+		return "common_changed"
+	case EvReconcile:
+		return "reconcile"
+	}
+	return "unknown"
+}
 
 // ipMaskToCIDR конвертирует пару IP + dotted-quad netmask в CIDR-нотацию.
 // Возвращает ошибку, если IP или маска невалидны, либо маска не contiguous.
@@ -381,6 +421,8 @@ func (fc *firewallController) eventHandlerLoop(ctx context.Context) {
 func (fc *firewallController) handleEvent(ev fwEvent) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
+	defer ovpnFirewallEventsProcessed.WithLabelValues(eventKindName(ev.Kind)).Inc()
+	defer func() { ovpnFirewallActiveSessions.Set(float64(len(fc.sessions))) }()
 
 	switch ev.Kind {
 	case EvConnect:
@@ -468,6 +510,7 @@ func (fc *firewallController) reconcileLocked() {
 		}
 		fc.sessions[cn] = &fwSession{CN: cn, VpnIP: c.VirtualAddress, AllowedCIDRs: cidrs, RulesInstalled: true}
 	}
+	ovpnFirewallReconciles.Inc()
 }
 
 // consumeStream читает строки из соединения mgmt-interface и пушит события в очередь.
@@ -545,11 +588,13 @@ func (fc *firewallController) Start(ctx context.Context, mgmtAddr string, reconc
 	// initial reconcile
 	fc.push(fwEvent{Kind: EvReconcile})
 
+	ovpnFirewallEnabledGauge.Set(1)
 	return nil
 }
 
 // Stop отменяет контекст и делает best-effort cleanup цепочки.
 func (fc *firewallController) Stop() {
+	ovpnFirewallEnabledGauge.Set(0)
 	if fc.cancel != nil {
 		fc.cancel()
 	}

@@ -671,6 +671,11 @@ func (oAdmin *OvpnAdmin) registerMetrics() {
 	oAdmin.promRegistry.MustRegister(ovpnClientConnectionFrom)
 	oAdmin.promRegistry.MustRegister(ovpnClientBytesReceived)
 	oAdmin.promRegistry.MustRegister(ovpnClientBytesSent)
+	oAdmin.promRegistry.MustRegister(ovpnFirewallEnabledGauge)
+	oAdmin.promRegistry.MustRegister(ovpnFirewallActiveSessions)
+	oAdmin.promRegistry.MustRegister(ovpnFirewallIptablesErrors)
+	oAdmin.promRegistry.MustRegister(ovpnFirewallEventsProcessed)
+	oAdmin.promRegistry.MustRegister(ovpnFirewallReconciles)
 }
 
 func (oAdmin *OvpnAdmin) setState() {
