@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"testing"
 )
@@ -286,6 +287,95 @@ func TestApplyDiff_NoChange(t *testing.T) {
 	}
 	if len(cmds) != 0 {
 		t.Errorf("expected 0 commands for no-change diff, got %d: %v", len(cmds), cmds)
+	}
+}
+
+func TestComputeAllowedCIDRs_PersonalAndCommon(t *testing.T) {
+	dir := t.TempDir()
+	originalCcdDir := *ccdDir
+	tmp := dir
+	ccdDir = &tmp
+	defer func() { ccdDir = &originalCcdDir }()
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	// CCD юзера alice с двумя custom routes
+	ccdContent := `ifconfig-push 172.16.100.5 255.255.255.0
+push "route 10.0.0.0 255.0.0.0" # corp
+push "route 192.168.1.0 255.255.255.0" # lan
+`
+	if err := os.WriteFile(dir+"/alice", []byte(ccdContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &OvpnAdmin{
+		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
+			{ID: "x", Kind: "ip", Address: "8.8.8.8", Mask: "255.255.255.255"},
+			{ID: "y", Kind: "domain", Domain: "yt.com", ResolvedIPs: []string{"1.1.1.1", "2.2.2.2"}},
+		}}},
+	}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
+
+	cidrs, err := fc.computeAllowedCIDRs("alice")
+	if err != nil {
+		t.Fatalf("computeAllowedCIDRs: %v", err)
+	}
+
+	want := map[string]bool{
+		"10.0.0.0/8":     true,
+		"192.168.1.0/24": true,
+		"8.8.8.8/32":     true,
+		"1.1.1.1/32":     true,
+		"2.2.2.2/32":     true,
+	}
+	if len(cidrs) != len(want) {
+		t.Errorf("expected %d CIDRs, got %d: %v", len(want), len(cidrs), cidrs)
+	}
+	for _, c := range cidrs {
+		if !want[c] {
+			t.Errorf("unexpected CIDR %q", c)
+		}
+		delete(want, c)
+	}
+	if len(want) > 0 {
+		t.Errorf("missing CIDRs: %v", want)
+	}
+}
+
+func TestComputeAllowedCIDRs_Dedup(t *testing.T) {
+	dir := t.TempDir()
+	originalCcdDir := *ccdDir
+	tmp := dir
+	ccdDir = &tmp
+	defer func() { ccdDir = &originalCcdDir }()
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	ccdContent := `push "route 8.8.8.8 255.255.255.255" # personal-8.8.8.8
+`
+	if err := os.WriteFile(dir+"/bob", []byte(ccdContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &OvpnAdmin{
+		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
+			{ID: "x", Kind: "ip", Address: "8.8.8.8", Mask: "255.255.255.255"},
+		}}},
+	}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
+
+	cidrs, err := fc.computeAllowedCIDRs("bob")
+	if err != nil {
+		t.Fatalf("computeAllowedCIDRs: %v", err)
+	}
+	if len(cidrs) != 1 || cidrs[0] != "8.8.8.8/32" {
+		t.Errorf("expected dedup to 1 CIDR, got %v", cidrs)
 	}
 }
 

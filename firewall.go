@@ -239,3 +239,38 @@ func (fc *firewallController) applyDiff(s *fwSession, newCIDRs []string) error {
 	s.AllowedCIDRs = append([]string(nil), newCIDRs...)
 	return nil
 }
+
+// computeAllowedCIDRs возвращает дедуплицированный набор CIDR'ов, разрешённых для CN.
+// Источники: CCD CustomRoutes (через oAdmin.getCcd) + Common Routes (через oAdmin.commonRoutes.snapshot()).
+func (fc *firewallController) computeAllowedCIDRs(cn string) ([]string, error) {
+	set := make(map[string]struct{})
+
+	if fc.oAdmin != nil {
+		ccd := fc.oAdmin.getCcd(cn)
+		for _, r := range ccd.CustomRoutes {
+			cidr, err := ipMaskToCIDR(r.Address, r.Mask)
+			if err != nil {
+				log.Warnf("firewall: invalid CCD route for %s: %v", cn, err)
+				continue
+			}
+			set[cidr] = struct{}{}
+		}
+		if fc.oAdmin.commonRoutes != nil {
+			expanded := expandCommonRoutes(fc.oAdmin.commonRoutes.snapshot())
+			for _, r := range expanded {
+				cidr, err := ipMaskToCIDR(r.Address, r.Mask)
+				if err != nil {
+					log.Warnf("firewall: invalid common route: %v", err)
+					continue
+				}
+				set[cidr] = struct{}{}
+			}
+		}
+	}
+
+	out := make([]string, 0, len(set))
+	for c := range set {
+		out = append(out, c)
+	}
+	return out, nil
+}
