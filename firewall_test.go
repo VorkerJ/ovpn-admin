@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 func TestIpMaskToCIDR(t *testing.T) {
 	cases := []struct {
@@ -34,5 +37,30 @@ func TestIpMaskToCIDR_BadInput(t *testing.T) {
 		if _, err := ipMaskToCIDR(c.addr, c.mask); err == nil {
 			t.Errorf("ipMaskToCIDR(%q,%q) expected error, got nil", c.addr, c.mask)
 		}
+	}
+}
+
+func TestNewFirewallController_Defaults(t *testing.T) {
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	called := 0
+	iptMock := func(args ...string) error { called++; return nil }
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+	if fc.chainName != "OVPN_FW" {
+		t.Errorf("chainName: got %q", fc.chainName)
+	}
+	if fc.iptBin != "iptables" {
+		t.Errorf("iptBin: got %q", fc.iptBin)
+	}
+	if !fc.enabled {
+		t.Errorf("enabled must be true by default")
+	}
+	if fc.sessions == nil || fc.pending == nil || fc.kick == nil {
+		t.Errorf("maps/channels not initialized")
+	}
+	if fc.iptCmd == nil {
+		t.Errorf("iptCmd not set")
+	}
+	if called != 0 {
+		t.Errorf("iptCmd should not be invoked by constructor")
 	}
 }
