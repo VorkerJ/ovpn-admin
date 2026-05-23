@@ -579,6 +579,80 @@ func waitForCalls(t *testing.T, calls *int32, want int32, timeout time.Duration)
 	t.Fatalf("timeout waiting for %d iptables calls (got %d)", want, atomic.LoadInt32(calls))
 }
 
+func TestReconcile_FromMgmtSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	originalCcdDir := *ccdDir
+	tmp := dir
+	ccdDir = &tmp
+	defer func() { ccdDir = &originalCcdDir }()
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	app := &OvpnAdmin{
+		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
+			{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
+		}}},
+	}
+
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+	fc.mgmtSnapshot = func() []clientStatus {
+		return []clientStatus{
+			{CommonName: "alice", VirtualAddress: "172.16.100.5"},
+			{CommonName: "bob", VirtualAddress: "172.16.100.6"},
+		}
+	}
+
+	fc.mu.Lock()
+	fc.reconcileLocked()
+	fc.mu.Unlock()
+
+	if len(fc.sessions) != 2 {
+		t.Errorf("expected 2 sessions after reconcile, got %d", len(fc.sessions))
+	}
+	if _, ok := fc.sessions["alice"]; !ok {
+		t.Errorf("alice missing from sessions")
+	}
+	if _, ok := fc.sessions["bob"]; !ok {
+		t.Errorf("bob missing from sessions")
+	}
+}
+
+func TestReconcile_DriftCorrection(t *testing.T) {
+	dir := t.TempDir()
+	originalCcdDir := *ccdDir
+	tmp := dir
+	ccdDir = &tmp
+	defer func() { ccdDir = &originalCcdDir }()
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
+
+	// pre-seed: ghost session не существующая в mgmt
+	fc.sessions["ghost"] = &fwSession{CN: "ghost", VpnIP: "172.16.100.99", AllowedCIDRs: []string{"10.0.0.0/8"}}
+	fc.mgmtSnapshot = func() []clientStatus { return nil } // mgmt видит 0 клиентов
+
+	fc.mu.Lock()
+	fc.reconcileLocked()
+	fc.mu.Unlock()
+
+	if _, ok := fc.sessions["ghost"]; ok {
+		t.Errorf("ghost session should have been removed by reconcile")
+	}
+}
+
 // helpers in test file
 func joinSpace(parts []string) string {
 	out := ""

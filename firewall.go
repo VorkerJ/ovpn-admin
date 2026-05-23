@@ -56,22 +56,23 @@ type fwSession struct {
 type iptCmdFunc func(args ...string) error
 
 type firewallController struct {
-	mu        sync.Mutex
-	enabled   bool
-	chainName string
-	iptBin    string
-	vpnNet    *net.IPNet
-	sessions  map[string]*fwSession
-	pending   map[string]fwEvent
-	kick      chan struct{}
-	iptCmd    iptCmdFunc
-	oAdmin    *OvpnAdmin
-	ctx       context.Context
-	cancel    context.CancelFunc
+	mu           sync.Mutex
+	enabled      bool
+	chainName    string
+	iptBin       string
+	vpnNet       *net.IPNet
+	sessions     map[string]*fwSession
+	pending      map[string]fwEvent
+	kick         chan struct{}
+	iptCmd       iptCmdFunc
+	oAdmin       *OvpnAdmin
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mgmtSnapshot func() []clientStatus // мокается в тестах; в проде = oAdmin.mgmtGetActiveClients
 }
 
 func newFirewallController(oAdmin *OvpnAdmin, chainName, iptBin string, vpnNet *net.IPNet, iptCmd iptCmdFunc) *firewallController {
-	return &firewallController{
+	fc := &firewallController{
 		enabled:   true,
 		chainName: chainName,
 		iptBin:    iptBin,
@@ -82,6 +83,12 @@ func newFirewallController(oAdmin *OvpnAdmin, chainName, iptBin string, vpnNet *
 		iptCmd:    iptCmd,
 		oAdmin:    oAdmin,
 	}
+	if oAdmin != nil {
+		fc.mgmtSnapshot = oAdmin.mgmtGetActiveClients
+	} else {
+		fc.mgmtSnapshot = func() []clientStatus { return nil }
+	}
+	return fc
 }
 
 // initChain создаёт цепочку OVPN_FW (если её нет), очищает, ставит прыжок из FORWARD,
@@ -425,7 +432,37 @@ func (fc *firewallController) handleEvent(ev fwEvent) {
 	}
 }
 
-// reconcileLocked — будет реализован в Task 9.
+// reconcileLocked полностью сверяет fc.sessions с реальностью из mgmt-snapshot'а.
+// Caller держит fc.mu. Используется при старте, при обрыве mgmt-стрима и периодически.
 func (fc *firewallController) reconcileLocked() {
-	// TODO Task 9
+	snapshot := fc.mgmtSnapshot()
+	live := make(map[string]*clientStatus)
+	for i := range snapshot {
+		live[snapshot[i].CommonName] = &snapshot[i]
+	}
+	// Закрываем sessions которых нет в live — uninstall
+	for cn, s := range fc.sessions {
+		if _, ok := live[cn]; !ok {
+			if err := fc.uninstallRulesFor(s.CN, s.VpnIP, s.AllowedCIDRs); err != nil {
+				log.Warnf("firewall: reconcile uninstall(%s): %v", cn, err)
+			}
+			delete(fc.sessions, cn)
+		}
+	}
+	// Добавляем тех, кто есть в live, но нет в fc.sessions
+	for cn, c := range live {
+		if _, ok := fc.sessions[cn]; ok {
+			continue
+		}
+		cidrs, err := fc.computeAllowedCIDRs(cn)
+		if err != nil {
+			log.Warnf("firewall: reconcile compute(%s): %v", cn, err)
+			continue
+		}
+		if err := fc.installRulesFor(cn, c.VirtualAddress, cidrs); err != nil {
+			log.Warnf("firewall: reconcile install(%s): %v", cn, err)
+			continue
+		}
+		fc.sessions[cn] = &fwSession{CN: cn, VpnIP: c.VirtualAddress, AllowedCIDRs: cidrs, RulesInstalled: true}
+	}
 }
