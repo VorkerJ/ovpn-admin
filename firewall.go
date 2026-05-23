@@ -528,3 +528,47 @@ func (fc *firewallController) mgmtEventLoop(ctx context.Context, mgmtAddr string
 		}
 	}
 }
+
+// Start выполняет initChain, запускает горутины (mgmt-event, event-handler, self-heal-ticker)
+// и делает initial reconcile. Возвращает ошибку только если initChain провалился.
+func (fc *firewallController) Start(ctx context.Context, mgmtAddr string, reconcileInterval time.Duration) error {
+	fc.ctx, fc.cancel = context.WithCancel(ctx)
+
+	if err := fc.initChain(); err != nil {
+		return fmt.Errorf("initChain: %w", err)
+	}
+
+	go fc.eventHandlerLoop(fc.ctx)
+	go fc.mgmtEventLoop(fc.ctx, mgmtAddr)
+	go fc.selfHealLoop(fc.ctx, reconcileInterval)
+
+	// initial reconcile
+	fc.push(fwEvent{Kind: EvReconcile})
+
+	return nil
+}
+
+// Stop отменяет контекст и делает best-effort cleanup цепочки.
+func (fc *firewallController) Stop() {
+	if fc.cancel != nil {
+		fc.cancel()
+	}
+	fc.cleanupChain()
+}
+
+// selfHealLoop периодически пушит EvReconcile для self-heal'а от дрифта.
+func (fc *firewallController) selfHealLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			fc.push(fwEvent{Kind: EvReconcile})
+		}
+	}
+}

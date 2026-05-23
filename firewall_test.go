@@ -697,6 +697,69 @@ func TestSubscribeAndPump_ParsesMultipleEvents(t *testing.T) {
 	}
 }
 
+func TestStart_RunsInitAndReconcile(t *testing.T) {
+	dir := t.TempDir()
+	originalCcdDir := *ccdDir
+	tmp := dir
+	ccdDir = &tmp
+	defer func() { ccdDir = &originalCcdDir }()
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+	fc.mgmtSnapshot = func() []clientStatus { return nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := fc.Start(ctx, "127.0.0.1:65000", 100*time.Millisecond); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Должны быть вызваны initChain команды
+	if len(cmds) == 0 {
+		t.Errorf("Start should have invoked initChain commands")
+	}
+
+	cancel()
+	time.Sleep(150 * time.Millisecond) // дать горутинам выйти
+}
+
+func TestStop_RunsCleanup(t *testing.T) {
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+	fc.mgmtSnapshot = func() []clientStatus { return nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := fc.Start(ctx, "127.0.0.1:65001", 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	cmds = nil // сбрасываем команды от Start
+
+	cancel()
+	fc.Stop()
+
+	// Должны быть -D FORWARD -j OVPN_FW, -F OVPN_FW, -X OVPN_FW
+	if len(cmds) < 3 {
+		t.Errorf("Stop should have invoked at least 3 cleanup commands, got %d: %v", len(cmds), cmds)
+	}
+}
+
 // helpers in test file
 func joinSpace(parts []string) string {
 	out := ""
