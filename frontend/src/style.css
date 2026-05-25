@@ -50,6 +50,10 @@
   }
 
   body {
-    @apply bg-background text-foreground font-sans;
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "ss01", "ss02", "cv01", "cv11";
   }
+
+  /* Tabular numerals for numbers, dates, CIDRs */
+  .tabular { font-variant-numeric: tabular-nums; }
 }

@@ -35,8 +35,8 @@ function submit() {
     </div>
     <template #footer>
       <Button variant="ghost" :disabled="submitting" @click="onClose">Отмена</Button>
-      <Button variant="destructive" :disabled="submitting" @click="submit">
-        {{ submitting ? 'Удаляем…' : 'Удалить' }}
+      <Button variant="destructive" :loading="submitting" :disabled="submitting" @click="submit">
+        {{ submitting ? 'Удаление' : 'Удалить' }}
       </Button>
     </template>
   </Dialog>

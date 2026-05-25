@@ -2,6 +2,10 @@
 <script setup>
 import DropdownMenu from '@/components/ui/DropdownMenu.vue'
 import Button from '@/components/ui/Button.vue'
+import {
+  Download, RotateCcw, MoreHorizontal,
+  ShieldOff, RefreshCw, Route, KeyRound, Trash2,
+} from 'lucide-vue-next'
 
 const props = defineProps({
   user: { type: Object, required: true },
@@ -23,34 +27,40 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
 </script>
 
 <template>
-  <div class="flex items-center gap-2">
-    <!-- Главная кнопка -->
+  <div class="flex items-center gap-1.5">
+    <!-- Primary -->
     <Button
       v-if="isActive()"
       size="sm"
-      variant="info"
+      variant="secondary"
       @click="emit('download-config', user.Identity)"
     >
-      ⬇ Конфиг
+      <Download :size="13" />
+      Конфиг
     </Button>
-    <button
+    <Button
       v-else-if="isRevoked() && isMaster()"
-      type="button"
-      class="inline-flex items-center gap-1 h-7 px-3 text-xs font-medium rounded-md border border-border bg-background text-foreground hover:bg-accent transition-colors"
+      size="sm"
+      variant="secondary"
       @click="emit('unrevoke', user.Identity)"
     >
-      ↩ Восстановить
-    </button>
+      <RotateCcw :size="13" />
+      Восстановить
+    </Button>
 
-    <!-- Меню ··· -->
+    <!-- Menu -->
     <DropdownMenu v-if="isMaster() || (isActive() && hasModule('ccd'))">
       <template #trigger>
-        <button type="button" class="h-8 w-8 flex items-center justify-center rounded-md border border-border text-muted-foreground hover:border-primary hover:text-primary hover:bg-accent transition-colors text-lg font-bold tracking-tighter pb-0.5">
-          ···
+        <button
+          type="button"
+          class="h-8 w-8 inline-flex items-center justify-center rounded-md border border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground hover:bg-accent transition-colors"
+          title="Действия"
+        >
+          <MoreHorizontal :size="14" />
         </button>
       </template>
 
-      <!-- Active user menu -->
+      <!-- Active -->
       <template v-if="isActive()">
         <button
           v-if="isMaster() && hasModule('core')"
@@ -58,7 +68,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-yellow-600 dark:text-yellow-400 hover:bg-accent cursor-pointer"
           @click="emit('revoke', user.Identity)"
         >
-          ⚠ Отозвать
+          <ShieldOff :size="14" /> Отозвать
         </button>
         <button
           v-if="isMaster() && hasModule('core')"
@@ -66,7 +76,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-orange-600 dark:text-orange-400 hover:bg-accent cursor-pointer"
           @click="emit('rotate', user.Identity)"
         >
-          ↻ Ротация
+          <RefreshCw :size="14" /> Ротация
         </button>
         <button
           v-if="hasModule('ccd')"
@@ -74,7 +84,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-violet-600 dark:text-violet-400 hover:bg-accent cursor-pointer"
           @click="emit('edit-ccd', user.Identity)"
         >
-          ⇄ {{ serverRole === 'master' ? 'Маршруты' : 'Показать маршруты' }}
+          <Route :size="14" /> {{ serverRole === 'master' ? 'Маршруты' : 'Показать маршруты' }}
         </button>
         <button
           v-if="isMaster() && hasModule('passwdAuth')"
@@ -82,20 +92,20 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-blue-600 dark:text-blue-400 hover:bg-accent cursor-pointer"
           @click="emit('change-password', user.Identity)"
         >
-          🔑 Сменить пароль
+          <KeyRound :size="14" /> Сменить пароль
         </button>
-        <div v-if="isMaster()" class="h-px bg-border mx-2" />
+        <div v-if="isMaster()" class="h-px bg-border mx-2 my-1" />
         <button
           v-if="isMaster() && hasModule('core')"
           type="button"
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-accent cursor-pointer"
           @click="emit('delete', user.Identity)"
         >
-          ✕ Удалить
+          <Trash2 :size="14" /> Удалить
         </button>
       </template>
 
-      <!-- Revoked / Expired menu -->
+      <!-- Revoked / Expired -->
       <template v-if="isRevoked() || isExpired()">
         <button
           v-if="hasModule('core')"
@@ -103,16 +113,16 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-orange-600 dark:text-orange-400 hover:bg-accent cursor-pointer"
           @click="emit('rotate', user.Identity)"
         >
-          ↻ Ротация
+          <RefreshCw :size="14" /> Ротация
         </button>
-        <div class="h-px bg-border mx-2" />
+        <div class="h-px bg-border mx-2 my-1" />
         <button
           v-if="hasModule('core')"
           type="button"
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-accent cursor-pointer"
           @click="emit('delete', user.Identity)"
         >
-          ✕ Удалить
+          <Trash2 :size="14" /> Удалить
         </button>
       </template>
     </DropdownMenu>

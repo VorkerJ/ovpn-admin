@@ -10,6 +10,10 @@ import {
   fetchCommonRoutes, createCommonRoute, updateCommonRoute,
   deleteCommonRoute, refreshCommonRoutesDns,
 } from '@/api.js'
+import {
+  Globe, Network, RefreshCw, Plus, Pencil, Trash2,
+  CheckCircle2, AlertTriangle, CornerDownRight,
+} from 'lucide-vue-next'
 
 const props = defineProps({
   serverRole: { type: String, default: 'master' },
@@ -19,6 +23,8 @@ const routes = ref([])
 const refreshIntervalHours = ref(24)
 const loading = ref(false)
 const refreshing = ref(false)
+const submitting = ref(false)
+const editSubmitting = ref(false)
 
 const newKind = ref('ip')
 const newRoute = ref({ address: '', mask: '', domain: '', description: '' })
@@ -56,6 +62,7 @@ function resetForm() {
 }
 
 async function addRoute() {
+  if (submitting.value) return
   formError.value = ''
   const payload = { kind: newKind.value, description: newRoute.value.description || '' }
   if (newKind.value === 'ip') {
@@ -67,6 +74,7 @@ async function addRoute() {
     if (!isValidDomain(newRoute.value.domain)) { formError.value = `Неверный домен: "${newRoute.value.domain}"`; return }
     payload.domain = newRoute.value.domain
   }
+  submitting.value = true
   try {
     const created = await createCommonRoute(payload)
     routes.value.push(created)
@@ -77,6 +85,8 @@ async function addRoute() {
     resetForm()
   } catch (e) {
     formError.value = e.response?.data || e.message
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -104,16 +114,22 @@ async function refreshDns() {
 }
 
 function openEdit(route) { editing.value = { ...route } }
-function closeEdit() { editing.value = null }
+function closeEdit() {
+  if (editSubmitting.value) return
+  editing.value = null
+}
 async function submitEdit(payload) {
+  editSubmitting.value = true
   try {
     const updated = await updateCommonRoute(payload.id, payload)
     const idx = routes.value.findIndex(r => r.id === updated.id)
     if (idx !== -1) routes.value[idx] = updated
     notify('Маршрут обновлён', 'success')
-    closeEdit()
+    editing.value = null
   } catch (e) {
     notify(`Ошибка: ${e.response?.data || e.message}`, 'destructive')
+  } finally {
+    editSubmitting.value = false
   }
 }
 
@@ -131,83 +147,142 @@ onMounted(reload)
 
 <template>
   <div class="space-y-4">
-    <div class="flex items-center justify-between">
+    <!-- Header -->
+    <div class="flex items-start justify-between gap-4">
       <div>
-        <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Общие маршруты</p>
-        <p class="text-xs text-muted-foreground">Применяются ко всем активным пользователям. Изменения вступают в силу после переподключения клиента.</p>
+        <p class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground mb-1">Общие маршруты</p>
+        <p class="text-xs text-muted-foreground max-w-xl">
+          Применяются ко всем активным пользователям. Изменения вступают в силу после переподключения клиента.
+        </p>
       </div>
-      <Button v-if="isMaster" :disabled="refreshing" @click="refreshDns">
-        {{ refreshing ? 'Обновляем…' : 'Обновить DNS' }}
+      <Button
+        v-if="isMaster"
+        variant="secondary"
+        size="sm"
+        :loading="refreshing"
+        :disabled="refreshing"
+        @click="refreshDns"
+      >
+        <RefreshCw v-if="!refreshing" :size="14" />
+        {{ refreshing ? 'Обновляем' : 'Обновить DNS' }}
       </Button>
     </div>
 
-    <div v-if="isMaster" class="rounded-md border border-border p-3 space-y-2 bg-card">
-      <div class="flex items-center gap-2">
-        <label class="text-sm">
-          <input type="radio" value="ip" v-model="newKind" /> IP / маска
-        </label>
-        <label class="text-sm">
-          <input type="radio" value="domain" v-model="newKind" /> Домен
-        </label>
+    <!-- Add form -->
+    <div v-if="isMaster" class="rounded-lg border border-border bg-card p-4 space-y-3">
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          @click="newKind = 'ip'"
+          :class="[
+            'inline-flex items-center gap-1.5 h-7 rounded-md px-2.5 text-xs font-medium transition-colors',
+            newKind === 'ip' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'
+          ]"
+        >
+          <Network :size="13" /> IP / маска
+        </button>
+        <button
+          type="button"
+          @click="newKind = 'domain'"
+          :class="[
+            'inline-flex items-center gap-1.5 h-7 rounded-md px-2.5 text-xs font-medium transition-colors',
+            newKind === 'domain' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'
+          ]"
+        >
+          <Globe :size="13" /> Домен
+        </button>
       </div>
-      <div class="flex gap-2 flex-wrap">
+      <div class="flex gap-2 flex-wrap items-start">
         <template v-if="newKind === 'ip'">
-          <Input v-model="newRoute.address" placeholder="10.0.0.0" class="w-40" />
-          <Input v-model="newRoute.mask" placeholder="255.255.255.0" class="w-40" />
+          <Input v-model="newRoute.address" placeholder="10.0.0.0" class="w-40 font-mono" />
+          <Input v-model="newRoute.mask" placeholder="255.255.255.0" class="w-40 font-mono" />
         </template>
-        <Input v-else v-model="newRoute.domain" placeholder="youtube.com" class="w-60" />
+        <Input v-else v-model="newRoute.domain" placeholder="youtube.com" class="w-60 font-mono" />
         <Input v-model="newRoute.description" placeholder="Описание (опционально)" class="flex-1 min-w-[200px]" />
-        <Button variant="success" @click="addRoute">+ Добавить</Button>
+        <Button :loading="submitting" :disabled="submitting" @click="addRoute">
+          <Plus v-if="!submitting" :size="14" />
+          {{ submitting ? 'Добавляем' : 'Добавить' }}
+        </Button>
       </div>
       <div v-if="formError" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
         {{ formError }}
       </div>
     </div>
 
-    <div class="rounded-md border border-border overflow-hidden">
+    <!-- Table -->
+    <div class="rounded-lg border border-border bg-card overflow-hidden">
       <table class="w-full text-sm">
-        <thead class="bg-muted/50">
-          <tr>
-            <th class="px-3 py-2 text-left text-xs font-semibold text-muted-foreground w-20">Тип</th>
-            <th class="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Значение</th>
-            <th class="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">Описание</th>
-            <th class="px-3 py-2 text-left text-xs font-semibold text-muted-foreground w-48">DNS</th>
-            <th v-if="isMaster" class="px-3 py-2 w-28" />
+        <thead>
+          <tr class="bg-muted/40 border-b border-border">
+            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground w-28">Тип</th>
+            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Значение</th>
+            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Описание</th>
+            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground w-52">DNS</th>
+            <th v-if="isMaster" class="px-4 py-2.5 w-24" />
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="5" class="px-3 py-4 text-center text-muted-foreground">Загрузка…</td>
+            <td colspan="5" class="px-4 py-8 text-center text-sm text-muted-foreground">Загрузка…</td>
           </tr>
           <tr v-else-if="routes.length === 0">
-            <td colspan="5" class="px-3 py-4 text-center text-muted-foreground">Нет общих маршрутов. Добавьте первый.</td>
-          </tr>
-          <tr v-for="r in routes" :key="r.id" class="border-t border-border align-top">
-            <td class="px-3 py-2">
-              <Badge :variant="r.kind === 'ip' ? 'secondary' : 'default'">{{ r.kind === 'ip' ? 'IP' : '🌐 Domain' }}</Badge>
+            <td colspan="5" class="px-4 py-12 text-center text-sm text-muted-foreground">
+              Пока нет общих маршрутов. Добавьте первый, чтобы все пользователи могли к нему попасть.
             </td>
-            <td class="px-3 py-2 font-mono text-xs">
-              <template v-if="r.kind === 'ip'">{{ r.address }} / {{ r.mask }}</template>
+          </tr>
+          <tr v-for="r in routes" :key="r.id" class="border-b border-border last:border-0 align-top hover:bg-muted/30 transition-colors">
+            <td class="px-4 py-3">
+              <Badge :variant="r.kind === 'ip' ? 'neutral' : 'info'">
+                <Network v-if="r.kind === 'ip'" :size="11" class="mr-1" />
+                <Globe v-else :size="11" class="mr-1" />
+                {{ r.kind === 'ip' ? 'IP' : 'Domain' }}
+              </Badge>
+            </td>
+            <td class="px-4 py-3 font-mono text-xs">
+              <template v-if="r.kind === 'ip'">
+                <span>{{ r.address }}</span>
+                <span class="text-muted-foreground">/</span>
+                <span>{{ r.mask }}</span>
+              </template>
               <template v-else>
-                <div>{{ r.domain }}</div>
-                <div v-if="r.resolved_ips && r.resolved_ips.length" class="text-muted-foreground mt-1">
-                  → {{ r.resolved_ips.join(', ') }}
+                <div class="font-medium">{{ r.domain }}</div>
+                <div v-if="r.resolved_ips && r.resolved_ips.length" class="flex items-start gap-1 text-muted-foreground mt-1">
+                  <CornerDownRight :size="11" class="mt-0.5 shrink-0" />
+                  <span class="break-all">{{ r.resolved_ips.join(', ') }}</span>
                 </div>
               </template>
             </td>
-            <td class="px-3 py-2">{{ r.description }}</td>
-            <td class="px-3 py-2 text-xs">
+            <td class="px-4 py-3 text-muted-foreground">{{ r.description || '—' }}</td>
+            <td class="px-4 py-3 text-xs">
               <template v-if="r.kind === 'domain'">
-                <span v-if="r.last_resolve_err" class="text-yellow-500" :title="r.last_resolve_err">
-                  ⚠ DNS error · {{ formatRelativeTime(r.last_resolve_at) }}
+                <span v-if="r.last_resolve_err" class="inline-flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400" :title="r.last_resolve_err">
+                  <AlertTriangle :size="12" /> DNS error · {{ formatRelativeTime(r.last_resolve_at) }}
                 </span>
-                <span v-else class="text-green-600">OK · {{ formatRelativeTime(r.last_resolve_at) }}</span>
+                <span v-else class="inline-flex items-center gap-1.5 text-green-600 dark:text-green-400">
+                  <CheckCircle2 :size="12" /> OK · {{ formatRelativeTime(r.last_resolve_at) }}
+                </span>
               </template>
               <span v-else class="text-muted-foreground">—</span>
             </td>
-            <td v-if="isMaster" class="px-3 py-2 text-right">
-              <Button size="sm" variant="ghost" @click="openEdit(r)">✏</Button>
-              <Button size="sm" variant="destructive" @click="removeRoute(r.id)">✕</Button>
+            <td v-if="isMaster" class="px-4 py-3">
+              <div class="flex items-center justify-end gap-1">
+                <button
+                  type="button"
+                  class="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  title="Редактировать"
+                  @click="openEdit(r)"
+                >
+                  <Pencil :size="13" />
+                </button>
+                <button
+                  type="button"
+                  class="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                  title="Удалить"
+                  @click="removeRoute(r.id)"
+                >
+                  <Trash2 :size="13" />
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -218,6 +293,7 @@ onMounted(reload)
       v-if="editing"
       :open="!!editing"
       :route="editing"
+      :submitting="editSubmitting"
       @close="closeEdit"
       @submit="submitEdit"
     />

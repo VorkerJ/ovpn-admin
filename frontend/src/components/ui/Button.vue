@@ -1,15 +1,18 @@
 <!-- frontend/src/components/ui/Button.vue -->
 <script setup>
 import { cn } from '@/lib/utils'
+import Spinner from '@/components/ui/Spinner.vue'
 
 const props = defineProps({
   variant: { type: String, default: 'default' },
   size: { type: String, default: 'default' },
+  loading: { type: Boolean, default: false },
   class: { type: String, default: '' },
 })
 
 const variants = {
   default: 'bg-primary text-primary-foreground hover:bg-primary/90',
+  secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-border',
   destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
   outline: 'border border-input bg-background hover:bg-accent hover:text-accent-foreground',
   ghost: 'hover:bg-accent hover:text-accent-foreground',
@@ -19,16 +22,18 @@ const variants = {
 }
 
 const sizes = {
-  default: 'h-9 px-4 py-2',
-  sm: 'h-7 px-3 text-xs',
-  lg: 'h-11 px-8',
+  default: 'h-9 px-4 py-2 gap-2',
+  sm: 'h-8 px-3 text-xs gap-1.5',
+  lg: 'h-11 px-8 gap-2',
   icon: 'h-9 w-9',
+  'icon-sm': 'h-8 w-8',
 }
 </script>
 
 <template>
   <button
     type="button"
+    :disabled="loading || $attrs.disabled"
     :class="cn(
       'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
       variants[props.variant],
@@ -37,6 +42,7 @@ const sizes = {
     )"
     v-bind="$attrs"
   >
+    <Spinner v-if="loading" :size="size === 'sm' ? 12 : 14" />
     <slot />
   </button>
 </template>

@@ -53,8 +53,8 @@ function onClose() {
     </div>
     <template #footer>
       <Button variant="ghost" :disabled="submitting" @click="onClose">Отмена</Button>
-      <Button :disabled="submitting" @click="submit">
-        {{ submitting ? 'Создаём…' : 'Создать' }}
+      <Button :loading="submitting" :disabled="submitting" @click="submit">
+        {{ submitting ? 'Создание' : 'Создать' }}
       </Button>
     </template>
   </Dialog>

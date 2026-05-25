@@ -168,8 +168,8 @@ function submitCcd() {
     </div>
     <template #footer>
       <Button variant="ghost" :disabled="submitting" @click="onClose">Закрыть</Button>
-      <Button v-if="isMaster()" :disabled="submitting" @click="submitCcd">
-        {{ submitting ? 'Сохраняем…' : 'Сохранить' }}
+      <Button v-if="isMaster()" :loading="submitting" :disabled="submitting" @click="submitCcd">
+        Сохранить
       </Button>
     </template>
   </Dialog>

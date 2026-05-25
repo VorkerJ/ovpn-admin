@@ -8,16 +8,16 @@ defineEmits(['update:modelValue'])
 </script>
 
 <template>
-  <nav class="max-w-7xl mx-auto px-6 pt-4">
-    <div class="flex gap-1 border-b border-border">
+  <nav class="max-w-7xl mx-auto px-6 pt-5">
+    <div class="inline-flex items-center gap-1 p-1 rounded-md bg-muted border border-border">
       <button
         v-for="tab in tabs"
         :key="tab.key"
         type="button"
-        class="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors"
+        class="px-3 h-7 text-xs font-medium rounded transition-all"
         :class="modelValue === tab.key
-          ? 'border-primary text-foreground'
-          : 'border-transparent text-muted-foreground hover:text-foreground'"
+          ? 'bg-background text-foreground shadow-sm'
+          : 'text-muted-foreground hover:text-foreground'"
         @click="$emit('update:modelValue', tab.key)"
       >
         {{ tab.label }}
