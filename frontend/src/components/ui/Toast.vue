@@ -5,13 +5,14 @@ import { toasts } from '@/composables/useToast'
 
 <template>
   <Teleport to="body">
-    <div class="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+    <div class="fixed top-[72px] right-4 z-[100] flex flex-col gap-2 max-w-sm pointer-events-none">
+      <!-- pointer-events-none on container, restored on items so toasts don't block clicks underneath -->
       <TransitionGroup name="toast">
         <div
           v-for="t in toasts"
           :key="t.id"
           :class="[
-            'rounded-lg border px-4 py-3 shadow-lg text-sm',
+            'pointer-events-auto rounded-lg border px-4 py-3 shadow-lg text-sm',
             t.variant === 'destructive'
               ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400'
               : t.variant === 'success'
