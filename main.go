@@ -250,9 +250,14 @@ type OpenvpnClient struct {
 }
 
 type ccdRoute struct {
-	Address     string `json:"Address"`
-	Mask        string `json:"Mask"`
-	Description string `json:"Description"`
+	Kind           string   `json:"Kind,omitempty"` // "ip" (default) | "domain"
+	Address        string   `json:"Address,omitempty"`
+	Mask           string   `json:"Mask,omitempty"`
+	Domain         string   `json:"Domain,omitempty"`
+	Description    string   `json:"Description"`
+	ResolvedIPs    []string `json:"ResolvedIPs,omitempty"`
+	LastResolveAt  string   `json:"LastResolveAt,omitempty"`
+	LastResolveErr string   `json:"LastResolveErr,omitempty"`
 }
 
 type Ccd struct {
@@ -443,6 +448,40 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 	err := json.NewDecoder(r.Body).Decode(&ccd)
 	if err != nil {
 		log.Errorln(err)
+	}
+
+	// For per-user domain routes: preserve resolved IPs from existing CCD when the
+	// domain itself is unchanged; resolve synchronously for new/changed domains.
+	existingCcd := oAdmin.getCcd(ccd.User)
+	existingDomain := make(map[string]ccdRoute)
+	for _, r := range existingCcd.CustomRoutes {
+		if r.Kind == "domain" {
+			existingDomain[r.Domain] = r
+		}
+	}
+	for i, route := range ccd.CustomRoutes {
+		if route.Kind != "domain" || route.Domain == "" {
+			continue
+		}
+		if len(route.ResolvedIPs) > 0 {
+			continue // client preserved them
+		}
+		if existing, ok := existingDomain[route.Domain]; ok && len(existing.ResolvedIPs) > 0 {
+			ccd.CustomRoutes[i].ResolvedIPs = existing.ResolvedIPs
+			ccd.CustomRoutes[i].LastResolveAt = existing.LastResolveAt
+			ccd.CustomRoutes[i].LastResolveErr = existing.LastResolveErr
+			continue
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ips, lerr := domainResolver(ctx, route.Domain)
+		cancel()
+		ccd.CustomRoutes[i].LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+		if lerr != nil {
+			ccd.CustomRoutes[i].LastResolveErr = lerr.Error()
+		} else {
+			ccd.CustomRoutes[i].ResolvedIPs = ips
+			ccd.CustomRoutes[i].LastResolveErr = ""
+		}
 	}
 
 	var expanded []ccdCommonRoute
@@ -881,6 +920,12 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 		}
 	}
 
+	// Per-user domain routes are written as multiple push lines with
+	// `# __user_domain__:DOMAIN` marker — collapse them back into one entry.
+	domainEntries := map[string]*ccdRoute{}
+	domainOrder := []string{}
+	var ipRoutes []ccdRoute
+
 	for _, v := range txtLinesArray {
 		str := strings.Fields(v)
 		if len(str) == 0 {
@@ -891,9 +936,32 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 			ccd.ClientAddress = str[1]
 		case strings.HasPrefix(str[0], "push"):
 			if strings.Contains(v, "# __common__:") {
-				continue // строка добавлена common-routes — пропускаем при чтении user-уровня
+				continue
 			}
-			ccd.CustomRoutes = append(ccd.CustomRoutes, ccdRoute{
+			if idx := strings.Index(v, "# __user_domain__:"); idx >= 0 {
+				comment := strings.TrimSpace(v[idx+len("# __user_domain__:"):])
+				fields := strings.Fields(comment)
+				if len(fields) == 0 {
+					continue
+				}
+				domain := fields[0]
+				description := strings.TrimSpace(strings.Join(fields[1:], " "))
+				ip := strings.Trim(str[2], "\"")
+				entry, exists := domainEntries[domain]
+				if !exists {
+					entry = &ccdRoute{
+						Kind:        "domain",
+						Domain:      domain,
+						Description: description,
+					}
+					domainEntries[domain] = entry
+					domainOrder = append(domainOrder, domain)
+				}
+				entry.ResolvedIPs = append(entry.ResolvedIPs, ip)
+				continue
+			}
+			ipRoutes = append(ipRoutes, ccdRoute{
+				Kind:        "ip",
 				Address:     strings.Trim(str[2], "\""),
 				Mask:        strings.Trim(str[3], "\""),
 				Description: strings.Trim(strings.Join(str[4:], ""), "#"),
@@ -901,6 +969,10 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 		}
 	}
 
+	ccd.CustomRoutes = append(ccd.CustomRoutes, ipRoutes...)
+	for _, d := range domainOrder {
+		ccd.CustomRoutes = append(ccd.CustomRoutes, *domainEntries[d])
+	}
 	return ccd
 }
 
@@ -958,6 +1030,7 @@ func (oAdmin *OvpnAdmin) runCommonRoutesScheduler() {
 	ctx := context.Background()
 
 	runOnce := func() {
+		// 1) refresh global common-routes domains
 		current := oAdmin.commonRoutes.snapshot()
 		hasDomain := false
 		for _, r := range current.Routes {
@@ -966,18 +1039,20 @@ func (oAdmin *OvpnAdmin) runCommonRoutesScheduler() {
 				break
 			}
 		}
-		if !hasDomain {
-			return
+		if hasDomain {
+			updated, changed, okCount, failed := refreshAllDomains(ctx, current, time.Now())
+			oAdmin.commonRoutes.replace(updated)
+			if err := oAdmin.persistCommonRoutes(updated); err != nil {
+				log.Errorf("scheduler persist: %v", err)
+			}
+			log.Infof("common-routes scheduler: resolved=%d failed=%d changed=%v", okCount, failed, changed)
+			if changed {
+				oAdmin.rerenderAllCcds(expandCommonRoutes(updated))
+			}
 		}
-		updated, changed, okCount, failed := refreshAllDomains(ctx, current, time.Now())
-		oAdmin.commonRoutes.replace(updated)
-		if err := oAdmin.persistCommonRoutes(updated); err != nil {
-			log.Errorf("scheduler persist: %v", err)
-		}
-		log.Infof("common-routes scheduler: resolved=%d failed=%d changed=%v", okCount, failed, changed)
-		if changed {
-			oAdmin.rerenderAllCcds(expandCommonRoutes(updated))
-		}
+
+		// 2) refresh per-user CCD domain routes
+		oAdmin.refreshAllUserDomains(ctx)
 	}
 
 	runOnce()
@@ -986,6 +1061,59 @@ func (oAdmin *OvpnAdmin) runCommonRoutesScheduler() {
 	defer ticker.Stop()
 	for range ticker.C {
 		runOnce()
+	}
+}
+
+// refreshAllUserDomains re-resolves all per-user CCD domain routes and rewrites
+// CCD files for users whose resolved IP set changed.
+func (oAdmin *OvpnAdmin) refreshAllUserDomains(ctx context.Context) {
+	ccdMu.Lock()
+	defer ccdMu.Unlock()
+
+	commonExpanded := []ccdCommonRoute{}
+	if oAdmin.commonRoutes != nil {
+		commonExpanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
+	}
+
+	for _, u := range oAdmin.clients {
+		if u.AccountStatus != "Active" {
+			continue
+		}
+		ccd := oAdmin.getCcd(u.Identity)
+		hasDomain := false
+		for _, r := range ccd.CustomRoutes {
+			if r.Kind == "domain" {
+				hasDomain = true
+				break
+			}
+		}
+		if !hasDomain {
+			continue
+		}
+		changed := false
+		for i, route := range ccd.CustomRoutes {
+			if route.Kind != "domain" || route.Domain == "" {
+				continue
+			}
+			resolveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			ips, err := domainResolver(resolveCtx, route.Domain)
+			cancel()
+			ccd.CustomRoutes[i].LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+			if err != nil {
+				ccd.CustomRoutes[i].LastResolveErr = err.Error()
+				continue
+			}
+			ccd.CustomRoutes[i].LastResolveErr = ""
+			if !sameIPSet(route.ResolvedIPs, ips) {
+				ccd.CustomRoutes[i].ResolvedIPs = ips
+				changed = true
+			}
+		}
+		if changed {
+			if ok, msg := oAdmin.modifyCcd(ccd, commonExpanded); !ok {
+				log.Warnf("refreshAllUserDomains: %s: %s", u.Identity, msg)
+			}
+		}
 	}
 }
 
@@ -1019,15 +1147,27 @@ func validateCcd(ccd Ccd) (bool, string) {
 	}
 
 	for _, route := range ccd.CustomRoutes {
-		if net.ParseIP(route.Address) == nil {
-			ccdErr = fmt.Sprintf("CustomRoute.Address \"%s\" must be a valid IP address", route.Address)
-			log.Debugf("modify ccd for user %s: %s", ccd.User, ccdErr)
-			return false, ccdErr
-		}
-
-		if net.ParseIP(route.Mask) == nil {
-			ccdErr = fmt.Sprintf("CustomRoute.Mask \"%s\" must be a valid IP address", route.Mask)
-			log.Debugf("modify ccd for user %s: %s", ccd.User, ccdErr)
+		switch route.Kind {
+		case "domain":
+			if route.Domain == "" {
+				ccdErr = "CustomRoute.Domain must be non-empty for kind=domain"
+				return false, ccdErr
+			}
+			if !domainRegexp.MatchString(route.Domain) {
+				ccdErr = fmt.Sprintf("CustomRoute.Domain %q is not a valid hostname", route.Domain)
+				return false, ccdErr
+			}
+		case "ip", "":
+			if net.ParseIP(route.Address) == nil {
+				ccdErr = fmt.Sprintf("CustomRoute.Address %q must be a valid IP address", route.Address)
+				return false, ccdErr
+			}
+			if net.ParseIP(route.Mask) == nil {
+				ccdErr = fmt.Sprintf("CustomRoute.Mask %q must be a valid IP address", route.Mask)
+				return false, ccdErr
+			}
+		default:
+			ccdErr = fmt.Sprintf("CustomRoute.Kind %q is invalid (expected ip|domain)", route.Kind)
 			return false, ccdErr
 		}
 	}
