@@ -18,7 +18,7 @@ function accentFor(variant) {
 
 <template>
   <Teleport to="body">
-    <div class="fixed top-4 left-4 z-[100] flex flex-col gap-2 max-w-sm pointer-events-none">
+    <div class="fixed top-4 right-4 z-[100] flex flex-col gap-2 max-w-sm pointer-events-none">
       <TransitionGroup name="toast">
         <div
           v-for="t in toasts"
@@ -38,7 +38,7 @@ function accentFor(variant) {
 
 <style scoped>
 .toast-enter-active, .toast-leave-active { transition: all 0.3s; }
-.toast-enter-from { opacity: 0; transform: translateX(-20px); }
-.toast-leave-to { opacity: 0; transform: translateX(-20px); }
+.toast-enter-from { opacity: 0; transform: translateX(20px); }
+.toast-leave-to { opacity: 0; transform: translateX(20px); }
 .toast-move { transition: transform 0.3s; }
 </style>
