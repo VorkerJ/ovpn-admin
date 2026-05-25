@@ -90,13 +90,13 @@ function badgeLabel(status) {
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border bg-muted/40">
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground w-10">#</th>
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Имя</th>
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Статус</th>
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Подключений</th>
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Дата истечения</th>
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Дата отзыва</th>
-            <th class="px-4 py-2.5 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Действия</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-12">#</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Имя</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Статус</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Подключений</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Дата истечения</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Дата отзыва</th>
+            <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-muted-foreground">Действия</th>
           </tr>
         </thead>
         <tbody>
@@ -110,26 +110,26 @@ function badgeLabel(status) {
             :key="user.Identity"
             :class="['border-b border-border last:border-0 transition-colors hover:bg-muted/30', rowClass(user)]"
           >
-            <td class="px-4 py-2.5 text-muted-foreground font-mono text-xs tabular">{{ index + 1 }}</td>
-            <td class="px-4 py-2.5">
+            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">{{ index + 1 }}</td>
+            <td class="px-4 py-3">
               <div class="flex items-center gap-2">
-                <span class="font-medium">{{ user.Identity }}</span>
+                <span class="font-medium text-[15px]">{{ user.Identity }}</span>
                 <span
                   v-if="user.ConnectionStatus === 'Connected'"
-                  class="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_8px_theme(colors.green.500)]"
+                  class="inline-block w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_theme(colors.green.500)]"
                   title="Подключён"
                 />
               </div>
             </td>
-            <td class="px-4 py-2.5">
+            <td class="px-4 py-3">
               <Badge :variant="badgeVariant(user.AccountStatus)">
                 {{ badgeLabel(user.AccountStatus) }}
               </Badge>
             </td>
-            <td class="px-4 py-2.5 text-muted-foreground font-mono text-xs tabular">{{ user.Connections || 0 }}</td>
-            <td class="px-4 py-2.5 text-muted-foreground font-mono text-xs tabular">{{ user.ExpirationDate || '—' }}</td>
-            <td class="px-4 py-2.5 text-muted-foreground font-mono text-xs tabular">{{ user.RevocationDate || '—' }}</td>
-            <td class="px-4 py-2.5">
+            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">{{ user.Connections || 0 }}</td>
+            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">{{ user.ExpirationDate || '—' }}</td>
+            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">{{ user.RevocationDate || '—' }}</td>
+            <td class="px-4 py-3">
               <div class="flex justify-end">
                 <ActionsMenu
                   :user="user"
@@ -151,11 +151,11 @@ function badgeLabel(status) {
     </div>
 
     <!-- Legend -->
-    <div class="flex justify-center gap-5 mt-3 text-[11px] text-muted-foreground">
-      <span class="inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_6px_theme(colors.green.500)]" />Подключён</span>
-      <span class="inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-foreground/40" />Активен</span>
-      <span class="inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-red-500" />Отозван</span>
-      <span class="inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-yellow-500" />Истёк</span>
+    <div class="flex justify-center gap-6 mt-4 text-xs text-muted-foreground">
+      <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_6px_theme(colors.green.500)]" />Подключён</span>
+      <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-foreground/40" />Активен</span>
+      <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-red-500" />Отозван</span>
+      <span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-yellow-500" />Истёк</span>
     </div>
   </div>
 </template>

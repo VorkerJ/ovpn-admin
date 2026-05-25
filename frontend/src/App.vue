@@ -244,12 +244,12 @@ async function submitCcd(ccd) {
     <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
       <template v-if="activeTab === 'users'">
         <div>
-          <p class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground mb-3">Обзор</p>
+          <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Обзор</p>
           <StatCards :users="users" />
         </div>
 
         <div>
-          <p class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground mb-3">Пользователи</p>
+          <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Пользователи</p>
           <UsersTable
             :users="users"
             :server-role="serverRole"

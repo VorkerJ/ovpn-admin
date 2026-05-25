@@ -18,7 +18,7 @@ const variants = {
 </script>
 
 <template>
-  <span :class="cn('inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium', variants[variant] || variants.default, props.class)">
+  <span :class="cn('inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium', variants[variant] || variants.default, props.class)">
     <slot />
   </span>
 </template>

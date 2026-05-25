@@ -29,12 +29,12 @@ const stats = computed(() => {
       class="group relative bg-card border border-border rounded-lg p-4 transition-colors hover:border-foreground/20"
     >
       <div class="flex items-start justify-between mb-3">
-        <p class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{{ stat.label }}</p>
-        <div :class="['w-7 h-7 rounded-md flex items-center justify-center', stat.tint]">
-          <component :is="stat.icon" :size="14" :class="stat.accent" />
+        <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">{{ stat.label }}</p>
+        <div :class="['w-8 h-8 rounded-md flex items-center justify-center', stat.tint]">
+          <component :is="stat.icon" :size="16" :class="stat.accent" />
         </div>
       </div>
-      <p class="font-mono text-2xl font-semibold tabular tracking-tight">{{ stat.value }}</p>
+      <p class="font-mono text-3xl font-semibold tabular tracking-tight">{{ stat.value }}</p>
     </div>
   </div>
 </template>

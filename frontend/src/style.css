@@ -49,9 +49,17 @@
     @apply border-border;
   }
 
+  html {
+    /* bump base from 16px → 15.5px = brings text-sm to ~13.5px which is still
+       compact but legible. To make EVERYTHING bigger just bump this higher. */
+    font-size: 16px;
+  }
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-feature-settings: "ss01", "ss02", "cv01", "cv11";
+    font-size: 14.5px;
+    line-height: 1.5;
   }
 
   /* Tabular numerals for numbers, dates, CIDRs */

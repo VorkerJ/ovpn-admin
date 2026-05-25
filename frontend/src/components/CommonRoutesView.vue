@@ -150,8 +150,8 @@ onMounted(reload)
     <!-- Header -->
     <div class="flex items-start justify-between gap-4">
       <div>
-        <p class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground mb-1">Общие маршруты</p>
-        <p class="text-xs text-muted-foreground max-w-xl">
+        <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Общие маршруты</p>
+        <p class="text-sm text-muted-foreground max-w-xl">
           Применяются ко всем активным пользователям. Изменения вступают в силу после переподключения клиента.
         </p>
       </div>
@@ -214,11 +214,11 @@ onMounted(reload)
       <table class="w-full text-sm">
         <thead>
           <tr class="bg-muted/40 border-b border-border">
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground w-28">Тип</th>
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Значение</th>
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Описание</th>
-            <th class="px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground w-52">DNS</th>
-            <th v-if="isMaster" class="px-4 py-2.5 w-24" />
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-28">Тип</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Значение</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Описание</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-56">DNS</th>
+            <th v-if="isMaster" class="px-4 py-3 w-24" />
           </tr>
         </thead>
         <tbody>
@@ -238,7 +238,7 @@ onMounted(reload)
                 {{ r.kind === 'ip' ? 'IP' : 'Domain' }}
               </Badge>
             </td>
-            <td class="px-4 py-3 font-mono text-xs">
+            <td class="px-4 py-3 font-mono text-sm">
               <template v-if="r.kind === 'ip'">
                 <span>{{ r.address }}</span>
                 <span class="text-muted-foreground">/</span>
@@ -253,13 +253,13 @@ onMounted(reload)
               </template>
             </td>
             <td class="px-4 py-3 text-muted-foreground">{{ r.description || '—' }}</td>
-            <td class="px-4 py-3 text-xs">
+            <td class="px-4 py-3 text-sm">
               <template v-if="r.kind === 'domain'">
                 <span v-if="r.last_resolve_err" class="inline-flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400" :title="r.last_resolve_err">
-                  <AlertTriangle :size="12" /> DNS error · {{ formatRelativeTime(r.last_resolve_at) }}
+                  <AlertTriangle :size="14" /> DNS error · {{ formatRelativeTime(r.last_resolve_at) }}
                 </span>
                 <span v-else class="inline-flex items-center gap-1.5 text-green-600 dark:text-green-400">
-                  <CheckCircle2 :size="12" /> OK · {{ formatRelativeTime(r.last_resolve_at) }}
+                  <CheckCircle2 :size="14" /> OK · {{ formatRelativeTime(r.last_resolve_at) }}
                 </span>
               </template>
               <span v-else class="text-muted-foreground">—</span>
@@ -268,19 +268,19 @@ onMounted(reload)
               <div class="flex items-center justify-end gap-1">
                 <button
                   type="button"
-                  class="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  class="h-8 w-8 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                   title="Редактировать"
                   @click="openEdit(r)"
                 >
-                  <Pencil :size="13" />
+                  <Pencil :size="15" />
                 </button>
                 <button
                   type="button"
-                  class="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                  class="h-8 w-8 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                   title="Удалить"
                   @click="removeRoute(r.id)"
                 >
-                  <Trash2 :size="13" />
+                  <Trash2 :size="15" />
                 </button>
               </div>
             </td>
