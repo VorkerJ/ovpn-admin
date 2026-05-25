@@ -9,16 +9,19 @@ const props = defineProps({
   open: Boolean,
   username: { type: String, default: '' },
   error: { type: String, default: '' },
+  submitting: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close', 'submit'])
 const password = ref('')
 
 function submit() {
+  if (props.submitting) return
   emit('submit', { username: props.username, password: password.value })
 }
 
 function onClose() {
+  if (props.submitting) return
   password.value = ''
   emit('close')
 }
@@ -41,8 +44,10 @@ function onClose() {
       {{ error }}
     </div>
     <template #footer>
-      <Button variant="ghost" @click="onClose">Отмена</Button>
-      <Button @click="submit">Сохранить</Button>
+      <Button variant="ghost" :disabled="submitting" @click="onClose">Отмена</Button>
+      <Button :disabled="submitting" @click="submit">
+        {{ submitting ? 'Сохраняем…' : 'Сохранить' }}
+      </Button>
     </template>
   </Dialog>
 </template>

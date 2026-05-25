@@ -90,6 +90,14 @@ const modalErrors = ref({
   ccd: '',
 })
 
+const modalSubmitting = ref({
+  addUser: false,
+  deleteUser: false,
+  rotateUser: false,
+  changePassword: false,
+  ccd: false,
+})
+
 const ccdData = ref({ Name: '', ClientAddress: '', CustomRoutes: [] })
 
 function openModal(name, username = '') {
@@ -150,6 +158,7 @@ async function handleEditCcd(username) {
 
 // ── Modal submit handlers ──────────────────────────────────────────
 async function submitAddUser({ username, password }) {
+  modalSubmitting.value.addUser = true
   try {
     await createUser(username, password)
     notify(`Пользователь ${username} создан`, 'success')
@@ -157,10 +166,13 @@ async function submitAddUser({ username, password }) {
     loadUsers()
   } catch (e) {
     modalErrors.value.addUser = e.response?.data || 'Ошибка создания'
+  } finally {
+    modalSubmitting.value.addUser = false
   }
 }
 
 async function submitDeleteUser(username) {
+  modalSubmitting.value.deleteUser = true
   try {
     await deleteUser(username)
     notify(`Пользователь ${username} удалён`, 'default')
@@ -168,10 +180,13 @@ async function submitDeleteUser(username) {
     loadUsers()
   } catch (e) {
     modalErrors.value.deleteUser = e.response?.data?.message || 'Ошибка удаления'
+  } finally {
+    modalSubmitting.value.deleteUser = false
   }
 }
 
 async function submitRotateUser({ username, password }) {
+  modalSubmitting.value.rotateUser = true
   try {
     await rotateUser(username, password)
     notify(`Сертификаты ${username} обновлены`, 'success')
@@ -179,10 +194,13 @@ async function submitRotateUser({ username, password }) {
     loadUsers()
   } catch (e) {
     modalErrors.value.rotateUser = e.response?.data?.message || 'Ошибка ротации'
+  } finally {
+    modalSubmitting.value.rotateUser = false
   }
 }
 
 async function submitChangePassword({ username, password }) {
+  modalSubmitting.value.changePassword = true
   try {
     await changePassword(username, password)
     notify(`Пароль ${username} изменён`, 'success')
@@ -190,16 +208,21 @@ async function submitChangePassword({ username, password }) {
     loadUsers()
   } catch (e) {
     modalErrors.value.changePassword = e.response?.data?.message || 'Ошибка смены пароля'
+  } finally {
+    modalSubmitting.value.changePassword = false
   }
 }
 
 async function submitCcd(ccd) {
+  modalSubmitting.value.ccd = true
   try {
     await applyCcd(ccd)
     notify(`Маршруты для ${activeUser.value} сохранены`, 'success')
     closeModal('ccd')
   } catch (e) {
     modalErrors.value.ccd = e.response?.data || 'Ошибка сохранения маршрутов'
+  } finally {
+    modalSubmitting.value.ccd = false
   }
 }
 </script>
@@ -251,6 +274,7 @@ async function submitCcd(ccd) {
       :open="modals.addUser"
       :modules-enabled="modulesEnabled"
       :error="modalErrors.addUser"
+      :submitting="modalSubmitting.addUser"
       @close="closeModal('addUser')"
       @submit="submitAddUser"
     />
@@ -258,6 +282,7 @@ async function submitCcd(ccd) {
       :open="modals.deleteUser"
       :username="activeUser"
       :error="modalErrors.deleteUser"
+      :submitting="modalSubmitting.deleteUser"
       @close="closeModal('deleteUser')"
       @submit="submitDeleteUser"
     />
@@ -266,6 +291,7 @@ async function submitCcd(ccd) {
       :username="activeUser"
       :modules-enabled="modulesEnabled"
       :error="modalErrors.rotateUser"
+      :submitting="modalSubmitting.rotateUser"
       @close="closeModal('rotateUser')"
       @submit="submitRotateUser"
     />
@@ -273,6 +299,7 @@ async function submitCcd(ccd) {
       :open="modals.changePassword"
       :username="activeUser"
       :error="modalErrors.changePassword"
+      :submitting="modalSubmitting.changePassword"
       @close="closeModal('changePassword')"
       @submit="submitChangePassword"
     />
@@ -280,6 +307,7 @@ async function submitCcd(ccd) {
       :open="modals.ccd"
       :username="activeUser"
       :server-role="serverRole"
+      :submitting="modalSubmitting.ccd"
       :ccd="ccdData"
       :error="modalErrors.ccd"
       @close="closeModal('ccd')"

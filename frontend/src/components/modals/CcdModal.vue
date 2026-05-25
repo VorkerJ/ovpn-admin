@@ -11,6 +11,7 @@ const props = defineProps({
   serverRole: { type: String, default: 'master' },
   ccd: { type: Object, default: () => ({ Name: '', ClientAddress: '', CustomRoutes: [] }) },
   error: { type: String, default: '' },
+  submitting: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close', 'submit'])
@@ -56,11 +57,13 @@ function removeRoute(index) {
 }
 
 function onClose() {
+  if (props.submitting) return
   validationError.value = ''
   emit('close')
 }
 
 function submitCcd() {
+  if (props.submitting) return
   validationError.value = ''
   if (newRoute.value.Address) {
     validationError.value = 'Нажмите "+ Добавить", чтобы добавить маршрут из строки ввода.'
@@ -164,8 +167,10 @@ function submitCcd() {
       </div>
     </div>
     <template #footer>
-      <Button variant="ghost" @click="onClose">Закрыть</Button>
-      <Button v-if="isMaster()" @click="submitCcd">Сохранить</Button>
+      <Button variant="ghost" :disabled="submitting" @click="onClose">Закрыть</Button>
+      <Button v-if="isMaster()" :disabled="submitting" @click="submitCcd">
+        {{ submitting ? 'Сохраняем…' : 'Сохранить' }}
+      </Button>
     </template>
   </Dialog>
 </template>
