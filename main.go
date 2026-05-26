@@ -88,6 +88,14 @@ var (
 	adminHtpasswdFile        = kingpin.Flag("admin.htpasswd-file", "path to htpasswd file with admin UI credentials; if empty, a random password is generated").Default("").Envar("ADMIN_HTPASSWD_FILE").String()
 	commonRoutesEnabled      = kingpin.Flag("common-routes", "enable common routes feature").Default("true").Envar("OVPN_COMMON_ROUTES").Bool()
 
+	serverConfigEnabled = kingpin.Flag("server-config",
+		"enable editable server config UI feature").
+		Default("true").Envar("OVPN_SERVER_CONFIG").Bool()
+
+	serverConfigPath = kingpin.Flag("server-config.conf-path",
+		"path where ovpn-admin writes the rendered server.conf").
+		Default("/etc/openvpn/server.conf").Envar("OVPN_SERVER_CONFIG_PATH").String()
+
 	firewallEnabled = kingpin.Flag("firewall",
 		"enable per-client iptables enforcement").
 		Default("false").Envar("OVPN_FIREWALL").Bool()
@@ -669,6 +677,67 @@ func main() {
 		go ovpnAdmin.runCommonRoutesScheduler()
 	}
 
+	if *serverConfigEnabled {
+		ovpnAdmin.modules = append(ovpnAdmin.modules, "server-config")
+
+		storagePath := *ccdDir + "/_server_config.json"
+
+		ovpnAdmin.serverConfigStore = newServerConfigStore()
+		var initial ServerConfig
+		if *storageBackend == "kubernetes.secrets" {
+			data, err := app.secretGetServerConfig()
+			if err != nil {
+				log.Warnf("load server config from secret: %v (using defaults)", err)
+				initial = defaultServerConfig()
+			} else {
+				c, derr := deserializeServerConfig(data)
+				if derr != nil {
+					log.Warnf("deserialize server config: %v (using defaults)", derr)
+					initial = defaultServerConfig()
+				} else {
+					initial = c
+				}
+			}
+		} else {
+			c, err := loadServerConfigFromFile(storagePath)
+			if err != nil {
+				log.Warnf("load server config from %s: %v (using defaults)", storagePath, err)
+				initial = defaultServerConfig()
+			} else {
+				initial = c
+			}
+		}
+		ovpnAdmin.serverConfigStore.replace(initial)
+
+		dcoAvailable := detectDCOSupport()
+		log.Infof("server-config: DCO support detected: %v", dcoAvailable)
+
+		mgmtAddr, ok := ovpnAdmin.mgmtInterfaces["main"]
+		if !ok {
+			mgmtAddr = "127.0.0.1:8989"
+		}
+
+		ovpnAdmin.serverManager = &serverManager{
+			store:        ovpnAdmin.serverConfigStore,
+			storagePath:  storagePath,
+			mgmtAddr:     mgmtAddr,
+			confPath:     *serverConfigPath,
+			dcoAvailable: dcoAvailable,
+			ccdEnabled:   *ccdEnabled,
+		}
+
+		// Render initial server.conf at startup (openvpn-container waits for this file)
+		rendered, err := renderServerConfig(initial, dcoAvailable, *ccdEnabled)
+		if err != nil {
+			log.Fatalf("server-config: initial render failed: %v", err)
+		}
+		if err := writeFileAtomic(*serverConfigPath, []byte(rendered)); err != nil {
+			log.Warnf("server-config: cannot write initial %s: %v (openvpn-container won't start)", *serverConfigPath, err)
+		} else {
+			log.Infof("server-config: rendered initial config to %s", *serverConfigPath)
+		}
+	}
+
 	if *firewallEnabled {
 		ovpnAdmin.modules = append(ovpnAdmin.modules, "firewall")
 
@@ -735,6 +804,9 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/common-routes", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesHandler))
 	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesRefreshHandler))
 	http.HandleFunc(*listenBaseUrl+"api/common-routes/", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesItemHandler))
+	http.HandleFunc(*listenBaseUrl+"api/server-config", ovpnAdmin.requireAuth(ovpnAdmin.serverConfigHandler))
+	http.HandleFunc(*listenBaseUrl+"api/server-config/test", ovpnAdmin.requireAuth(ovpnAdmin.serverConfigTestHandler))
+	http.HandleFunc(*listenBaseUrl+"api/server-config/defaults", ovpnAdmin.requireAuth(ovpnAdmin.serverConfigDefaultsHandler))
 
 	http.HandleFunc(*listenBaseUrl+"api/sync/last/try", ovpnAdmin.requireAuth(ovpnAdmin.lastSyncTimeHandler))
 	http.HandleFunc(*listenBaseUrl+"api/sync/last/successful", ovpnAdmin.requireAuth(ovpnAdmin.lastSuccessfulSyncTimeHandler))
