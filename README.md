@@ -22,6 +22,7 @@ Simple web UI to manage OpenVPN users, their certificates & routes in Kubernetes
 * (optionally) Specifying a Kubernetes LoadBalancer in front of the OpenVPN server (auto-defined `remote` in `client.conf.tpl`)
 * (optionally) Storing certificates and other files in Kubernetes Secrets
 * **Server-side route enforcement** — when enabled (default in Helm), ovpn-admin installs per-client iptables rules so that each VPN client can only reach destinations explicitly allowed via per-user CCD routes or global Common Routes. Requires `NET_ADMIN` capability.
+* **Editable server config** — proto, port, MTU, cipher, DCO, DNS push, custom directives через web UI без `helm upgrade`. Hybrid reload (SIGHUP soft / SIGTERM hard) с автоматическим rollback при невалидной конфигурации.
 
 ## Screenshots
 
@@ -259,6 +260,31 @@ Or set `OVPN_FIREWALL=false` via env if running in compose.
 - IPv4 only (no `ip6tables` support in v1)
 - CIDR-level rules only (no per-port or per-protocol filtering in v1)
 - **Docker Desktop on Mac/Windows cannot run the firewall end-to-end**: Docker Desktop's Linux VM does not load the `iptable_filter` / `nf_tables` kernel modules, so any iptables invocation from inside a container returns "Failed to initialize" / "table doesn't exist". The feature works correctly on real Linux hosts (CI runners, Kubernetes nodes). For local development you can still iterate on the Go code and run unit tests; full end-to-end smoke needs a Linux VM or actual cluster.
+
+## Editable server configuration
+
+The admin UI exposes a "Сервер" tab where you can edit ~15 OpenVPN server
+parameters at runtime: protocol (UDP/TCP), port, MTU, data ciphers, TLS
+version, DCO (Data Channel Offload), DNS push, redirect-gateway, custom
+directives, and more.
+
+### How reload works
+
+- **Soft fields** (DNS push, verb, keepalive, push directives, custom
+  directives) — applied via SIGHUP to the running openvpn process. Existing
+  clients stay connected; new pushed values take effect on their next
+  reconnect.
+- **Hard fields** (proto, port, MTU, ciphers, TLS mode, DCO, network) —
+  openvpn process is restarted via SIGTERM. All clients drop for ~5 seconds.
+  If the new config is invalid (openvpn fails to start within 15s),
+  ovpn-admin automatically rolls back to the previous version.
+
+### DCO (kernel offload)
+
+DCO support requires the `ovpn` kernel module (Linux 6.16+) or the
+out-of-tree `ovpn-dco` module. ovpn-admin auto-detects availability at
+startup. On managed Kubernetes (EKS/GKE/AKS) without custom AMI, DCO is
+typically not available — the UI shows a warning and disables the toggle.
 
 ## Authors
 
