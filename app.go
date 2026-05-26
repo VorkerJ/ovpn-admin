@@ -239,7 +239,7 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 
 		hosts = nil //nolint:ineffassign
 
-		log.Tracef("Rendered config for user %s: %+v", username, tmp.String())
+		log.Tracef("Rendered config for user %s (%d bytes)", username, tmp.Len())
 
 		return fmt.Sprintf("%+v", tmp.String())
 	}
@@ -292,6 +292,17 @@ func renderIndexTxt(data []indexTxtLine) string {
 		}
 	}
 	return indexTxt
+}
+
+func securityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func CacheControlWrapper(h http.Handler) http.Handler {

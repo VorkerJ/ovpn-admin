@@ -5,12 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 )
+
+func runOpenvpnUser(args ...string) string {
+	cmd := exec.Command("openvpn-user", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Warnf("openvpn-user %v: %v: %s", args[:2], err, string(out))
+	}
+	return strings.TrimSpace(string(out))
+}
 
 type usernameRequest struct {
 	Username string `json:"username"`
@@ -245,7 +255,7 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 	}
 
 	if *authByPassword {
-		o := runBash(fmt.Sprintf("openvpn-user create --db.path %s --user %s --password %s", *authDatabase, username, password))
+		o := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
 		log.Debug(o)
 	}
 
@@ -259,7 +269,7 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 func (oAdmin *OvpnAdmin) userChangePassword(username, password string) (error, string) {
 
 	if checkUserExist(username) {
-		o := runBash(fmt.Sprintf("openvpn-user check --db.path %[1]s --user %[2]s | grep %[2]s | wc -l", *authDatabase, username))
+		o := runOpenvpnUser("check", "--db.path", *authDatabase, "--user", username)
 		log.Debug(o)
 
 		if err := validatePassword(password); err != nil {
@@ -267,12 +277,12 @@ func (oAdmin *OvpnAdmin) userChangePassword(username, password string) (error, s
 			return err, err.Error()
 		}
 
-		if strings.TrimSpace(o) == "0" {
-			o = runBash(fmt.Sprintf("openvpn-user create --db.path %s --user %s --password %s", *authDatabase, username, password))
+		if !strings.Contains(o, username) {
+			o = runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
 			log.Debug(o)
 		}
 
-		o = runBash(fmt.Sprintf("openvpn-user change-password --db.path %s --user %s --password %s", *authDatabase, username, password))
+		o = runOpenvpnUser("change-password", "--db.path", *authDatabase, "--user", username, "--password", password)
 		log.Debug(o)
 
 		log.Infof("Password for user %s was changed", username)
@@ -302,7 +312,7 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 		}
 
 		if *authByPassword {
-			o := runBash(fmt.Sprintf("openvpn-user revoke --db.path %s --user %s", *authDatabase, username))
+			o := runOpenvpnUser("revoke", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
 
@@ -330,7 +340,7 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 		}
 
 		if *authByPassword {
-			o := runBash(fmt.Sprintf("openvpn-user restore --db.path %s --user %s", *authDatabase, username))
+			o := runOpenvpnUser("restore", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
 
@@ -344,7 +354,7 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string) {
 	if checkUserExist(username) {
 		if *authByPassword {
-			o := runBash(fmt.Sprintf("openvpn-user delete --force --db.path %s --user %s", *authDatabase, username))
+			o := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
 
@@ -354,7 +364,7 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 		}
 
 		if *authByPassword {
-			o := runBash(fmt.Sprintf("openvpn-user create --db.path %s --user %s --password %s", *authDatabase, username, newPassword))
+			o := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", newPassword)
 			log.Debug(o)
 		}
 
@@ -368,7 +378,7 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 	if checkUserExist(username) {
 		if *authByPassword {
-			_ = runBash(fmt.Sprintf("openvpn-user delete --force --db.path %s --user %s", *authDatabase, username))
+			_ = runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
 		}
 
 		if err := oAdmin.store.DeleteClient(username); err != nil {

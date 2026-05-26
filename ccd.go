@@ -261,6 +261,9 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 	}
 
 	for _, route := range ccd.CustomRoutes {
+		if strings.ContainsAny(route.Description, "\n\r") {
+			return false, "route description must not contain newlines"
+		}
 		switch route.Kind {
 		case "domain":
 			if route.Domain == "" {
@@ -316,6 +319,10 @@ func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
+	if err := validateUsername(req.Username); err != nil {
+		http.Error(w, `{"error":"invalid username"}`, http.StatusBadRequest)
+		return
+	}
 	ccd, _ := json.Marshal(oAdmin.getCcd(req.Username))
 	fmt.Fprintf(w, "%s", ccd)
 }
@@ -335,6 +342,10 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 	err := json.NewDecoder(r.Body).Decode(&ccd)
 	if err != nil {
 		log.Errorln(err)
+	}
+	if err := validateUsername(ccd.User); err != nil {
+		http.Error(w, `{"error":"invalid username"}`, http.StatusBadRequest)
+		return
 	}
 
 	// For per-user domain routes: preserve resolved IPs from existing CCD when the

@@ -297,13 +297,18 @@ func extractFromArchive(archive, path string) error {
 			log.Fatalf("extractFromArchive: Next() failed: %s", err.Error())
 		}
 
+		target := filepath.Join(path, header.Name)
+		if !strings.HasPrefix(filepath.Clean(target)+string(filepath.Separator), filepath.Clean(path)+string(filepath.Separator)) {
+			return fmt.Errorf("illegal file path in archive: %s", header.Name)
+		}
+
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.Mkdir(path+"/"+header.Name, 0755); err != nil {
+			if err := os.Mkdir(target, 0755); err != nil {
 				log.Fatalf("extractFromArchive: Mkdir() failed: %s", err.Error())
 			}
 		case tar.TypeReg:
-			outFile, err := os.Create(path + "/" + header.Name)
+			outFile, err := os.Create(target)
 			if err != nil {
 				log.Fatalf("extractFromArchive: Create() failed: %s", err.Error())
 			}

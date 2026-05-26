@@ -128,6 +128,10 @@ func main() {
 	log.SetLevel(logLevels[*logLevel])
 	log.SetFormatter(logFormats[*logFormat])
 
+	if *masterSyncToken == "VerySecureToken" {
+		log.Warn("SECURITY: --master.sync-token uses the insecure default. Set OVPN_MASTER_TOKEN to a strong random value!")
+	}
+
 	initAuth()
 
 	if *indexTxtPath == "" {
@@ -357,11 +361,13 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+downloadCertsApiUrl, ovpnAdmin.requireAuth(ovpnAdmin.downloadCertsHandler))
 	http.HandleFunc(*listenBaseUrl+downloadCcdApiUrl, ovpnAdmin.requireAuth(ovpnAdmin.downloadCcdHandler))
 
-	http.Handle(*metricsPath, promhttp.HandlerFor(ovpnAdmin.promRegistry, promhttp.HandlerOpts{}))
+	http.HandleFunc(*metricsPath, ovpnAdmin.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		promhttp.HandlerFor(ovpnAdmin.promRegistry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+	}))
 	http.HandleFunc(*listenBaseUrl+"ping", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "pong")
 	})
 
 	log.Printf("Bind: http://%s:%s%s", *listenHost, *listenPort, *listenBaseUrl)
-	log.Fatal(http.ListenAndServe(*listenHost+":"+*listenPort, nil))
+	log.Fatal(http.ListenAndServe(*listenHost+":"+*listenPort, securityMiddleware(http.DefaultServeMux)))
 }

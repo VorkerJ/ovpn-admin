@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -163,10 +164,15 @@ func revokeToken(token string) {
 // sessionSecret возвращает секрет для HMAC — хэш всех htpasswd-хэшей.
 // Меняется при изменении паролей, автоматически инвалидируя сессии.
 func sessionSecret() string {
+	keys := make([]string, 0, len(htpasswdUsers))
+	for u := range htpasswdUsers {
+		keys = append(keys, u)
+	}
+	sort.Strings(keys)
 	var sb strings.Builder
-	for u, h := range htpasswdUsers {
+	for _, u := range keys {
 		sb.WriteString(u)
-		sb.WriteString(h)
+		sb.WriteString(htpasswdUsers[u])
 	}
 	sum := sha256.Sum256([]byte(sb.String()))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
@@ -203,6 +209,7 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})

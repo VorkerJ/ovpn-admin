@@ -93,6 +93,7 @@ func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) {
 		return
 	}
 	oAdmin.mgmtRead(conn) // read welcome message
+	username = strings.NewReplacer("\n", "", "\r", "").Replace(username)
 	fmt.Fprintf(conn, "kill %s\n", username)
 	fmt.Printf("%v", oAdmin.mgmtRead(conn))
 	conn.Close()

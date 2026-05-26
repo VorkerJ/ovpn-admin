@@ -269,6 +269,9 @@ func validateDirectiveLine(line string) error {
 	if line == "" {
 		return nil
 	}
+	if strings.ContainsAny(line, "\n\r") {
+		return fmt.Errorf("directive must not contain newline characters")
+	}
 	for _, prefix := range allowedDirectivePrefixes {
 		if line == strings.TrimSpace(prefix) || strings.HasPrefix(line, prefix) {
 			return nil
