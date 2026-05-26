@@ -764,6 +764,7 @@ func main() {
 			vpnNet,
 			realIptCmd(*firewallIptablesBin),
 		)
+		ovpnAdmin.firewall.mgmtSnapshot = ovpnAdmin.mgmtGetActiveClients
 
 		ctx := context.Background()
 		if err := ovpnAdmin.firewall.Start(ctx, mgmtAddr, *firewallReconcileInterval); err != nil {
@@ -1239,6 +1240,13 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 	}
 
 	return true, ccdErr
+}
+
+func (oAdmin *OvpnAdmin) commonRoutesSnapshot() CommonRoutesConfig {
+	if oAdmin.commonRoutes == nil {
+		return CommonRoutesConfig{}
+	}
+	return oAdmin.commonRoutes.snapshot()
 }
 
 func (oAdmin *OvpnAdmin) getCcd(username string) Ccd {

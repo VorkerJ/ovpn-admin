@@ -99,6 +99,13 @@ type fwSession struct {
 // iptCmdFunc — функция выполнения iptables. Тестово мок-абельна.
 type iptCmdFunc func(args ...string) error
 
+// CcdReader — минимальный интерфейс, через который firewall читает маршруты.
+// Реализуется *OvpnAdmin; в тестах — fakeCcdReader.
+type CcdReader interface {
+	getCcd(username string) Ccd
+	commonRoutesSnapshot() CommonRoutesConfig
+}
+
 type firewallController struct {
 	mu           sync.Mutex
 	enabled      bool
@@ -109,30 +116,24 @@ type firewallController struct {
 	pending      map[string]fwEvent
 	kick         chan struct{}
 	iptCmd       iptCmdFunc
-	oAdmin       *OvpnAdmin
+	ccdReader    CcdReader
 	ctx          context.Context
 	cancel       context.CancelFunc
-	mgmtSnapshot func() []clientStatus // мокается в тестах; в проде = oAdmin.mgmtGetActiveClients
+	mgmtSnapshot func() []clientStatus
 }
 
-func newFirewallController(oAdmin *OvpnAdmin, chainName, iptBin string, vpnNet *net.IPNet, iptCmd iptCmdFunc) *firewallController {
-	fc := &firewallController{
-		enabled:   true,
-		chainName: chainName,
-		iptBin:    iptBin,
-		vpnNet:    vpnNet,
-		sessions:  make(map[string]*fwSession),
-		pending:   make(map[string]fwEvent),
-		kick:      make(chan struct{}, 1),
-		iptCmd:    iptCmd,
-		oAdmin:    oAdmin,
+func newFirewallController(ccdReader CcdReader, chainName, iptBin string, vpnNet *net.IPNet, iptCmd iptCmdFunc) *firewallController {
+	return &firewallController{
+		enabled:      true,
+		chainName:    chainName,
+		iptBin:       iptBin,
+		vpnNet:       vpnNet,
+		sessions:     make(map[string]*fwSession),
+		pending:      make(map[string]fwEvent),
+		kick:         make(chan struct{}, 1),
+		iptCmd:       iptCmd,
+		ccdReader:    ccdReader,
 	}
-	if oAdmin != nil {
-		fc.mgmtSnapshot = oAdmin.mgmtGetActiveClients
-	} else {
-		fc.mgmtSnapshot = func() []clientStatus { return nil }
-	}
-	return fc
 }
 
 // initChain создаёт цепочку OVPN_FW (если её нет), очищает, ставит прыжок из FORWARD,
@@ -293,12 +294,12 @@ func (fc *firewallController) applyDiff(s *fwSession, newCIDRs []string) error {
 }
 
 // computeAllowedCIDRs возвращает дедуплицированный набор CIDR'ов, разрешённых для CN.
-// Источники: CCD CustomRoutes (через oAdmin.getCcd) + Common Routes (через oAdmin.commonRoutes.snapshot()).
+// Источники: CCD CustomRoutes + Common Routes (через CcdReader интерфейс).
 func (fc *firewallController) computeAllowedCIDRs(cn string) ([]string, error) {
 	set := make(map[string]struct{})
 
-	if fc.oAdmin != nil {
-		ccd := fc.oAdmin.getCcd(cn)
+	if fc.ccdReader != nil {
+		ccd := fc.ccdReader.getCcd(cn)
 		for _, r := range ccd.CustomRoutes {
 			cidr, err := ipMaskToCIDR(r.Address, r.Mask)
 			if err != nil {
@@ -307,16 +308,14 @@ func (fc *firewallController) computeAllowedCIDRs(cn string) ([]string, error) {
 			}
 			set[cidr] = struct{}{}
 		}
-		if fc.oAdmin.commonRoutes != nil {
-			expanded := expandCommonRoutes(fc.oAdmin.commonRoutes.snapshot())
-			for _, r := range expanded {
-				cidr, err := ipMaskToCIDR(r.Address, r.Mask)
-				if err != nil {
-					log.Warnf("firewall: invalid common route: %v", err)
-					continue
-				}
-				set[cidr] = struct{}{}
+		expanded := expandCommonRoutes(fc.ccdReader.commonRoutesSnapshot())
+		for _, r := range expanded {
+			cidr, err := ipMaskToCIDR(r.Address, r.Mask)
+			if err != nil {
+				log.Warnf("firewall: invalid common route: %v", err)
+				continue
 			}
+			set[cidr] = struct{}{}
 		}
 	}
 
