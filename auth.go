@@ -13,10 +13,10 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"sync"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -31,6 +31,52 @@ var htpasswdUsers map[string]string
 // revokedTokens — blacklist токенов после логаута (hmac → expiry)
 var revokedTokens = map[string]int64{}
 var revokedTokensMu sync.Mutex
+
+// ── Login rate limiting ──────────────────────────────────────────────────────
+
+var (
+	loginAttempts        sync.Map // map[string]*loginTracker
+	maxLoginAttempts     = 5
+	loginLockoutDuration = 15 * time.Minute
+)
+
+type loginTracker struct {
+	mu       sync.Mutex
+	failures int
+	lockedAt time.Time
+}
+
+func checkLoginRateLimit(ip string) bool {
+	val, _ := loginAttempts.LoadOrStore(ip, &loginTracker{})
+	tracker := val.(*loginTracker)
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+
+	if !tracker.lockedAt.IsZero() && time.Since(tracker.lockedAt) < loginLockoutDuration {
+		return false
+	}
+	if !tracker.lockedAt.IsZero() && time.Since(tracker.lockedAt) >= loginLockoutDuration {
+		tracker.failures = 0
+		tracker.lockedAt = time.Time{}
+	}
+	return true
+}
+
+func recordLoginFailure(ip string) {
+	val, _ := loginAttempts.LoadOrStore(ip, &loginTracker{})
+	tracker := val.(*loginTracker)
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.failures++
+	if tracker.failures >= maxLoginAttempts {
+		tracker.lockedAt = time.Now()
+		log.Warnf("Login rate limit: IP %s locked out for %v after %d failures", ip, loginLockoutDuration, tracker.failures)
+	}
+}
+
+func recordLoginSuccess(ip string) {
+	loginAttempts.Delete(ip)
+}
 
 // initAuth загружает htpasswd-файл или генерирует временные credentials.
 // Вызывается после kingpin.Parse().
@@ -186,16 +232,32 @@ func computeHMAC(data, secret string) string {
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-// loginHandler POST /api/login  body: username=&password=
+// loginHandler POST /api/login  body: {"username":"…","password":"…"}
 func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user := r.FormValue("username")
-	pass := r.FormValue("password")
+
+	ip := strings.Split(r.RemoteAddr, ":")[0]
+	if !checkLoginRateLimit(ip) {
+		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+	user := req.Username
+	pass := req.Password
 
 	if !validateCredentials(user, pass) {
+		recordLoginFailure(ip)
 		time.Sleep(500 * time.Millisecond) // замедление брутфорса
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -203,6 +265,7 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	recordLoginSuccess(ip)
 	token := signSession(user)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,

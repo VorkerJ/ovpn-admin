@@ -18,7 +18,7 @@ func (oAdmin *OvpnAdmin) downloadCerts() bool {
 		}
 	}
 
-	err := fDownload(certsArchivePath, *masterHost+*listenBaseUrl+downloadCertsApiUrl+"?token="+oAdmin.masterSyncToken, oAdmin.masterHostBasicAuth)
+	err := fDownload(certsArchivePath, *masterHost+*listenBaseUrl+downloadCertsApiUrl, oAdmin.masterHostBasicAuth, map[string]string{"X-Sync-Token": oAdmin.masterSyncToken})
 	if err != nil {
 		log.Error(err)
 		return false
@@ -35,7 +35,7 @@ func (oAdmin *OvpnAdmin) downloadCcd() bool {
 		}
 	}
 
-	err := fDownload(ccdArchivePath, *masterHost+*listenBaseUrl+downloadCcdApiUrl+"?token="+oAdmin.masterSyncToken, oAdmin.masterHostBasicAuth)
+	err := fDownload(ccdArchivePath, *masterHost+*listenBaseUrl+downloadCcdApiUrl, oAdmin.masterHostBasicAuth, map[string]string{"X-Sync-Token": oAdmin.masterSyncToken})
 	if err != nil {
 		log.Error(err)
 		return false
@@ -132,6 +132,10 @@ func (oAdmin *OvpnAdmin) syncWithMaster() {
 }
 
 func (oAdmin *OvpnAdmin) downloadCertsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
@@ -141,8 +145,11 @@ func (oAdmin *OvpnAdmin) downloadCertsHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
 		return
 	}
-	_ = r.ParseForm()
-	token := r.Form.Get("token")
+	token := r.Header.Get("X-Sync-Token")
+	if token == "" {
+		_ = r.ParseForm()
+		token = r.Form.Get("token")
+	}
 
 	if token != oAdmin.masterSyncToken {
 		http.Error(w, `{"status":"error"}`, http.StatusForbidden)
@@ -155,6 +162,10 @@ func (oAdmin *OvpnAdmin) downloadCertsHandler(w http.ResponseWriter, r *http.Req
 }
 
 func (oAdmin *OvpnAdmin) downloadCcdHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
@@ -164,8 +175,11 @@ func (oAdmin *OvpnAdmin) downloadCcdHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
 		return
 	}
-	_ = r.ParseForm()
-	token := r.Form.Get("token")
+	token := r.Header.Get("X-Sync-Token")
+	if token == "" {
+		_ = r.ParseForm()
+		token = r.Form.Get("token")
+	}
 
 	if token != oAdmin.masterSyncToken {
 		http.Error(w, `{"status":"error"}`, http.StatusForbidden)
@@ -178,11 +192,19 @@ func (oAdmin *OvpnAdmin) downloadCcdHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (oAdmin *OvpnAdmin) lastSyncTimeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Debug(r.RemoteAddr, " ", r.RequestURI)
 	fmt.Fprint(w, oAdmin.lastSyncTime)
 }
 
 func (oAdmin *OvpnAdmin) lastSuccessfulSyncTimeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Debug(r.RemoteAddr, " ", r.RequestURI)
 	fmt.Fprint(w, oAdmin.lastSuccessfulSyncTime)
 }

@@ -328,6 +328,10 @@ func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)

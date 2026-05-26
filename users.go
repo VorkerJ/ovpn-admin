@@ -55,6 +55,10 @@ func (oAdmin *OvpnAdmin) userStatisticHandler(w http.ResponseWriter, r *http.Req
 }
 
 func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
@@ -77,6 +81,10 @@ func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Reques
 	}
 }
 func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
@@ -97,6 +105,10 @@ func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
@@ -117,6 +129,10 @@ func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
@@ -137,6 +153,10 @@ func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
@@ -157,7 +177,15 @@ func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	if oAdmin.role == "slave" {
+		http.Error(w, `{"status":"error"}`, http.StatusLocked)
+		return
+	}
 	var req usernamePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -190,7 +218,15 @@ func (oAdmin *OvpnAdmin) userShowConfigHandler(w http.ResponseWriter, r *http.Re
 }
 
 func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	if oAdmin.role == "slave" {
+		http.Error(w, `{"status":"error"}`, http.StatusLocked)
+		return
+	}
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)

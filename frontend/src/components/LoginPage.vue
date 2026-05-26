@@ -6,7 +6,7 @@ import Button from '@/components/ui/Button.vue'
 
 const emit = defineEmits(['login'])
 
-const username = ref('admin')
+const username = ref('')
 const password = ref('')
 const error = ref('')
 const loading = ref(false)
@@ -19,8 +19,11 @@ async function submit() {
   }
   loading.value = true
   try {
-    const body = new URLSearchParams({ username: username.value, password: password.value })
-    const res = await fetch('/api/login', { method: 'POST', body })
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username.value, password: password.value }),
+    })
     if (res.ok) {
       emit('login')
     } else {

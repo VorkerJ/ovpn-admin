@@ -313,6 +313,10 @@ func CacheControlWrapper(h http.Handler) http.Handler {
 }
 
 func (oAdmin *OvpnAdmin) serverSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	enabledModules, enabledModulesErr := json.Marshal(oAdmin.modules)
 	if enabledModulesErr != nil {

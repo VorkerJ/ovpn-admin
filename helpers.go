@@ -156,7 +156,7 @@ func fMove(src, dst string) error {
 	return nil
 }
 
-func fDownload(path, url string, basicAuth bool) error {
+func fDownload(path, url string, basicAuth bool, extraHeaders ...map[string]string) error {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -164,6 +164,11 @@ func fDownload(path, url string, basicAuth bool) error {
 	}
 	if basicAuth {
 		req.SetBasicAuth(*masterBasicAuthUser, *masterBasicAuthPassword)
+	}
+	if len(extraHeaders) > 0 {
+		for k, v := range extraHeaders[0] {
+			req.Header.Set(k, v)
+		}
 	}
 
 	resp, err := client.Do(req)
