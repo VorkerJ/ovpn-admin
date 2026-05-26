@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"text/template"
@@ -341,6 +343,22 @@ var renderTmpl = template.Must(
 		}).
 		Parse(serverConfTemplate),
 )
+
+// detectDCOSupport проверяет загружен ли в ядре модуль `ovpn` (mainline 6.16+)
+// или out-of-tree `ovpn_dco`. Вызывается один раз при старте ovpn-admin.
+func detectDCOSupport() bool {
+	if _, err := os.Stat("/sys/module/ovpn"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/sys/module/ovpn_dco"); err == nil {
+		return true
+	}
+	_ = exec.Command("modprobe", "ovpn").Run()
+	if _, err := os.Stat("/sys/module/ovpn"); err == nil {
+		return true
+	}
+	return false
+}
 
 func renderServerConfig(cfg ServerConfig, dcoAvailable, ccdEnabled bool) (string, error) {
 	var buf strings.Builder

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -347,4 +348,19 @@ func TestRenderServerConfig_CcdEnabledFalse(t *testing.T) {
 	if strings.Contains(out, "client-config-dir") {
 		t.Errorf("client-config-dir must not appear when ccd disabled")
 	}
+}
+
+func TestDetectDCOSupport_NoModule(t *testing.T) {
+	available := detectDCOSupport()
+	if runtimeIsLinux() && available {
+		t.Logf("DCO available on this host (Linux kernel with ovpn module)")
+	}
+	if !runtimeIsLinux() && available {
+		t.Errorf("DCO must be false on non-Linux, got true")
+	}
+}
+
+func runtimeIsLinux() bool {
+	_, err := os.Stat("/sys")
+	return err == nil
 }
