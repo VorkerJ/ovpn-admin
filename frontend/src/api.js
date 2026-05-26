@@ -111,3 +111,27 @@ export async function refreshCommonRoutesDns() {
   const { data } = await axios.post('api/common-routes/refresh')
   return data // { resolved, failed, changed }
 }
+
+export async function fetchServerConfig() {
+  const { data } = await axios.get('api/server-config')
+  return data // { config, dco_available }
+}
+
+export async function updateServerConfig(cfg) {
+  const { data } = await axios.put('api/server-config', JSON.stringify(cfg), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data // { config, reload_kind }
+}
+
+export async function testServerConfig(cfg) {
+  const { data } = await axios.post('api/server-config/test', JSON.stringify(cfg), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data // { valid, errors }
+}
+
+export async function fetchServerConfigDefaults() {
+  const { data } = await axios.get('api/server-config/defaults')
+  return data
+}
