@@ -14,6 +14,7 @@ import CcdModal from '@/components/modals/CcdModal.vue'
 import LoginPage from '@/components/LoginPage.vue'
 import TabBar from '@/components/TabBar.vue'
 import CommonRoutesView from '@/components/CommonRoutesView.vue'
+import ServerConfigView from '@/components/ServerConfigView.vue'
 
 import {
   fetchUsers, fetchServerSettings, fetchLastSync,
@@ -62,6 +63,9 @@ const visibleTabs = computed(() => {
   const tabs = [{ key: 'users', label: 'Пользователи' }]
   if (modulesEnabled.value.includes('common-routes')) {
     tabs.push({ key: 'common-routes', label: 'Общие маршруты' })
+  }
+  if (modulesEnabled.value.includes('server-config')) {
+    tabs.push({ key: 'server-config', label: 'Сервер' })
   }
   return tabs
 })
@@ -266,6 +270,9 @@ async function submitCcd(ccd) {
       </template>
       <template v-else-if="activeTab === 'common-routes'">
         <CommonRoutesView :server-role="serverRole" />
+      </template>
+      <template v-else-if="activeTab === 'server-config'">
+        <ServerConfigView :server-role="serverRole" />
       </template>
     </main>
 
