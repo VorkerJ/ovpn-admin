@@ -12,6 +12,15 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type usernameRequest struct {
+	Username string `json:"username"`
+}
+
+type usernamePasswordRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 
@@ -26,8 +35,12 @@ func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request)
 
 func (oAdmin *OvpnAdmin) userStatisticHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	_ = r.ParseForm()
-	userStatistic, _ := json.Marshal(oAdmin.getUserStatistic(r.FormValue("username")))
+	var req usernameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	userStatistic, _ := json.Marshal(oAdmin.getUserStatistic(req.Username))
 	fmt.Fprint(w, string(userStatistic))
 }
 
@@ -37,8 +50,12 @@ func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
 		return
 	}
-	_ = r.ParseForm()
-	userCreated, userCreateStatus := oAdmin.userCreate(r.FormValue("username"), r.FormValue("password"))
+	var req usernamePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	userCreated, userCreateStatus := oAdmin.userCreate(req.Username, req.Password)
 
 	if userCreated {
 		oAdmin.clients = oAdmin.usersList()
@@ -55,8 +72,12 @@ func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
 		return
 	}
-	_ = r.ParseForm()
-	err, msg := oAdmin.userRotate(r.FormValue("username"), r.FormValue("password"))
+	var req usernamePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	err, msg := oAdmin.userRotate(req.Username, req.Password)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	} else {
@@ -71,8 +92,12 @@ func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
 		return
 	}
-	_ = r.ParseForm()
-	err, msg := oAdmin.userDelete(r.FormValue("username"))
+	var req usernameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	err, msg := oAdmin.userDelete(req.Username)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	} else {
@@ -87,8 +112,12 @@ func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
 		return
 	}
-	_ = r.ParseForm()
-	err, msg := oAdmin.userRevoke(r.FormValue("username"))
+	var req usernameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	err, msg := oAdmin.userRevoke(req.Username)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	} else {
@@ -103,8 +132,12 @@ func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Requ
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
 		return
 	}
-	_ = r.ParseForm()
-	err, msg := oAdmin.userUnrevoke(r.FormValue("username"))
+	var req usernameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	err, msg := oAdmin.userUnrevoke(req.Username)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	} else {
@@ -115,9 +148,13 @@ func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Requ
 
 func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	_ = r.ParseForm()
+	var req usernamePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
 	if *authByPassword {
-		err, msg := oAdmin.userChangePassword(r.FormValue("username"), r.FormValue("password"))
+		err, msg := oAdmin.userChangePassword(req.Username, req.Password)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, `{"status":"error", "message": "%s"}`, msg)
@@ -134,15 +171,23 @@ func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *htt
 
 func (oAdmin *OvpnAdmin) userShowConfigHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	_ = r.ParseForm()
-	fmt.Fprintf(w, "%s", oAdmin.renderClientConfig(r.FormValue("username")))
+	var req usernameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	fmt.Fprintf(w, "%s", oAdmin.renderClientConfig(req.Username))
 }
 
 func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	_ = r.ParseForm()
-	// 	fmt.Fprintf(w, "%s", userDisconnect(r.FormValue("username")))
-	fmt.Fprintf(w, "%s", r.FormValue("username"))
+	var req usernameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	// 	fmt.Fprintf(w, "%s", userDisconnect(req.Username))
+	fmt.Fprintf(w, "%s", req.Username)
 }
 
 func validateUsername(username string) error {

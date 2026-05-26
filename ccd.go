@@ -309,8 +309,14 @@ func (oAdmin *OvpnAdmin) getCcd(username string) Ccd {
 
 func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	_ = r.ParseForm()
-	ccd, _ := json.Marshal(oAdmin.getCcd(r.FormValue("username")))
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	ccd, _ := json.Marshal(oAdmin.getCcd(req.Username))
 	fmt.Fprintf(w, "%s", ccd)
 }
 
