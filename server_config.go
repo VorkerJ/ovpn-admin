@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 )
 
 const serverConfigSecretName = "ovpn-admin-server-config"
@@ -494,4 +497,68 @@ func renderServerConfig(cfg ServerConfig, dcoAvailable, ccdEnabled bool) (string
 		return "", fmt.Errorf("render server.conf: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// serverManager — координирует render + reload openvpn-процесса.
+type serverManager struct {
+	store        *serverConfigStore
+	storagePath  string
+	mgmtAddr     string
+	confPath     string
+	dcoAvailable bool
+	ccdEnabled   bool
+}
+
+func (m *serverManager) softReload() error {
+	return m.sendSignal("SIGHUP")
+}
+
+func (m *serverManager) sendSignal(sig string) error {
+	conn, err := net.DialTimeout("tcp", m.mgmtAddr, 3*time.Second)
+	if err != nil {
+		return fmt.Errorf("connect mgmt %s: %w", m.mgmtAddr, err)
+	}
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	// Drain async-notification greeting (`>INFO:...`). Lines have no terminator
+	// indicating "last greeting", so each read uses a short deadline; once we
+	// time out (no more data buffered), we stop draining.
+	for {
+		conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if !strings.HasPrefix(line, ">") {
+			break
+		}
+	}
+
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := fmt.Fprintln(conn, "signal "+sig); err != nil {
+		return fmt.Errorf("send signal: %w", err)
+	}
+	resp, _ := reader.ReadString('\n')
+	if strings.HasPrefix(resp, "ERROR") {
+		return fmt.Errorf("mgmt error: %s", strings.TrimSpace(resp))
+	}
+	return nil
+}
+
+func (m *serverManager) waitMgmtReady(ctx context.Context) error {
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		conn, err := net.DialTimeout("tcp", m.mgmtAddr, 1*time.Second)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("mgmt %s did not become ready: %w", m.mgmtAddr, ctx.Err())
+		case <-tick.C:
+		}
+	}
 }

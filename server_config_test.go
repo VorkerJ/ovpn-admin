@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestDefaultServerConfig_PreservesBackwardCompat(t *testing.T) {
@@ -500,5 +503,107 @@ func TestServerConfig_Deserialize_Empty(t *testing.T) {
 	}
 	if cfg.Proto != "tcp" {
 		t.Errorf("empty input must return defaults, got %q", cfg.Proto)
+	}
+}
+
+// fakeMgmtServer — мок OpenVPN management-interface для тестов.
+type fakeMgmtServer struct {
+	listener     net.Listener
+	gotSignals   []string
+	respondError bool
+	closed       chan struct{}
+}
+
+func startFakeMgmt(t *testing.T) *fakeMgmtServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeMgmtServer{listener: ln, closed: make(chan struct{})}
+	go f.serve()
+	t.Cleanup(func() {
+		ln.Close()
+		close(f.closed)
+	})
+	return f
+}
+
+func (f *fakeMgmtServer) addr() string {
+	return f.listener.Addr().String()
+}
+
+func (f *fakeMgmtServer) serve() {
+	for {
+		conn, err := f.listener.Accept()
+		if err != nil {
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			c.Write([]byte(">INFO:OpenVPN Management Interface Version 5\r\n"))
+			buf := make([]byte, 256)
+			for {
+				n, err := c.Read(buf)
+				if err != nil {
+					return
+				}
+				line := strings.TrimSpace(string(buf[:n]))
+				if strings.HasPrefix(line, "signal ") {
+					f.gotSignals = append(f.gotSignals, line)
+					if f.respondError {
+						c.Write([]byte("ERROR: signal not delivered\r\n"))
+					} else {
+						c.Write([]byte("SUCCESS: signal " + strings.TrimPrefix(line, "signal ") + " thrown\r\n"))
+					}
+				}
+			}
+		}(conn)
+	}
+}
+
+func TestServerManager_SoftReload_SendsSIGHUP(t *testing.T) {
+	mgmt := startFakeMgmt(t)
+	mgr := &serverManager{mgmtAddr: mgmt.addr()}
+
+	if err := mgr.softReload(); err != nil {
+		t.Fatalf("softReload: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if len(mgmt.gotSignals) == 0 || !strings.Contains(mgmt.gotSignals[0], "SIGHUP") {
+		t.Errorf("expected SIGHUP signal, got %v", mgmt.gotSignals)
+	}
+}
+
+func TestServerManager_HardReload_SendsSIGTERM(t *testing.T) {
+	mgmt := startFakeMgmt(t)
+	mgr := &serverManager{mgmtAddr: mgmt.addr()}
+
+	if err := mgr.sendSignal("SIGTERM"); err != nil {
+		t.Fatalf("sendSignal: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if len(mgmt.gotSignals) == 0 || !strings.Contains(mgmt.gotSignals[0], "SIGTERM") {
+		t.Errorf("expected SIGTERM, got %v", mgmt.gotSignals)
+	}
+}
+
+func TestServerManager_WaitMgmtReady_Timeout(t *testing.T) {
+	mgr := &serverManager{mgmtAddr: "127.0.0.1:0"}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := mgr.waitMgmtReady(ctx)
+	if err == nil {
+		t.Error("expected timeout error")
+	}
+}
+
+func TestServerManager_WaitMgmtReady_Success(t *testing.T) {
+	mgmt := startFakeMgmt(t)
+	mgr := &serverManager{mgmtAddr: mgmt.addr()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := mgr.waitMgmtReady(ctx); err != nil {
+		t.Errorf("waitMgmtReady: %v", err)
 	}
 }
