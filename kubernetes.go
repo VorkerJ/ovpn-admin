@@ -774,6 +774,41 @@ func (openVPNPKI *OpenVPNPKI) secretUpdateCommonRoutes(data []byte) error {
 	return openVPNPKI.secretUpdate(secret.ObjectMeta, secret.Data, v1.SecretTypeOpaque)
 }
 
+// server-config
+
+func (openVPNPKI *OpenVPNPKI) secretGetServerConfig() ([]byte, error) {
+	secret, err := openVPNPKI.secretGetByName(serverConfigSecretName)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return secret.Data[serverConfigSecretKey], nil
+}
+
+func (openVPNPKI *OpenVPNPKI) secretUpdateServerConfig(data []byte) error {
+	secret, err := openVPNPKI.secretGetByName(serverConfigSecretName)
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		objectMeta := metav1.ObjectMeta{
+			Name: serverConfigSecretName,
+			Labels: map[string]string{
+				labelKeyType:      "server-config",
+				labelKeyManagedBy: labelValueManagedByApp,
+			},
+		}
+		return openVPNPKI.secretCreate(objectMeta, map[string][]byte{serverConfigSecretKey: data}, v1.SecretTypeOpaque)
+	}
+	if err != nil {
+		return err
+	}
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
+	}
+	secret.Data[serverConfigSecretKey] = data
+	return openVPNPKI.secretUpdate(secret.ObjectMeta, secret.Data, v1.SecretTypeOpaque)
+}
+
 //
 
 func (openVPNPKI *OpenVPNPKI) secretCreate(objectMeta metav1.ObjectMeta, data map[string][]byte, secretType v1.SecretType) (err error) {

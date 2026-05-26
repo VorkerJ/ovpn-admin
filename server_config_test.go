@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -425,5 +426,79 @@ func TestCategorizeChanges_HardWinsOverSoft(t *testing.T) {
 	new.Port = 8443
 	if got := categorizeChanges(old, new); got != "hard" {
 		t.Errorf("hard must win over soft, got %q", got)
+	}
+}
+
+func TestServerConfig_FilePersist_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "_server_config.json")
+
+	cfg := defaultServerConfig()
+	cfg.Port = 8443
+	cfg.UpdatedBy = "admin"
+
+	if err := saveServerConfigToFile(path, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := loadServerConfigFromFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Port != 8443 || loaded.UpdatedBy != "admin" {
+		t.Errorf("roundtrip mismatch: %+v", loaded)
+	}
+}
+
+func TestServerConfig_FilePersist_LoadMissingReturnsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "_missing.json")
+	cfg, err := loadServerConfigFromFile(path)
+	if err != nil {
+		t.Errorf("missing file must not error, got %v", err)
+	}
+	if cfg.Proto != "tcp" {
+		t.Errorf("missing file must return defaults, got Proto=%q", cfg.Proto)
+	}
+}
+
+func TestServerConfig_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "_server_config.json")
+	cfg := defaultServerConfig()
+
+	if err := saveServerConfigToFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveServerConfigToFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("temp file not cleaned: %v", err)
+	}
+}
+
+func TestServerConfig_Serialize_Deserialize(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.Port = 8443
+	data, err := serializeServerConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := deserializeServerConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Port != 8443 {
+		t.Errorf("roundtrip mismatch: %+v", parsed)
+	}
+}
+
+func TestServerConfig_Deserialize_Empty(t *testing.T) {
+	cfg, err := deserializeServerConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Proto != "tcp" {
+		t.Errorf("empty input must return defaults, got %q", cfg.Proto)
 	}
 }

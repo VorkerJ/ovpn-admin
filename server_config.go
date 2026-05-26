@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +11,9 @@ import (
 	"sync"
 	"text/template"
 )
+
+const serverConfigSecretName = "ovpn-admin-server-config"
+const serverConfigSecretKey = "data"
 
 // ServerConfig — единственный источник правды для openvpn-сервера.
 // Сериализуется в Secret ovpn-admin-server-config или в JSON-файл.
@@ -415,6 +419,68 @@ func categorizeChanges(old, new ServerConfig) string {
 		return "soft"
 	}
 	return "none"
+}
+
+func serializeServerConfig(cfg ServerConfig) ([]byte, error) {
+	if cfg.DataCiphers == nil {
+		cfg.DataCiphers = []string{}
+	}
+	if cfg.DNSServers == nil {
+		cfg.DNSServers = []string{}
+	}
+	if cfg.PushExtra == nil {
+		cfg.PushExtra = []string{}
+	}
+	if cfg.CustomDirectives == nil {
+		cfg.CustomDirectives = []string{}
+	}
+	return json.MarshalIndent(cfg, "", "  ")
+}
+
+func deserializeServerConfig(data []byte) (ServerConfig, error) {
+	if len(data) == 0 {
+		return defaultServerConfig(), nil
+	}
+	var cfg ServerConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ServerConfig{}, err
+	}
+	if cfg.DataCiphers == nil {
+		cfg.DataCiphers = []string{}
+	}
+	if cfg.DNSServers == nil {
+		cfg.DNSServers = []string{}
+	}
+	if cfg.PushExtra == nil {
+		cfg.PushExtra = []string{}
+	}
+	if cfg.CustomDirectives == nil {
+		cfg.CustomDirectives = []string{}
+	}
+	return cfg, nil
+}
+
+func loadServerConfigFromFile(path string) (ServerConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return defaultServerConfig(), nil
+		}
+		return ServerConfig{}, err
+	}
+	return deserializeServerConfig(data)
+}
+
+func saveServerConfigToFile(path string, cfg ServerConfig) error {
+	data, err := serializeServerConfig(cfg)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func renderServerConfig(cfg ServerConfig, dcoAvailable, ccdEnabled bool) (string, error) {
