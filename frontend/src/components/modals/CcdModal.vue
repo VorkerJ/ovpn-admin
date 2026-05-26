@@ -1,6 +1,6 @@
 <!-- frontend/src/components/modals/CcdModal.vue -->
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import Dialog from '@/components/ui/Dialog.vue'
 import Input from '@/components/ui/Input.vue'
 import Button from '@/components/ui/Button.vue'
@@ -37,7 +37,19 @@ watch(() => props.ccd, (val) => {
 }, { deep: true })
 
 const isMaster = () => props.serverRole === 'master'
-const isDynamic = () => localCcd.value.ClientAddress === 'dynamic'
+
+// VPN-IP режим: 'dynamic' = выдать из пула, 'static' = пин на конкретный адрес.
+// Когда переключают на static — очищаем поле (если там было "dynamic"), чтобы юзер ввёл IP.
+const ipMode = computed({
+  get: () => localCcd.value.ClientAddress === 'dynamic' ? 'dynamic' : 'static',
+  set: (m) => {
+    if (m === 'dynamic') {
+      localCcd.value.ClientAddress = 'dynamic'
+    } else if (localCcd.value.ClientAddress === 'dynamic') {
+      localCcd.value.ClientAddress = ''
+    }
+  },
+})
 
 const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/
 const domainPattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/
@@ -127,24 +139,52 @@ function formatRelativeTime(iso) {
     @close="onClose"
   >
     <div class="space-y-4">
-      <!-- Static address -->
-      <div class="flex gap-2 items-center">
-        <label class="text-sm text-muted-foreground w-36 shrink-0">Статический адрес:</label>
-        <Input
-          v-model="localCcd.ClientAddress"
-          placeholder="dynamic"
-          :disabled="!isMaster()"
-          class="flex-1 font-mono"
-        />
-        <Button
-          v-if="isMaster()"
-          size="sm"
-          variant="ghost"
-          :disabled="isDynamic()"
-          @click="localCcd.ClientAddress = 'dynamic'"
-        >
-          Сбросить
-        </Button>
+      <!-- VPN IP mode -->
+      <div class="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">VPN-адрес:</span>
+          <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
+            <button
+              type="button"
+              :disabled="!isMaster()"
+              @click="ipMode = 'dynamic'"
+              :class="[
+                'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                ipMode === 'dynamic'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-foreground hover:bg-accent'
+              ]"
+            >
+              Из пула
+            </button>
+            <button
+              type="button"
+              :disabled="!isMaster()"
+              @click="ipMode = 'static'"
+              :class="[
+                'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                ipMode === 'static'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-foreground hover:bg-accent'
+              ]"
+            >
+              Фиксированный
+            </button>
+          </div>
+          <span v-if="ipMode === 'dynamic'" class="text-xs text-muted-foreground">
+            OpenVPN выдаст любой свободный адрес из своей подсети
+          </span>
+        </div>
+        <div v-if="ipMode === 'static' && isMaster()" class="flex items-center gap-2">
+          <Input
+            v-model="localCcd.ClientAddress"
+            placeholder="10.0.0.5"
+            class="w-48 font-mono"
+          />
+          <span class="text-xs text-muted-foreground">
+            этот адрес будет закреплён за пользователем
+          </span>
+        </div>
       </div>
 
       <!-- Add form -->
