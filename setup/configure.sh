@@ -39,15 +39,18 @@ if [ ! -c /dev/net/tun ]; then
     mknod /dev/net/tun c 10 200
 fi
 
-cp -f /etc/openvpn/setup/openvpn.conf /etc/openvpn/openvpn.conf
-
+# NOTE: per-user password-auth directives must be in the user-editable
+# server config (added via ovpn-admin UI's Дополнительно textarea), e.g.:
+#   auth-user-pass-verify /etc/openvpn/scripts/auth.sh via-file
+#   script-security 2
+#   verify-client-cert require
+# This used to be appended here automatically when OVPN_PASSWD_AUTH=true,
+# but rendered config is now owned by ovpn-admin. The auth.sh script is
+# still copied below so manually adding the directives works.
 if [ ${OVPN_PASSWD_AUTH} = "true" ]; then
   mkdir -p /etc/openvpn/scripts/
   cp -f /etc/openvpn/setup/auth.sh /etc/openvpn/scripts/auth.sh
   chmod +x /etc/openvpn/scripts/auth.sh
-  echo "auth-user-pass-verify /etc/openvpn/scripts/auth.sh via-file" | tee -a /etc/openvpn/openvpn.conf
-  echo "script-security 2" | tee -a /etc/openvpn/openvpn.conf
-  echo "verify-client-cert require" | tee -a /etc/openvpn/openvpn.conf
   openvpn-user db-init --db.path=$EASY_RSA_LOC/pki/users.db && openvpn-user db-migrate --db.path=$EASY_RSA_LOC/pki/users.db
 fi
 
@@ -56,4 +59,10 @@ fi
 
 mkdir -p /etc/openvpn/ccd
 
-openvpn --config /etc/openvpn/openvpn.conf --client-config-dir /etc/openvpn/ccd --port 1194 --proto tcp --management 127.0.0.1 8989 --dev tun0 --server ${OVPN_SRV_NET} ${OVPN_SRV_MASK}
+# server.conf is now rendered by ovpn-admin into /etc/openvpn-dynamic/server.conf
+echo "Waiting for ovpn-admin to render server.conf..."
+until [ -f /etc/openvpn-dynamic/server.conf ]; do
+  sleep 1
+done
+
+exec openvpn --config /etc/openvpn-dynamic/server.conf

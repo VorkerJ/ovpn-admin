@@ -7,6 +7,7 @@ services:
       dockerfile: Dockerfile.openvpn
     image: openvpn:local
     command: /etc/openvpn/setup/configure.sh
+    restart: unless-stopped
     environment:
       OVPN_SERVER_NET: "192.168.100.0"
       OVPN_SERVER_MASK: "255.255.255.0"
@@ -19,12 +20,14 @@ services:
     volumes:
       - ./easyrsa_master:/etc/openvpn/easyrsa
       - ./ccd_master:/etc/openvpn/ccd
+      - ovpn_dynamic_conf:/etc/openvpn-dynamic
   ovpn-admin:
     build:
       context: .
       dockerfile: Dockerfile.ovpn-admin
     image: ovpn-admin:local
     command: /app/ovpn-admin
+    restart: unless-stopped
     environment:
       OVPN_DEBUG: "true"
       OVPN_VERBOSE: "true"
@@ -38,9 +41,14 @@ services:
       OVPN_AUTH_DB_PATH: "/mnt/easyrsa/pki/users.db"
       LOG_LEVEL: "debug"
       OVPN_FIREWALL: "true"
+      OVPN_SERVER_CONFIG_PATH: "/etc/openvpn-dynamic/server.conf"
     cap_add:
       - NET_ADMIN
     network_mode: service:openvpn
     volumes:
       - ./easyrsa_master:/mnt/easyrsa
       - ./ccd_master:/mnt/ccd
+      - ovpn_dynamic_conf:/etc/openvpn-dynamic
+
+volumes:
+  ovpn_dynamic_conf:
