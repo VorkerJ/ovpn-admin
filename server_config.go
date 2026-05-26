@@ -15,7 +15,23 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
+)
+
+var (
+	ovpnServerConfigReloads = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "ovpn_server_config_reloads_total",
+		Help: "Server config reloads by kind",
+	}, []string{"kind"})
+	ovpnServerConfigErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "ovpn_server_config_errors_total",
+		Help: "Server config errors by operation",
+	}, []string{"op"})
+	ovpnServerConfigDCOAvailable = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "ovpn_server_config_dco_available",
+		Help: "1 if kernel DCO module detected at startup",
+	})
 )
 
 const serverConfigSecretName = "ovpn-admin-server-config"
@@ -569,6 +585,7 @@ func (m *serverManager) waitMgmtReady(ctx context.Context) error {
 // apply применяет новый конфиг: валидирует, рендерит, сохраняет, перезагружает.
 func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedBy string) (string, error) {
 	if err := validateServerConfig(newCfg); err != nil {
+		ovpnServerConfigErrors.WithLabelValues("validate").Inc()
 		return "", fmt.Errorf("validate: %w", err)
 	}
 
@@ -583,9 +600,11 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 
 	rendered, err := renderServerConfig(newCfg, m.dcoAvailable, m.ccdEnabled)
 	if err != nil {
+		ovpnServerConfigErrors.WithLabelValues("render").Inc()
 		return "", err
 	}
 	if err := writeFileAtomic(m.confPath, []byte(rendered)); err != nil {
+		ovpnServerConfigErrors.WithLabelValues("write").Inc()
 		return "", fmt.Errorf("write conf: %w", err)
 	}
 
@@ -597,11 +616,13 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 
 	switch kind {
 	case "soft":
+		ovpnServerConfigReloads.WithLabelValues("soft").Inc()
 		if err := m.softReload(); err != nil {
 			log.Warnf("soft reload (SIGHUP) failed: %v — config saved, will pick up at next restart", err)
 		}
 		return "soft", nil
 	case "hard":
+		ovpnServerConfigReloads.WithLabelValues("hard").Inc()
 		if err := m.sendSignal("SIGTERM"); err != nil {
 			log.Warnf("SIGTERM via mgmt failed: %v", err)
 		}
@@ -617,6 +638,7 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 }
 
 func (m *serverManager) rollback(backup ServerConfig, updatedBy string) (string, error) {
+	ovpnServerConfigReloads.WithLabelValues("rolled-back").Inc()
 	backup.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	backup.UpdatedBy = updatedBy + " (rollback)"
 

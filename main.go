@@ -711,6 +711,11 @@ func main() {
 
 		dcoAvailable := detectDCOSupport()
 		log.Infof("server-config: DCO support detected: %v", dcoAvailable)
+		if dcoAvailable {
+			ovpnServerConfigDCOAvailable.Set(1)
+		} else {
+			ovpnServerConfigDCOAvailable.Set(0)
+		}
 
 		mgmtAddr, ok := ovpnAdmin.mgmtInterfaces["main"]
 		if !ok {
@@ -847,6 +852,9 @@ func (oAdmin *OvpnAdmin) registerMetrics() {
 	oAdmin.promRegistry.MustRegister(ovpnFirewallIptablesErrors)
 	oAdmin.promRegistry.MustRegister(ovpnFirewallEventsProcessed)
 	oAdmin.promRegistry.MustRegister(ovpnFirewallReconciles)
+	oAdmin.promRegistry.MustRegister(ovpnServerConfigReloads)
+	oAdmin.promRegistry.MustRegister(ovpnServerConfigErrors)
+	oAdmin.promRegistry.MustRegister(ovpnServerConfigDCOAvailable)
 }
 
 func (oAdmin *OvpnAdmin) setState() {
