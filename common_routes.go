@@ -499,14 +499,11 @@ func removeAt(cfg CommonRoutesConfig, idx int) CommonRoutesConfig {
 
 // persistCommonRoutes saves config to the configured backend.
 func (oAdmin *OvpnAdmin) persistCommonRoutes(cfg CommonRoutesConfig) error {
-	if *storageBackend == "kubernetes.secrets" {
-		data, err := serializeCommonRoutes(cfg)
-		if err != nil {
-			return err
-		}
-		return app.secretUpdateCommonRoutes(data)
+	data, err := serializeCommonRoutes(cfg)
+	if err != nil {
+		return err
 	}
-	return saveCommonRoutesToFile(oAdmin.commonRoutesPath, cfg)
+	return oAdmin.store.SaveCommonRoutes(data)
 }
 
 func expandCommonRoutes(cfg CommonRoutesConfig) []ccdCommonRoute {

@@ -284,7 +284,7 @@ push "route 8.8.8.8 255.255.255.255" # dns
 	storageBackend = &fs
 	defer func() { storageBackend = &originalStorage }()
 
-	oAdmin := &OvpnAdmin{}
+	oAdmin := &OvpnAdmin{store: testFilesystemStore(dir)}
 	ccd := oAdmin.parseCcd(username)
 	if ccd.ClientAddress != "10.0.0.5" {
 		t.Errorf("ClientAddress: got %s", ccd.ClientAddress)
@@ -311,7 +311,7 @@ func TestModifyCcd_RendersCommonRoutes(t *testing.T) {
 	storageBackend = &fs
 	defer func() { storageBackend = &originalStorage }()
 
-	app := &OvpnAdmin{}
+	app := &OvpnAdmin{store: testFilesystemStore(dir)}
 	app.templates = packr.New("template", "./templates")
 
 	ccd := Ccd{
@@ -403,15 +403,16 @@ func TestRefreshAllDomains_MarksChangedAndStatus(t *testing.T) {
 
 func newTestAdmin(t *testing.T) *OvpnAdmin {
 	t.Helper()
-	app := &OvpnAdmin{
-		role:         "master",
-		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}},
-	}
 	dir := t.TempDir()
 	tmp := dir
 	ccdDir = &tmp
 	storage := "filesystem"
 	storageBackend = &storage
+	app := &OvpnAdmin{
+		role:         "master",
+		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}},
+		store:        testFilesystemStore(dir),
+	}
 	app.commonRoutesPath = dir + "/_common_routes.json"
 	return app
 }

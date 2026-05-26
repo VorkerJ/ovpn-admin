@@ -319,6 +319,7 @@ push "route 192.168.1.0 255.255.255.0" # lan
 			{ID: "x", Kind: "ip", Address: "8.8.8.8", Mask: "255.255.255.255"},
 			{ID: "y", Kind: "domain", Domain: "yt.com", ResolvedIPs: []string{"1.1.1.1", "2.2.2.2"}},
 		}}},
+		store: testFilesystemStore(dir),
 	}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
@@ -370,6 +371,7 @@ func TestComputeAllowedCIDRs_Dedup(t *testing.T) {
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
 			{ID: "x", Kind: "ip", Address: "8.8.8.8", Mask: "255.255.255.255"},
 		}}},
+		store: testFilesystemStore(dir),
 	}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
@@ -491,6 +493,7 @@ func TestEventHandlerLoop_ConnectThenDisconnect(t *testing.T) {
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
 			{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
 		}}},
+		store: testFilesystemStore(dir),
 	}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var calls int32
@@ -527,7 +530,7 @@ func TestEventHandlerLoop_ConnectThenDisconnect(t *testing.T) {
 }
 
 func TestEventHandlerLoop_Coalescing(t *testing.T) {
-	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	iptMock := func(args ...string) error { return nil }
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
@@ -546,7 +549,7 @@ func TestEventHandlerLoop_Coalescing(t *testing.T) {
 }
 
 func TestEventHandlerLoop_NoOpIfDisconnected(t *testing.T) {
-	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var calls int32
 	iptMock := func(args ...string) error {
@@ -595,6 +598,7 @@ func TestReconcile_FromMgmtSnapshot(t *testing.T) {
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
 			{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
 		}}},
+		store: testFilesystemStore(dir),
 	}
 
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
@@ -637,7 +641,7 @@ func TestReconcile_DriftCorrection(t *testing.T) {
 	storageBackend = &fs
 	defer func() { storageBackend = &originalStorage }()
 
-	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(dir)}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
 
@@ -655,7 +659,7 @@ func TestReconcile_DriftCorrection(t *testing.T) {
 }
 
 func TestSubscribeAndPump_ParsesMultipleEvents(t *testing.T) {
-	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
 
@@ -708,7 +712,7 @@ func TestStart_RunsInitAndReconcile(t *testing.T) {
 	storageBackend = &fs
 	defer func() { storageBackend = &originalStorage }()
 
-	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(dir)}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
 	iptMock := func(args ...string) error {
@@ -735,7 +739,7 @@ func TestStart_RunsInitAndReconcile(t *testing.T) {
 }
 
 func TestStop_RunsCleanup(t *testing.T) {
-	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}}
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
 	iptMock := func(args ...string) error {

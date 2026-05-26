@@ -36,11 +36,22 @@ func withTempCcdEnv(t *testing.T) (string, func()) {
 	}
 }
 
+// testFilesystemStore creates a filesystemStore pointing at the given temp dir.
+func testFilesystemStore(dir string) *filesystemStore {
+	return &filesystemStore{
+		easyrsaDirPath: dir,
+		easyrsaBinPath: "easyrsa",
+		ccdDir:         dir,
+		indexTxtPath:   dir + "/index.txt",
+	}
+}
+
 // newTestAdminCcd возвращает OvpnAdmin с packr templates и пустым commonRoutes-store.
-func newTestAdminCcd(t *testing.T) *OvpnAdmin {
+func newTestAdminCcd(t *testing.T, dir string) *OvpnAdmin {
 	t.Helper()
 	app := &OvpnAdmin{
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}},
+		store:        testFilesystemStore(dir),
 	}
 	app.templates = packr.New("template", "./templates")
 	return app
@@ -77,7 +88,7 @@ push "route 8.8.8.8 255.255.255.255" # __common__:static common-dns
 		t.Fatal(err)
 	}
 
-	app := &OvpnAdmin{}
+	app := &OvpnAdmin{store: testFilesystemStore(dir)}
 	ccd := app.parseCcd("alice")
 
 	if ccd.ClientAddress != "10.0.0.5" {
@@ -136,7 +147,7 @@ func TestValidateCcd_AcceptsDomain(t *testing.T) {
 			{Kind: "domain", Domain: "youtube.com", Description: "yt"},
 		},
 	}
-	ok, msg := validateCcd(ccd)
+	ok, msg := (&OvpnAdmin{}).validateCcd(ccd)
 	if !ok {
 		t.Errorf("expected ok, got msg=%q", msg)
 	}
@@ -150,7 +161,7 @@ func TestValidateCcd_RejectsBadDomain(t *testing.T) {
 			ClientAddress: "dynamic",
 			CustomRoutes:  []ccdRoute{{Kind: "domain", Domain: d}},
 		}
-		ok, _ := validateCcd(ccd)
+		ok, _ := (&OvpnAdmin{}).validateCcd(ccd)
 		if ok {
 			t.Errorf("expected validation failure for domain %q", d)
 		}
@@ -163,7 +174,7 @@ func TestValidateCcd_RejectsUnknownKind(t *testing.T) {
 		ClientAddress: "dynamic",
 		CustomRoutes:  []ccdRoute{{Kind: "weird", Address: "10.0.0.0", Mask: "255.255.255.0"}},
 	}
-	if ok, _ := validateCcd(ccd); ok {
+	if ok, _ := (&OvpnAdmin{}).validateCcd(ccd); ok {
 		t.Fatal("expected validation failure for unknown kind")
 	}
 }
@@ -174,7 +185,7 @@ func TestValidateCcd_BackwardCompat_EmptyKindTreatedAsIP(t *testing.T) {
 		ClientAddress: "dynamic",
 		CustomRoutes:  []ccdRoute{{Address: "10.0.0.0", Mask: "255.255.255.0"}}, // no Kind
 	}
-	if ok, msg := validateCcd(ccd); !ok {
+	if ok, msg := (&OvpnAdmin{}).validateCcd(ccd); !ok {
 		t.Fatalf("empty kind must be backward-compat ip, got msg=%q", msg)
 	}
 }
@@ -185,7 +196,7 @@ func TestModifyCcd_RendersDomainAsMultipleLines(t *testing.T) {
 	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 
 	ccd := Ccd{
 		User:          "alice",
@@ -221,9 +232,8 @@ func TestModifyCcd_RendersDomainAsMultipleLines(t *testing.T) {
 func TestModifyCcd_RoundTripDomainEntry(t *testing.T) {
 	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
-	_ = dir
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 
 	original := Ccd{
 		User:          "carol",
@@ -259,7 +269,7 @@ func TestUserApplyCcdHandler_ResolvesNewDomainSynchronously(t *testing.T) {
 	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 	app.role = "master"
 
 	resolverCleanup := withMockResolver(t, map[string][]string{
@@ -298,7 +308,7 @@ func TestUserApplyCcdHandler_PreservesIPsOnUnchangedDomain(t *testing.T) {
 	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 	app.role = "master"
 
 	// Pre-seed CCD with a domain entry that already has resolved IPs.
@@ -349,10 +359,10 @@ push "route 9.9.9.10 255.255.255.255" # __user_domain__:example.com test
 }
 
 func TestUserApplyCcdHandler_SlaveLocked(t *testing.T) {
-	_, cleanup := withTempCcdEnv(t)
+	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 	app.role = "slave"
 
 	req := httptest.NewRequest(http.MethodPost, "/api/user/ccd/apply",
@@ -369,7 +379,7 @@ func TestUserApplyCcdHandler_MixedIPAndDomain(t *testing.T) {
 	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 	app.role = "master"
 
 	resolverCleanup := withMockResolver(t, map[string][]string{"d.com": {"1.1.1.1"}})
@@ -406,7 +416,7 @@ func TestRefreshAllUserDomains_RewritesCcdOnIPChange(t *testing.T) {
 	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 	app.clients = []OpenvpnClient{
 		{Identity: "alice", AccountStatus: "Active"},
 	}
@@ -440,7 +450,7 @@ func TestRefreshAllUserDomains_SkipsRevokedUsers(t *testing.T) {
 	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 	app.clients = []OpenvpnClient{
 		{Identity: "alice", AccountStatus: "Active"},
 		{Identity: "revoked-user", AccountStatus: "Revoked"},
@@ -480,7 +490,7 @@ func TestRefreshAllUserDomains_NoOpWhenIPsUnchanged(t *testing.T) {
 	dir, cleanup := withTempCcdEnv(t)
 	defer cleanup()
 
-	app := newTestAdminCcd(t)
+	app := newTestAdminCcd(t, dir)
 	app.clients = []OpenvpnClient{{Identity: "alice", AccountStatus: "Active"}}
 
 	existing := `push "route 1.1.1.1 255.255.255.255" # __user_domain__:same.com test

@@ -22,7 +22,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -33,6 +32,8 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"gopkg.in/alecthomas/kingpin.v2"
+
+	"ovpn-admin/internal/storage"
 )
 
 const (
@@ -233,6 +234,7 @@ type OvpnAdmin struct {
 	firewall               *firewallController
 	serverConfigStore      *serverConfigStore
 	serverManager          *serverManager
+	store                  storage.Store
 }
 
 type OpenvpnServer struct {
@@ -303,13 +305,10 @@ type clientStatus struct {
 func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 
-	if *storageBackend == "kubernetes.secrets" {
-		err := app.updateIndexTxtOnDisk()
-		if err != nil {
-			log.Errorln(err)
-		}
-		oAdmin.clients = oAdmin.usersList()
+	if err := oAdmin.store.UpdateIndexTxtOnDisk(); err != nil {
+		log.Errorln(err)
 	}
+	oAdmin.clients = oAdmin.usersList()
 
 	usersList, _ := json.Marshal(oAdmin.clients)
 	fmt.Fprint(w, string(usersList))
@@ -538,7 +537,7 @@ func (oAdmin *OvpnAdmin) downloadCertsHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
 		return
 	}
-	if *storageBackend == "kubernetes.secrets" {
+	if _, isK8s := oAdmin.store.(*kubernetesStore); isK8s {
 		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
 		return
 	}
@@ -561,7 +560,7 @@ func (oAdmin *OvpnAdmin) downloadCcdHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
 		return
 	}
-	if *storageBackend == "kubernetes.secrets" {
+	if _, isK8s := oAdmin.store.(*kubernetesStore); isK8s {
 		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
 		return
 	}
@@ -589,15 +588,24 @@ func main() {
 
 	initAuth()
 
+	if *indexTxtPath == "" {
+		*indexTxtPath = *easyrsaDirPath + "/pki/index.txt"
+	}
+
+	var store storage.Store
 	if *storageBackend == "kubernetes.secrets" {
 		err := app.run()
 		if err != nil {
-			log.Error(err)
+			log.Fatal(err)
 		}
-	}
-
-	if *indexTxtPath == "" {
-		*indexTxtPath = *easyrsaDirPath + "/pki/index.txt"
+		store = &kubernetesStore{pki: &app}
+	} else {
+		store = &filesystemStore{
+			easyrsaDirPath: *easyrsaDirPath,
+			easyrsaBinPath: *easyrsaBinPath,
+			ccdDir:         *ccdDir,
+			indexTxtPath:   *indexTxtPath,
+		}
 	}
 
 	if *authDataBaseInit {
@@ -615,6 +623,7 @@ func main() {
 	ovpnAdmin.createUserMutex = &sync.Mutex{}
 	ovpnAdmin.mgmtInterfaces = make(map[string]string)
 	ovpnAdmin.commonRoutes = &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}
+	ovpnAdmin.store = store
 
 	for _, mgmtInterface := range *mgmtAddress {
 		parts := strings.SplitN(mgmtInterface, "=", 2)
@@ -637,7 +646,7 @@ func main() {
 	ovpnAdmin.modules = append(ovpnAdmin.modules, "core")
 
 	if *authByPassword {
-		if *storageBackend != "kubernetes.secrets" {
+		if _, isK8s := store.(*kubernetesStore); !isK8s {
 			ovpnAdmin.modules = append(ovpnAdmin.modules, "passwdAuth")
 		} else {
 			log.Fatal("Right now the keys `--storage.backend=kubernetes.secret` and `--auth.password` are not working together. Please use only one of them ")
@@ -655,19 +664,13 @@ func main() {
 		ovpnAdmin.commonRoutesPath = *ccdDir + "/_common_routes.json"
 
 		var initial CommonRoutesConfig
-		if *storageBackend == "kubernetes.secrets" {
-			data, err := app.secretGetCommonRoutes()
-			if err != nil {
-				log.Warnf("loading common routes from secret: %v (starting with empty)", err)
-			}
-			if c, err := deserializeCommonRoutes(data); err != nil {
-				log.Warnf("deserializing common routes: %v (starting with empty)", err)
-			} else {
-				initial = c
-			}
-		} else {
-			if c, err := loadCommonRoutesFromFile(ovpnAdmin.commonRoutesPath); err != nil {
-				log.Warnf("loading common routes from %s: %v (starting with empty)", ovpnAdmin.commonRoutesPath, err)
+		data, err := store.LoadCommonRoutes()
+		if err != nil {
+			log.Warnf("loading common routes: %v (starting with empty)", err)
+		}
+		if data != nil {
+			if c, derr := deserializeCommonRoutes(data); derr != nil {
+				log.Warnf("deserializing common routes: %v (starting with empty)", derr)
 			} else {
 				initial = c
 			}
@@ -684,24 +687,16 @@ func main() {
 
 		ovpnAdmin.serverConfigStore = newServerConfigStore()
 		var initial ServerConfig
-		if *storageBackend == "kubernetes.secrets" {
-			data, err := app.secretGetServerConfig()
-			if err != nil {
-				log.Warnf("load server config from secret: %v (using defaults)", err)
-				initial = defaultServerConfig()
-			} else {
-				c, derr := deserializeServerConfig(data)
-				if derr != nil {
-					log.Warnf("deserialize server config: %v (using defaults)", derr)
-					initial = defaultServerConfig()
-				} else {
-					initial = c
-				}
-			}
+		data, err := store.LoadServerConfig()
+		if err != nil {
+			log.Warnf("load server config: %v (using defaults)", err)
+			initial = defaultServerConfig()
+		} else if data == nil {
+			initial = defaultServerConfig()
 		} else {
-			c, err := loadServerConfigFromFile(storagePath)
-			if err != nil {
-				log.Warnf("load server config from %s: %v (using defaults)", storagePath, err)
+			c, derr := deserializeServerConfig(data)
+			if derr != nil {
+				log.Warnf("deserialize server config: %v (using defaults)", derr)
 				initial = defaultServerConfig()
 			} else {
 				initial = c
@@ -723,12 +718,13 @@ func main() {
 		}
 
 		ovpnAdmin.serverManager = &serverManager{
-			store:        ovpnAdmin.serverConfigStore,
-			storagePath:  storagePath,
-			mgmtAddr:     mgmtAddr,
-			confPath:     *serverConfigPath,
-			dcoAvailable: dcoAvailable,
-			ccdEnabled:   *ccdEnabled,
+			store:          ovpnAdmin.serverConfigStore,
+			persistBackend: store,
+			storagePath:    storagePath,
+			mgmtAddr:       mgmtAddr,
+			confPath:       *serverConfigPath,
+			dcoAvailable:   dcoAvailable,
+			ccdEnabled:     *ccdEnabled,
 		}
 
 		// Render initial server.conf at startup (openvpn-container waits for this file)
@@ -947,12 +943,7 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 		conf.CA = fRead(*easyrsaDirPath + "/pki/ca.crt")
 		conf.TLS = fRead(*easyrsaDirPath + "/pki/ta.key")
 
-		if *storageBackend == "kubernetes.secrets" {
-			conf.Cert, conf.Key = app.easyrsaGetClientCert(username)
-		} else {
-			conf.Cert = fRead(*easyrsaDirPath + "/pki/issued/" + username + ".crt")
-			conf.Key = fRead(*easyrsaDirPath + "/pki/private/" + username + ".key")
-		}
+		conf.Cert, conf.Key = oAdmin.store.GetClientCert(username)
 
 		conf.PasswdAuth = *authByPassword
 
@@ -994,12 +985,9 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 	ccd.CustomRoutes = []ccdRoute{}
 
 	var txtLinesArray []string
-	if *storageBackend == "kubernetes.secrets" {
-		txtLinesArray = strings.Split(app.secretGetCcd(ccd.User), "\n")
-	} else {
-		if fExist(*ccdDir + "/" + username) {
-			txtLinesArray = strings.Split(fRead(*ccdDir+"/"+username), "\n")
-		}
+	ccdContent := oAdmin.store.GetCcd(ccd.User)
+	if ccdContent != "" {
+		txtLinesArray = strings.Split(ccdContent, "\n")
 	}
 
 	// Per-user domain routes are written as multiple push lines with
@@ -1059,7 +1047,7 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 }
 
 func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bool, string) {
-	ccdValid, err := validateCcd(ccd)
+	ccdValid, err := oAdmin.validateCcd(ccd)
 	if err != "" {
 		return false, err
 	}
@@ -1076,13 +1064,9 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 		return false, "template render failed"
 	}
 
-	if *storageBackend == "kubernetes.secrets" {
-		app.secretUpdateCcd(ccd.User, tmp.Bytes())
-	} else {
-		if err := fWrite(*ccdDir+"/"+ccd.User, tmp.String()); err != nil {
-			log.Errorf("modifyCcd: fWrite(): %v", err)
-			return false, "write failed"
-		}
+	if err := oAdmin.store.SaveCcd(ccd.User, tmp.Bytes()); err != nil {
+		log.Errorf("modifyCcd: SaveCcd(): %v", err)
+		return false, "write failed"
 	}
 	return true, "ccd updated successfully"
 }
@@ -1199,7 +1183,7 @@ func (oAdmin *OvpnAdmin) refreshAllUserDomains(ctx context.Context) {
 	}
 }
 
-func validateCcd(ccd Ccd) (bool, string) {
+func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 
 	ccdErr := ""
 
@@ -1209,7 +1193,7 @@ func validateCcd(ccd Ccd) (bool, string) {
 			log.Error(err)
 		}
 
-		if !checkStaticAddressIsFree(ccd.ClientAddress, ccd.User) {
+		if !oAdmin.checkStaticAddressIsFree(ccd.ClientAddress, ccd.User) {
 			ccdErr = fmt.Sprintf("ClientAddress \"%s\" already assigned to another user", ccd.ClientAddress)
 			log.Debugf("modify ccd for user %s: %s", ccd.User, ccdErr)
 			return false, ccdErr
@@ -1268,51 +1252,33 @@ func (oAdmin *OvpnAdmin) getCcd(username string) Ccd {
 	return ccd
 }
 
-func checkStaticAddressIsFree(staticAddress string, username string) bool {
+func (oAdmin *OvpnAdmin) checkStaticAddressIsFree(staticAddress string, username string) bool {
+	log.Infof("Static address: %s", staticAddress)
 
-	if *storageBackend == "kubernetes.secrets" {
+	secrets, err := oAdmin.store.ListCcdSecrets()
+	if err != nil {
+		log.Error(err)
+		return false
+	}
 
-		log.Infof("Static address: %s", staticAddress)
-
-		labelSelector := fmt.Sprintf("%s=%s,%s=%s",
-			labelKeyType, labelValueClientAuth,
-			labelKeyManagedBy, labelValueManagedByApp)
-
-		secrets, err := app.secretsGetByLabels(labelSelector)
-		if err != nil {
-			log.Error(err)
+	for _, secret := range secrets {
+		if secret.CommonName == username {
+			continue
 		}
 
-		for _, secret := range secrets.Items {
-			otherUser := secret.Labels["name"]
-			if otherUser == username {
-				continue
-			}
-
-			dataCCD, ok := secret.Data["ccd"]
-			if !ok {
-				continue
-			}
-
-			lines := strings.Split(string(dataCCD), "\n")
-
-			for _, line := range lines {
-				if strings.HasPrefix(line, prefixStaticRoute) {
-					fields := strings.Fields(line)
-					if len(fields) >= 2 && fields[1] == staticAddress {
-						log.Warnf("IP %s already assigned to user %s", staticAddress, otherUser)
-						return false
-					}
+		lines := strings.Split(secret.CcdContent, "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, prefixStaticRoute) {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 && fields[1] == staticAddress {
+					log.Warnf("IP %s already assigned to user %s", staticAddress, secret.CommonName)
+					return false
 				}
 			}
 		}
-
-		return true
 	}
 
-	o := runBash(fmt.Sprintf("grep -rl ' %[1]s ' %[2]s | grep -vx %[2]s/%[3]s | wc -l", staticAddress, *ccdDir, username))
-
-	return strings.TrimSpace(o) == "0"
+	return true
 }
 
 func validateUsername(username string) error {
@@ -1432,14 +1398,8 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 		}
 	}
 
-	if *storageBackend == "kubernetes.secrets" {
-		err := app.easyrsaBuildClient(username)
-		if err != nil {
-			log.Error(err)
-		}
-	} else {
-		o := runBash(fmt.Sprintf("cd %s && %s --batch build-client-full %s nopass 1>/dev/null", *easyrsaDirPath, *easyrsaBinPath, username))
-		log.Debug(o)
+	if err := oAdmin.store.BuildClient(username); err != nil {
+		log.Error(err)
 	}
 
 	if *authByPassword {
@@ -1495,14 +1455,8 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 	log.Infof("Revoke certificate for user %s", username)
 	if checkUserExist(username) {
 		// check certificate valid flag 'V'
-		if *storageBackend == "kubernetes.secrets" {
-			err := app.easyrsaRevoke(username)
-			if err != nil {
-				log.Error(err)
-			}
-		} else {
-			o := runBash(fmt.Sprintf("cd %[1]s && echo yes | %[2]s revoke %[3]s 1>/dev/null && %[2]s gen-crl 1>/dev/null", *easyrsaDirPath, *easyrsaBinPath, username))
-			log.Debugln(o)
+		if err := oAdmin.store.RevokeClient(username); err != nil {
+			log.Error(err)
 		}
 
 		if *authByPassword {
@@ -1529,61 +1483,15 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 
 func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 	if checkUserExist(username) {
-		if *storageBackend == "kubernetes.secrets" {
-			err := app.easyrsaUnrevoke(username)
-			if err != nil {
-				log.Error(err)
-			}
-		} else {
-			// check certificate revoked flag 'R'
-			usersFromIndexTxt := indexTxtParser(fRead(*indexTxtPath))
-			for i := range usersFromIndexTxt {
-				if usersFromIndexTxt[i].DistinguishedName == "/CN="+username {
-					if usersFromIndexTxt[i].Flag == "R" {
-
-						usersFromIndexTxt[i].Flag = "V"
-						usersFromIndexTxt[i].RevocationDate = ""
-
-						err := fMove(fmt.Sprintf("%s/pki/revoked/certs_by_serial/%s.crt", *easyrsaDirPath, usersFromIndexTxt[i].SerialNumber), fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username))
-						if err != nil {
-							log.Error(err)
-						}
-						err = fMove(fmt.Sprintf("%s/pki/revoked/certs_by_serial/%s.crt", *easyrsaDirPath, usersFromIndexTxt[i].SerialNumber), fmt.Sprintf("%s/pki/certs_by_serial/%s.pem", *easyrsaDirPath, usersFromIndexTxt[i].SerialNumber))
-						if err != nil {
-							log.Error(err)
-						}
-						err = fMove(fmt.Sprintf("%s/pki/revoked/private_by_serial/%s.key", *easyrsaDirPath, usersFromIndexTxt[i].SerialNumber), fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username))
-						if err != nil {
-							log.Error(err)
-						}
-						err = fMove(fmt.Sprintf("%s/pki/revoked/reqs_by_serial/%s.req", *easyrsaDirPath, usersFromIndexTxt[i].SerialNumber), fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username))
-						if err != nil {
-							log.Error(err)
-						}
-						err = fWrite(*indexTxtPath, renderIndexTxt(usersFromIndexTxt))
-						if err != nil {
-							log.Error(err)
-						}
-
-						_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null", *easyrsaDirPath, *easyrsaBinPath))
-
-						if *authByPassword {
-							o := runBash(fmt.Sprintf("openvpn-user restore --db.path %s --user %s", *authDatabase, username))
-							log.Debug(o)
-						}
-
-						crlFix()
-
-						break
-					}
-				}
-			}
-			err := fWrite(*indexTxtPath, renderIndexTxt(usersFromIndexTxt))
-			if err != nil {
-				log.Error(err)
-			}
-			//fmt.Print(renderIndexTxt(usersFromIndexTxt))
+		if err := oAdmin.store.UnrevokeClient(username); err != nil {
+			log.Error(err)
 		}
+
+		if *authByPassword {
+			o := runBash(fmt.Sprintf("openvpn-user restore --db.path %s --user %s", *authDatabase, username))
+			log.Debug(o)
+		}
+
 		crlFix()
 		oAdmin.clients = oAdmin.usersList()
 		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully unrevoked\"}", username)
@@ -1593,82 +1501,21 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 
 func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string) {
 	if checkUserExist(username) {
-		if *storageBackend == "kubernetes.secrets" {
-			err := app.easyrsaRotate(username, newPassword)
-			if err != nil {
-				log.Error(err)
-			}
-		} else {
-
-			var oldUserIndex, newUserIndex int
-			var oldUserSerial string
-
-			uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
-
-			usersFromIndexTxt := indexTxtParser(fRead(*indexTxtPath))
-			for i := range usersFromIndexTxt {
-				if usersFromIndexTxt[i].DistinguishedName == "/CN="+username {
-					oldUserSerial = usersFromIndexTxt[i].SerialNumber
-					usersFromIndexTxt[i].DistinguishedName = "/CN=REVOKED-" + username + "-" + uniqHash
-					oldUserIndex = i
-					break
-				}
-			}
-			err := fWrite(*indexTxtPath, renderIndexTxt(usersFromIndexTxt))
-			if err != nil {
-				log.Error(err)
-			}
-
-			if *authByPassword {
-				o := runBash(fmt.Sprintf("openvpn-user delete --force --db.path %s --user %s", *authDatabase, username))
-				log.Debug(o)
-			}
-
-			// Remove old PKI files so easyrsa can regenerate them
-			if err := os.Remove(fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
-				log.Warnf("failed to remove key file for %s: %v", username, err)
-			}
-			if err := os.Remove(fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
-				log.Warnf("failed to remove crt file for %s: %v", username, err)
-			}
-			if err := os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
-				log.Warnf("failed to remove req file for %s: %v", username, err)
-			}
-
-			userCreated, userCreateMessage := oAdmin.userCreate(username, newPassword)
-			if !userCreated {
-				usersFromIndexTxt = indexTxtParser(fRead(*indexTxtPath))
-				for i := range usersFromIndexTxt {
-					if usersFromIndexTxt[i].SerialNumber == oldUserSerial {
-						usersFromIndexTxt[i].DistinguishedName = "/CN=" + username
-						break
-					}
-				}
-				err = fWrite(*indexTxtPath, renderIndexTxt(usersFromIndexTxt))
-				if err != nil {
-					log.Error(err)
-				}
-				return fmt.Errorf("error rotaing user due:  %s", userCreateMessage), userCreateMessage
-			}
-
-			usersFromIndexTxt = indexTxtParser(fRead(*indexTxtPath))
-			for i := range usersFromIndexTxt {
-				if usersFromIndexTxt[i].DistinguishedName == "/CN="+username {
-					newUserIndex = i
-				}
-				if usersFromIndexTxt[i].SerialNumber == oldUserSerial {
-					oldUserIndex = i
-				}
-			}
-			usersFromIndexTxt[oldUserIndex], usersFromIndexTxt[newUserIndex] = usersFromIndexTxt[newUserIndex], usersFromIndexTxt[oldUserIndex]
-
-			err = fWrite(*indexTxtPath, renderIndexTxt(usersFromIndexTxt))
-			if err != nil {
-				log.Error(err)
-			}
-
-			_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null", *easyrsaDirPath, *easyrsaBinPath))
+		if *authByPassword {
+			o := runBash(fmt.Sprintf("openvpn-user delete --force --db.path %s --user %s", *authDatabase, username))
+			log.Debug(o)
 		}
+
+		if err := oAdmin.store.RotateClient(username, newPassword); err != nil {
+			log.Error(err)
+			return fmt.Errorf("error rotating user: %w", err), err.Error()
+		}
+
+		if *authByPassword {
+			o := runBash(fmt.Sprintf("openvpn-user create --db.path %s --user %s --password %s", *authDatabase, username, newPassword))
+			log.Debug(o)
+		}
+
 		crlFix()
 		oAdmin.clients = oAdmin.usersList()
 		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully rotated\"}", username)
@@ -1678,38 +1525,14 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 
 func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 	if checkUserExist(username) {
-		if *storageBackend == "kubernetes.secrets" {
-			err := app.easyrsaDelete(username)
-			if err != nil {
-				log.Error(err)
-			}
-		} else {
-			uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
-			usersFromIndexTxt := indexTxtParser(fRead(*indexTxtPath))
-			for i := range usersFromIndexTxt {
-				if usersFromIndexTxt[i].DistinguishedName == "/CN="+username {
-					usersFromIndexTxt[i].DistinguishedName = "/CN=REVOKED-" + username + "-" + uniqHash
-					break
-				}
-			}
-			if *authByPassword {
-				_ = runBash(fmt.Sprintf("openvpn-user delete --force --db.path %s --user %s", *authDatabase, username))
-			}
-			err := fWrite(*indexTxtPath, renderIndexTxt(usersFromIndexTxt))
-			if err != nil {
-				log.Error(err)
-			}
-			if err := os.Remove(fmt.Sprintf("%s/pki/private/%s.key", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
-				log.Warnf("failed to remove key file for %s: %v", username, err)
-			}
-			if err := os.Remove(fmt.Sprintf("%s/pki/issued/%s.crt", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
-				log.Warnf("failed to remove crt file for %s: %v", username, err)
-			}
-			if err := os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
-				log.Warnf("failed to remove req file for %s: %v", username, err)
-			}
-			_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null ", *easyrsaDirPath, *easyrsaBinPath))
+		if *authByPassword {
+			_ = runBash(fmt.Sprintf("openvpn-user delete --force --db.path %s --user %s", *authDatabase, username))
 		}
+
+		if err := oAdmin.store.DeleteClient(username); err != nil {
+			log.Error(err)
+		}
+
 		crlFix()
 		oAdmin.clients = oAdmin.usersList()
 		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully deleted\"}", username)

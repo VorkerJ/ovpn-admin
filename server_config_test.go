@@ -647,11 +647,12 @@ func TestServerManager_Apply_Soft(t *testing.T) {
 	defer func() { storageBackend = &originalStorage }()
 
 	mgr := &serverManager{
-		store:       store,
-		storagePath: filepath.Join(dir, "store.json"),
-		mgmtAddr:    mgmt.addr(),
-		confPath:    confPath,
-		ccdEnabled:  true,
+		store:          store,
+		persistBackend: testFilesystemStore(dir),
+		storagePath:    filepath.Join(dir, "store.json"),
+		mgmtAddr:       mgmt.addr(),
+		confPath:       confPath,
+		ccdEnabled:     true,
 	}
 
 	cfg := store.snapshot()
@@ -711,12 +712,15 @@ func newServerConfigTestAdmin(t *testing.T) (*OvpnAdmin, *fakeMgmtServer, string
 	mgmt := startFakeMgmt(t)
 	app := &OvpnAdmin{role: "master"}
 	app.serverConfigStore = newServerConfigStore()
+	fsStore := testFilesystemStore(dir)
+	app.store = fsStore
 	app.serverManager = &serverManager{
-		store:       app.serverConfigStore,
-		storagePath: filepath.Join(dir, "store.json"),
-		mgmtAddr:    mgmt.addr(),
-		confPath:    filepath.Join(dir, "server.conf"),
-		ccdEnabled:  true,
+		store:          app.serverConfigStore,
+		persistBackend: fsStore,
+		storagePath:    filepath.Join(dir, "store.json"),
+		mgmtAddr:       mgmt.addr(),
+		confPath:       filepath.Join(dir, "server.conf"),
+		ccdEnabled:     true,
 	}
 	fs := "filesystem"
 	storageBackend = &fs

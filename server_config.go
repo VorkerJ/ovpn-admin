@@ -17,6 +17,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
+
+	"ovpn-admin/internal/storage"
 )
 
 var (
@@ -520,12 +522,13 @@ func renderServerConfig(cfg ServerConfig, dcoAvailable, ccdEnabled bool) (string
 
 // serverManager — координирует render + reload openvpn-процесса.
 type serverManager struct {
-	store        *serverConfigStore
-	storagePath  string
-	mgmtAddr     string
-	confPath     string
-	dcoAvailable bool
-	ccdEnabled   bool
+	store          *serverConfigStore
+	persistBackend storage.Store
+	storagePath    string
+	mgmtAddr       string
+	confPath       string
+	dcoAvailable   bool
+	ccdEnabled     bool
 }
 
 func (m *serverManager) softReload() error {
@@ -656,14 +659,11 @@ func (m *serverManager) rollback(backup ServerConfig, updatedBy string) (string,
 }
 
 func (m *serverManager) persist(cfg ServerConfig) error {
-	if *storageBackend == "kubernetes.secrets" {
-		data, err := serializeServerConfig(cfg)
-		if err != nil {
-			return err
-		}
-		return app.secretUpdateServerConfig(data)
+	data, err := serializeServerConfig(cfg)
+	if err != nil {
+		return err
 	}
-	return saveServerConfigToFile(m.storagePath, cfg)
+	return m.persistBackend.SaveServerConfig(data)
 }
 
 func writeFileAtomic(path string, data []byte) error {
