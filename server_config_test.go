@@ -364,3 +364,66 @@ func runtimeIsLinux() bool {
 	_, err := os.Stat("/sys")
 	return err == nil
 }
+
+func TestCategorizeChanges_NoChange(t *testing.T) {
+	cfg := defaultServerConfig()
+	kind := categorizeChanges(cfg, cfg)
+	if kind != "none" {
+		t.Errorf("identical configs must produce none, got %q", kind)
+	}
+}
+
+func TestCategorizeChanges_SoftFields(t *testing.T) {
+	for _, mod := range []func(*ServerConfig){
+		func(c *ServerConfig) { c.Verb = 5 },
+		func(c *ServerConfig) { c.DNSServers = append(c.DNSServers, "9.9.9.9") },
+		func(c *ServerConfig) { c.RedirectGateway = true },
+		func(c *ServerConfig) { c.KeepaliveInterval = 20 },
+		func(c *ServerConfig) { c.KeepaliveTimeout = 120 },
+		func(c *ServerConfig) { c.MaxClients = 50 },
+		func(c *ServerConfig) { c.PushExtra = []string{"route 10.0.0.0 255.0.0.0"} },
+		func(c *ServerConfig) { c.CustomDirectives = []string{"explicit-exit-notify"} },
+	} {
+		old := defaultServerConfig()
+		new := defaultServerConfig()
+		mod(&new)
+		if got := categorizeChanges(old, new); got != "soft" {
+			t.Errorf("expected soft, got %q for change", got)
+		}
+	}
+}
+
+func TestCategorizeChanges_HardFields(t *testing.T) {
+	for _, mod := range []func(*ServerConfig){
+		func(c *ServerConfig) { c.Proto = "udp" },
+		func(c *ServerConfig) { c.Port = 8443 },
+		func(c *ServerConfig) { c.TunMTU = 1400 },
+		func(c *ServerConfig) { c.MssFix = 1300 },
+		func(c *ServerConfig) { c.DataCiphers = []string{"AES-128-GCM"} },
+		func(c *ServerConfig) { c.TLSVersionMin = "1.3" },
+		func(c *ServerConfig) { c.TLSAuthMode = "tls-crypt" },
+		func(c *ServerConfig) { c.DCOEnabled = false },
+		func(c *ServerConfig) { c.Compression = "lz4-v2" },
+		func(c *ServerConfig) { c.ClientToClient = false },
+		func(c *ServerConfig) { c.DuplicateCN = false },
+		func(c *ServerConfig) { c.Network = "10.8.0.0" },
+		func(c *ServerConfig) { c.NetworkMask = "255.255.0.0" },
+	} {
+		old := defaultServerConfig()
+		new := defaultServerConfig()
+		mod(&new)
+		if got := categorizeChanges(old, new); got != "hard" {
+			t.Errorf("expected hard, got %q", got)
+		}
+	}
+}
+
+func TestCategorizeChanges_HardWinsOverSoft(t *testing.T) {
+	old := defaultServerConfig()
+	new := defaultServerConfig()
+	new.Verb = 5
+	new.Port = 8443
+	if got := categorizeChanges(old, new); got != "hard" {
+		t.Errorf("hard must win over soft, got %q", got)
+	}
+}

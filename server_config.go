@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"text/template"
@@ -358,6 +359,62 @@ func detectDCOSupport() bool {
 		return true
 	}
 	return false
+}
+
+// categorizeChanges возвращает "none" | "soft" | "hard".
+// Hard wins over soft.
+func categorizeChanges(old, new ServerConfig) string {
+	hard := false
+	soft := false
+
+	hardCheckers := []func() bool{
+		func() bool { return old.Proto != new.Proto },
+		func() bool { return old.Port != new.Port },
+		func() bool { return old.TunMTU != new.TunMTU },
+		func() bool { return old.MssFix != new.MssFix },
+		func() bool { return !reflect.DeepEqual(old.DataCiphers, new.DataCiphers) },
+		func() bool { return old.TLSVersionMin != new.TLSVersionMin },
+		func() bool { return old.TLSAuthMode != new.TLSAuthMode },
+		func() bool { return old.DCOEnabled != new.DCOEnabled },
+		func() bool { return old.Compression != new.Compression },
+		func() bool { return old.ClientToClient != new.ClientToClient },
+		func() bool { return old.DuplicateCN != new.DuplicateCN },
+		func() bool { return old.Network != new.Network },
+		func() bool { return old.NetworkMask != new.NetworkMask },
+	}
+	for _, f := range hardCheckers {
+		if f() {
+			hard = true
+			break
+		}
+	}
+
+	if !hard {
+		softCheckers := []func() bool{
+			func() bool { return old.Verb != new.Verb },
+			func() bool { return !reflect.DeepEqual(old.DNSServers, new.DNSServers) },
+			func() bool { return old.RedirectGateway != new.RedirectGateway },
+			func() bool { return old.KeepaliveInterval != new.KeepaliveInterval },
+			func() bool { return old.KeepaliveTimeout != new.KeepaliveTimeout },
+			func() bool { return old.MaxClients != new.MaxClients },
+			func() bool { return !reflect.DeepEqual(old.PushExtra, new.PushExtra) },
+			func() bool { return !reflect.DeepEqual(old.CustomDirectives, new.CustomDirectives) },
+		}
+		for _, f := range softCheckers {
+			if f() {
+				soft = true
+				break
+			}
+		}
+	}
+
+	if hard {
+		return "hard"
+	}
+	if soft {
+		return "soft"
+	}
+	return "none"
 }
 
 func renderServerConfig(cfg ServerConfig, dcoAvailable, ccdEnabled bool) (string, error) {
