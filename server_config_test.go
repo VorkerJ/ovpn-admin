@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -222,5 +223,128 @@ func TestValidateServerConfig_KeepaliveRelation(t *testing.T) {
 	cfg.KeepaliveTimeout = 50
 	if err := validateServerConfig(cfg); err == nil {
 		t.Error("KeepaliveTimeout must be > KeepaliveInterval")
+	}
+}
+
+func TestRenderServerConfig_Defaults(t *testing.T) {
+	cfg := defaultServerConfig()
+	out, err := renderServerConfig(cfg, false /* dco available */, true /* ccd enabled */)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	checks := []string{
+		"proto tcp-server",
+		"port 1194",
+		"tun-mtu 1500",
+		"mssfix 1450",
+		"data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305",
+		"data-ciphers-fallback AES-256-GCM",
+		"tls-version-min 1.2",
+		"tls-auth /etc/openvpn/pki/ta.key",
+		"key-direction 0",
+		"keepalive 10 60",
+		"client-to-client",
+		"duplicate-cn",
+		"server 172.16.100.0 255.255.255.0",
+		"topology subnet",
+		`push "topology subnet"`,
+		`push "dhcp-option DNS 1.1.1.1"`,
+		`push "dhcp-option DNS 8.8.8.8"`,
+		"verb 3",
+		"management 127.0.0.1 8989",
+		"management-client-auth",
+		"client-config-dir /etc/openvpn/ccd",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing directive: %q\n---rendered---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "data-channel-offload") {
+		t.Errorf("data-channel-offload must not appear when DCOAvailable=false")
+	}
+}
+
+func TestRenderServerConfig_DCOEnabled(t *testing.T) {
+	cfg := defaultServerConfig()
+	out, _ := renderServerConfig(cfg, true, false)
+	if !strings.Contains(out, "data-channel-offload") {
+		t.Error("data-channel-offload must appear when DCOEnabled+Available both true")
+	}
+}
+
+func TestRenderServerConfig_TLSCrypt(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.TLSAuthMode = "tls-crypt"
+	out, _ := renderServerConfig(cfg, false, false)
+	if !strings.Contains(out, "tls-crypt /etc/openvpn/pki/ta.key") {
+		t.Errorf("tls-crypt missing:\n%s", out)
+	}
+	if strings.Contains(out, "tls-auth /etc/openvpn/pki/ta.key") {
+		t.Errorf("tls-auth must NOT appear when mode=tls-crypt:\n%s", out)
+	}
+	if strings.Contains(out, "key-direction 0") {
+		t.Errorf("key-direction 0 must NOT appear with tls-crypt:\n%s", out)
+	}
+}
+
+func TestRenderServerConfig_RedirectGateway(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.RedirectGateway = true
+	out, _ := renderServerConfig(cfg, false, false)
+	if !strings.Contains(out, `push "redirect-gateway def1"`) {
+		t.Errorf("redirect-gateway push missing:\n%s", out)
+	}
+}
+
+func TestRenderServerConfig_Compression(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.Compression = "lz4-v2"
+	out, _ := renderServerConfig(cfg, false, false)
+	if !strings.Contains(out, "compress lz4-v2") {
+		t.Errorf("compress lz4-v2 missing:\n%s", out)
+	}
+}
+
+func TestRenderServerConfig_MaxClients(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.MaxClients = 100
+	out, _ := renderServerConfig(cfg, false, false)
+	if !strings.Contains(out, "max-clients 100") {
+		t.Errorf("max-clients missing:\n%s", out)
+	}
+	cfg.MaxClients = 0
+	out, _ = renderServerConfig(cfg, false, false)
+	if strings.Contains(out, "max-clients") {
+		t.Errorf("max-clients must not appear when 0:\n%s", out)
+	}
+}
+
+func TestRenderServerConfig_CustomDirectivesAtEnd(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.CustomDirectives = []string{"route 10.0.0.0 255.0.0.0", "explicit-exit-notify"}
+	out, _ := renderServerConfig(cfg, false, false)
+	if !strings.Contains(out, "route 10.0.0.0 255.0.0.0") {
+		t.Errorf("custom route missing:\n%s", out)
+	}
+	if !strings.Contains(out, "explicit-exit-notify") {
+		t.Errorf("explicit-exit-notify missing:\n%s", out)
+	}
+}
+
+func TestRenderServerConfig_PushExtra(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.PushExtra = []string{`route 10.0.0.0 255.0.0.0`}
+	out, _ := renderServerConfig(cfg, false, false)
+	if !strings.Contains(out, `push "route 10.0.0.0 255.0.0.0"`) {
+		t.Errorf("push extra missing:\n%s", out)
+	}
+}
+
+func TestRenderServerConfig_CcdEnabledFalse(t *testing.T) {
+	cfg := defaultServerConfig()
+	out, _ := renderServerConfig(cfg, false, false)
+	if strings.Contains(out, "client-config-dir") {
+		t.Errorf("client-config-dir must not appear when ccd disabled")
 	}
 }
