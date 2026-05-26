@@ -106,3 +106,121 @@ func TestServerConfigStore_NilSlicesNormalized(t *testing.T) {
 		t.Error("nil slices must be normalized to empty slices")
 	}
 }
+
+func TestValidateServerConfig_OK(t *testing.T) {
+	cfg := defaultServerConfig()
+	if err := validateServerConfig(cfg); err != nil {
+		t.Errorf("default config must validate, got: %v", err)
+	}
+}
+
+func TestValidateServerConfig_BadProto(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.Proto = "sctp"
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("expected error for non-tcp/udp proto")
+	}
+}
+
+func TestValidateServerConfig_PortRange(t *testing.T) {
+	for _, p := range []int{0, -1, 65536, 100000} {
+		cfg := defaultServerConfig()
+		cfg.Port = p
+		if err := validateServerConfig(cfg); err == nil {
+			t.Errorf("expected error for port %d", p)
+		}
+	}
+}
+
+func TestValidateServerConfig_MTURange(t *testing.T) {
+	for _, m := range []int{0, 100, 9001, 100000} {
+		cfg := defaultServerConfig()
+		cfg.TunMTU = m
+		if err := validateServerConfig(cfg); err == nil {
+			t.Errorf("expected error for MTU %d", m)
+		}
+	}
+}
+
+func TestValidateServerConfig_MssFix(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.MssFix = 0
+	if err := validateServerConfig(cfg); err != nil {
+		t.Errorf("MssFix=0 must be OK (disabled)")
+	}
+	cfg.MssFix = 50
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("MssFix < 100 must fail")
+	}
+}
+
+func TestValidateServerConfig_DataCipherWhitelist(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.DataCiphers = []string{"BF-CBC"}
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("expected error for BF-CBC cipher")
+	}
+}
+
+func TestValidateServerConfig_TLSVersion(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.TLSVersionMin = "1.0"
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("TLS 1.0 must be rejected")
+	}
+}
+
+func TestValidateServerConfig_TLSAuthMode(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.TLSAuthMode = "tls-magic"
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("invalid tls_auth_mode must be rejected")
+	}
+}
+
+func TestValidateServerConfig_Verb(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.Verb = -1
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("negative verb must fail")
+	}
+	cfg.Verb = 12
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("verb > 11 must fail")
+	}
+}
+
+func TestValidateServerConfig_DNSServers(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.DNSServers = []string{"1.1.1.1", "not-an-ip"}
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("invalid DNS IP must be rejected")
+	}
+}
+
+func TestValidateServerConfig_CustomDirective_Whitelist(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.CustomDirectives = []string{"route 10.0.0.0 255.0.0.0"}
+	if err := validateServerConfig(cfg); err != nil {
+		t.Errorf("whitelisted directive must pass: %v", err)
+	}
+
+	cfg.CustomDirectives = []string{"script-security 2"}
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("script-security must be rejected")
+	}
+
+	cfg.CustomDirectives = []string{"up /tmp/evil.sh"}
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("up /tmp/evil.sh must be rejected")
+	}
+}
+
+func TestValidateServerConfig_KeepaliveRelation(t *testing.T) {
+	cfg := defaultServerConfig()
+	cfg.KeepaliveInterval = 100
+	cfg.KeepaliveTimeout = 50
+	if err := validateServerConfig(cfg); err == nil {
+		t.Error("KeepaliveTimeout must be > KeepaliveInterval")
+	}
+}
