@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -698,5 +702,132 @@ func TestServerManager_Apply_RejectsInvalid(t *testing.T) {
 	_, err := mgr.apply(context.Background(), cfg, "admin")
 	if err == nil {
 		t.Error("expected validation error")
+	}
+}
+
+func newServerConfigTestAdmin(t *testing.T) (*OvpnAdmin, *fakeMgmtServer, string) {
+	t.Helper()
+	dir := t.TempDir()
+	mgmt := startFakeMgmt(t)
+	app := &OvpnAdmin{role: "master"}
+	app.serverConfigStore = newServerConfigStore()
+	app.serverManager = &serverManager{
+		store:       app.serverConfigStore,
+		storagePath: filepath.Join(dir, "store.json"),
+		mgmtAddr:    mgmt.addr(),
+		confPath:    filepath.Join(dir, "server.conf"),
+		ccdEnabled:  true,
+	}
+	fs := "filesystem"
+	storageBackend = &fs
+	return app, mgmt, dir
+}
+
+func TestServerConfigHandler_GET(t *testing.T) {
+	app, _, _ := newServerConfigTestAdmin(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/server-config", nil)
+	rec := httptest.NewRecorder()
+	app.serverConfigHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	var resp ServerConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Config.Proto != "tcp" {
+		t.Errorf("default proto wrong: %q", resp.Config.Proto)
+	}
+}
+
+func TestServerConfigHandler_PUT_Soft(t *testing.T) {
+	app, mgmt, _ := newServerConfigTestAdmin(t)
+
+	cfg := app.serverConfigStore.snapshot()
+	cfg.Verb = 5
+
+	body, _ := json.Marshal(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/server-config", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.serverConfigHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Config     ServerConfig `json:"config"`
+		ReloadKind string       `json:"reload_kind"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.ReloadKind != "soft" {
+		t.Errorf("expected reload_kind=soft, got %q", resp.ReloadKind)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if len(mgmt.gotSignals) == 0 {
+		t.Errorf("expected SIGHUP signal")
+	}
+}
+
+func TestServerConfigHandler_PUT_RejectsInvalid(t *testing.T) {
+	app, _, _ := newServerConfigTestAdmin(t)
+	cfg := app.serverConfigStore.snapshot()
+	cfg.Port = 99999
+
+	body, _ := json.Marshal(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/server-config", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.serverConfigHandler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestServerConfigHandler_PUT_SlaveLocked(t *testing.T) {
+	app, _, _ := newServerConfigTestAdmin(t)
+	app.role = "slave"
+
+	body, _ := json.Marshal(app.serverConfigStore.snapshot())
+	req := httptest.NewRequest(http.MethodPut, "/api/server-config", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.serverConfigHandler(rec, req)
+
+	if rec.Code != http.StatusLocked {
+		t.Errorf("expected 423, got %d", rec.Code)
+	}
+}
+
+func TestServerConfigHandler_Test_DryRun(t *testing.T) {
+	app, _, _ := newServerConfigTestAdmin(t)
+	cfg := app.serverConfigStore.snapshot()
+	cfg.Port = 8443
+
+	body, _ := json.Marshal(cfg)
+	req := httptest.NewRequest(http.MethodPost, "/api/server-config/test", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.serverConfigTestHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if app.serverConfigStore.snapshot().Port == 8443 {
+		t.Error("dry-run must not modify store")
+	}
+}
+
+func TestServerConfigHandler_Defaults(t *testing.T) {
+	app, _, _ := newServerConfigTestAdmin(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/server-config/defaults", nil)
+	rec := httptest.NewRecorder()
+	app.serverConfigDefaultsHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	var cfg ServerConfig
+	json.Unmarshal(rec.Body.Bytes(), &cfg)
+	if cfg.Proto != "tcp" {
+		t.Errorf("defaults proto: %q", cfg.Proto)
 	}
 }

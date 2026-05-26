@@ -85,8 +85,8 @@ var (
 	logFormat                = kingpin.Flag("log.format", "set log format: text, json (default text)").Default("text").Envar("LOG_FORMAT").String()
 	storageBackend           = kingpin.Flag("storage.backend", "storage backend: filesystem, kubernetes.secrets (default filesystem)").Default("filesystem").Envar("STORAGE_BACKEND").String()
 	clientCertExpirationDays = kingpin.Flag("client-cert.expiration-days", "Expiration period of OpenVPN client certificates in days, the period will shrink automatically to the CA expiration period").Default("3650").Envar("CLIENT_CERT_EXPIRATION_DAYS").String()
-	adminHtpasswdFile = kingpin.Flag("admin.htpasswd-file", "path to htpasswd file with admin UI credentials; if empty, a random password is generated").Default("").Envar("ADMIN_HTPASSWD_FILE").String()
-	commonRoutesEnabled = kingpin.Flag("common-routes", "enable common routes feature").Default("true").Envar("OVPN_COMMON_ROUTES").Bool()
+	adminHtpasswdFile        = kingpin.Flag("admin.htpasswd-file", "path to htpasswd file with admin UI credentials; if empty, a random password is generated").Default("").Envar("ADMIN_HTPASSWD_FILE").String()
+	commonRoutesEnabled      = kingpin.Flag("common-routes", "enable common routes feature").Default("true").Envar("OVPN_COMMON_ROUTES").Bool()
 
 	firewallEnabled = kingpin.Flag("firewall",
 		"enable per-client iptables enforcement").
@@ -223,6 +223,8 @@ type OvpnAdmin struct {
 	commonRoutes           *commonRoutesStore
 	commonRoutesPath       string
 	firewall               *firewallController
+	serverConfigStore      *serverConfigStore
+	serverManager          *serverManager
 }
 
 type OpenvpnServer struct {
@@ -1626,7 +1628,7 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 			if err := os.Remove(fmt.Sprintf("%s/pki/reqs/%s.req", *easyrsaDirPath, username)); err != nil && !os.IsNotExist(err) {
 				log.Warnf("failed to remove req file for %s: %v", username, err)
 			}
-		_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null ", *easyrsaDirPath, *easyrsaBinPath))
+			_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null ", *easyrsaDirPath, *easyrsaBinPath))
 		}
 		crlFix()
 		oAdmin.clients = oAdmin.usersList()
@@ -1730,7 +1732,7 @@ func (oAdmin *OvpnAdmin) mgmtGetActiveClients() []clientStatus {
 			log.Warnf("openvpn mgmt interface for %s is not reachable by addr %s", srv, addr)
 			break
 		}
-		oAdmin.mgmtRead(conn) // read welcome message
+		oAdmin.mgmtRead(conn)            // read welcome message
 		conn.Write([]byte("status 1\n")) //nolint:errcheck
 		activeClients = append(activeClients, oAdmin.mgmtConnectedUsersParser(oAdmin.mgmtRead(conn), srv)...)
 		conn.Close()
@@ -1767,7 +1769,7 @@ func (oAdmin *OvpnAdmin) mgmtSetTimeFormat() {
 			break
 		}
 
-		oAdmin.mgmtRead(conn) // read welcome message
+		oAdmin.mgmtRead(conn)           // read welcome message
 		conn.Write([]byte("version\n")) //nolint:errcheck
 		out := oAdmin.mgmtRead(conn)
 		conn.Close()

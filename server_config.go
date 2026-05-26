@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"reflect"
@@ -649,4 +650,64 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	switch r.Method {
+	case http.MethodGet:
+		resp := ServerConfigResponse{
+			Config:       oAdmin.serverConfigStore.snapshot(),
+			DCOAvailable: oAdmin.serverManager.dcoAvailable,
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case http.MethodPut:
+		if oAdmin.role == "slave" {
+			http.Error(w, `{"status":"error","message":"slave is read-only"}`, http.StatusLocked)
+			return
+		}
+		var cfg ServerConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		updatedBy := "admin"
+		kind, err := oAdmin.serverManager.apply(r.Context(), cfg, updatedBy)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"config":      oAdmin.serverConfigStore.snapshot(),
+			"reload_kind": kind,
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (oAdmin *OvpnAdmin) serverConfigTestHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var cfg ServerConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateServerConfig(cfg); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"valid":  false,
+			"errors": []string{err.Error()},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"valid": true, "errors": []string{}})
+}
+
+func (oAdmin *OvpnAdmin) serverConfigDefaultsHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	writeJSON(w, http.StatusOK, defaultServerConfig())
 }
