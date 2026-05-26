@@ -170,27 +170,34 @@ onMounted(reload)
 
     <!-- Add form -->
     <div v-if="isMaster" class="rounded-lg border border-border bg-card p-4 space-y-3">
-      <div class="flex items-center gap-1">
-        <button
-          type="button"
-          @click="newKind = 'ip'"
-          :class="[
-            'inline-flex items-center gap-1.5 h-7 rounded-md px-2.5 text-xs font-medium transition-colors',
-            newKind === 'ip' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'
-          ]"
-        >
-          <Network :size="13" /> IP / маска
-        </button>
-        <button
-          type="button"
-          @click="newKind = 'domain'"
-          :class="[
-            'inline-flex items-center gap-1.5 h-7 rounded-md px-2.5 text-xs font-medium transition-colors',
-            newKind === 'domain' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'
-          ]"
-        >
-          <Globe :size="13" /> Домен
-        </button>
+      <div class="flex items-center gap-3">
+        <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Тип маршрута:</span>
+        <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
+          <button
+            type="button"
+            @click="newKind = 'ip'"
+            :class="[
+              'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors',
+              newKind === 'ip'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-foreground hover:bg-accent'
+            ]"
+          >
+            <Network :size="14" /> IP / маска
+          </button>
+          <button
+            type="button"
+            @click="newKind = 'domain'"
+            :class="[
+              'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors',
+              newKind === 'domain'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-foreground hover:bg-accent'
+            ]"
+          >
+            <Globe :size="14" /> Домен
+          </button>
+        </div>
       </div>
       <div class="flex gap-2 flex-wrap items-start">
         <template v-if="newKind === 'ip'">
