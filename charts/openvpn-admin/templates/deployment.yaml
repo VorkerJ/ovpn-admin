@@ -17,8 +17,6 @@ spec:
     metadata:
       labels:
         {{- include "openvpn-admin.selectorLabels" . | nindent 8 }}
-      annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ .Values.rbac.serviceAccountName }}
 
@@ -55,6 +53,10 @@ spec:
             - sh
             - -c
             - |
+              echo "Waiting for ovpn-admin to render server.conf..."
+              until [ -f /etc/openvpn-dynamic/server.conf ]; do
+                sleep 1
+              done
               echo "Waiting for PKI..."
               until [ -f /etc/openvpn/pki/ca.crt ] && \
                     [ -f /etc/openvpn/pki/dh.pem ] && \
@@ -64,7 +66,7 @@ spec:
                 echo "PKI not ready, retrying in 5s..."
                 sleep 5
               done
-              exec openvpn --config /etc/openvpn/server.conf
+              exec openvpn --config /etc/openvpn-dynamic/server.conf
           ports:
             - name: openvpn
               containerPort: {{ .Values.openvpn.port }}
@@ -78,10 +80,8 @@ spec:
           resources:
             {{- toYaml .Values.resources.openvpn | nindent 12 }}
           volumeMounts:
-            - name: server-conf
-              mountPath: /etc/openvpn/server.conf
-              subPath: server.conf
-              readOnly: true
+            - name: ovpn-dynamic-conf
+              mountPath: /etc/openvpn-dynamic
             - name: openvpn-pki
               mountPath: /etc/openvpn/pki
             - name: openvpn-ccd
@@ -102,6 +102,7 @@ spec:
             - --ovpn.network={{ .Values.openvpn.networkPrefix }}
             - --storage.backend={{ .Values.ovpnAdmin.storageBackend }}
             - --mgmt=main=127.0.0.1:8989
+            - --server-config.conf-path=/etc/openvpn-dynamic/server.conf
             {{- if .Values.ovpnAdmin.ccdEnabled }}
             - --ccd
             - --ccd.path=/etc/openvpn/ccd
@@ -142,10 +143,15 @@ spec:
             periodSeconds: 15
             failureThreshold: 3
           volumeMounts:
+            - name: ovpn-dynamic-conf
+              mountPath: /etc/openvpn-dynamic
             - name: openvpn-pki
               mountPath: /etc/openvpn/pki
             - name: openvpn-ccd
               mountPath: /etc/openvpn/ccd
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
             {{- if .Values.ovpnAdmin.adminHtpasswdSecret }}
             - name: admin-htpasswd
               mountPath: /etc/ovpn-admin/auth
@@ -153,11 +159,15 @@ spec:
             {{- end }}
 
       volumes:
-        # ── server.conf from ConfigMap ──────────────────────────────────
-        - name: server-conf
-          configMap:
-            name: {{ include "openvpn-admin.fullname" . }}
-            defaultMode: 0644
+        # ── server.conf rendered at runtime by ovpn-admin ───────────────
+        - name: ovpn-dynamic-conf
+          emptyDir: {}
+
+        # ── /lib/modules from host (DCO kernel-module detection) ────────
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: DirectoryOrCreate
 
         # ── PKI from K8s Secrets ────────────────────────────────────────
         # ovpn-admin creates and manages these Secrets via kubernetes.secrets backend
