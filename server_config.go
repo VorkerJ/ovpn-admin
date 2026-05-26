@@ -92,10 +92,18 @@ func (s *serverConfigStore) snapshot() ServerConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := s.cfg
-	out.DataCiphers = append([]string(nil), s.cfg.DataCiphers...)
-	out.DNSServers = append([]string(nil), s.cfg.DNSServers...)
-	out.PushExtra = append([]string(nil), s.cfg.PushExtra...)
-	out.CustomDirectives = append([]string(nil), s.cfg.CustomDirectives...)
+	out.DataCiphers = cloneStringsNonNil(s.cfg.DataCiphers)
+	out.DNSServers = cloneStringsNonNil(s.cfg.DNSServers)
+	out.PushExtra = cloneStringsNonNil(s.cfg.PushExtra)
+	out.CustomDirectives = cloneStringsNonNil(s.cfg.CustomDirectives)
+	return out
+}
+
+// cloneStringsNonNil — deep-copy строкового слайса, гарантирует non-nil результат
+// (append([]string(nil), nil...) возвращает nil, что ломает store-инвариант).
+func cloneStringsNonNil(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
 	return out
 }
 
