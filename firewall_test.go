@@ -13,6 +13,7 @@ import (
 )
 
 func TestIpMaskToCIDR(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		addr, mask, want string
 	}{
@@ -35,6 +36,7 @@ func TestIpMaskToCIDR(t *testing.T) {
 }
 
 func TestIpMaskToCIDR_BadInput(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ addr, mask string }{
 		{"not-an-ip", "255.255.255.0"},
 		{"10.0.0.0", "not-a-mask"},
@@ -48,6 +50,7 @@ func TestIpMaskToCIDR_BadInput(t *testing.T) {
 }
 
 func TestNewFirewallController_Defaults(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	called := 0
 	iptMock := func(args ...string) error { called++; return nil }
@@ -73,6 +76,7 @@ func TestNewFirewallController_Defaults(t *testing.T) {
 }
 
 func TestInitChain_SequenceOfCommands(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var commands [][]string
 	iptMock := func(args ...string) error {
@@ -122,6 +126,7 @@ func TestInitChain_SequenceOfCommands(t *testing.T) {
 }
 
 func TestInitChain_IdempotentOnExistingChain(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	calls := 0
 	iptMock := func(args ...string) error {
@@ -138,6 +143,7 @@ func TestInitChain_IdempotentOnExistingChain(t *testing.T) {
 }
 
 func TestInstallRulesFor_PivotsCatchAllDrop(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
 	iptMock := func(args ...string) error {
@@ -174,6 +180,7 @@ func TestInstallRulesFor_PivotsCatchAllDrop(t *testing.T) {
 }
 
 func TestUninstallRulesFor_RemovesAllEntries(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
 	iptMock := func(args ...string) error {
@@ -199,6 +206,7 @@ func TestUninstallRulesFor_RemovesAllEntries(t *testing.T) {
 }
 
 func TestApplyDiff_Add(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
 	iptMock := func(args ...string) error {
@@ -224,6 +232,7 @@ func TestApplyDiff_Add(t *testing.T) {
 }
 
 func TestApplyDiff_Remove(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
 	iptMock := func(args ...string) error {
@@ -254,6 +263,7 @@ func TestApplyDiff_Remove(t *testing.T) {
 }
 
 func TestApplyDiff_Mixed(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
 	iptMock := func(args ...string) error {
@@ -277,6 +287,7 @@ func TestApplyDiff_Mixed(t *testing.T) {
 }
 
 func TestApplyDiff_NoChange(t *testing.T) {
+	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
 	iptMock := func(args ...string) error {
@@ -295,15 +306,8 @@ func TestApplyDiff_NoChange(t *testing.T) {
 }
 
 func TestComputeAllowedCIDRs_PersonalAndCommon(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	originalCcdDir := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-	defer func() { ccdDir = &originalCcdDir }()
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	// CCD юзера alice с двумя custom routes
 	ccdContent := `ifconfig-push 172.16.100.5 255.255.255.0
@@ -351,15 +355,8 @@ push "route 192.168.1.0 255.255.255.0" # lan
 }
 
 func TestComputeAllowedCIDRs_Dedup(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	originalCcdDir := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-	defer func() { ccdDir = &originalCcdDir }()
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	ccdContent := `push "route 8.8.8.8 255.255.255.255" # personal-8.8.8.8
 `
@@ -386,6 +383,7 @@ func TestComputeAllowedCIDRs_Dedup(t *testing.T) {
 }
 
 func TestParseMgmtClientEvent_Connect(t *testing.T) {
+	t.Parallel()
 	lines := []string{
 		">CLIENT:CONNECT,2,123",
 		">CLIENT:ENV,common_name=alice",
@@ -414,6 +412,7 @@ func TestParseMgmtClientEvent_Connect(t *testing.T) {
 }
 
 func TestParseMgmtClientEvent_Disconnect(t *testing.T) {
+	t.Parallel()
 	lines := []string{
 		">CLIENT:DISCONNECT,2",
 		">CLIENT:ENV,common_name=bob",
@@ -438,6 +437,7 @@ func TestParseMgmtClientEvent_Disconnect(t *testing.T) {
 }
 
 func TestParseMgmtClientEvent_Garbage(t *testing.T) {
+	t.Parallel()
 	lines := []string{
 		"SUCCESS: log enabled",
 		">INFO:OpenVPN Management Interface Version 1",
@@ -453,6 +453,7 @@ func TestParseMgmtClientEvent_Garbage(t *testing.T) {
 }
 
 func TestParseMgmtClientEvent_InterleavedSessions(t *testing.T) {
+	t.Parallel()
 	lines := []string{
 		">CLIENT:CONNECT,2,1",
 		">CLIENT:ENV,common_name=alice",
@@ -479,15 +480,8 @@ func TestParseMgmtClientEvent_InterleavedSessions(t *testing.T) {
 }
 
 func TestEventHandlerLoop_ConnectThenDisconnect(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	originalCcdDir := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-	defer func() { ccdDir = &originalCcdDir }()
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	app := &OvpnAdmin{
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
@@ -530,6 +524,7 @@ func TestEventHandlerLoop_ConnectThenDisconnect(t *testing.T) {
 }
 
 func TestEventHandlerLoop_Coalescing(t *testing.T) {
+	t.Parallel()
 	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	iptMock := func(args ...string) error { return nil }
@@ -549,6 +544,7 @@ func TestEventHandlerLoop_Coalescing(t *testing.T) {
 }
 
 func TestEventHandlerLoop_NoOpIfDisconnected(t *testing.T) {
+	t.Parallel()
 	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var calls int32
@@ -584,15 +580,8 @@ func waitForCalls(t *testing.T, calls *int32, want int32, timeout time.Duration)
 }
 
 func TestReconcile_FromMgmtSnapshot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	originalCcdDir := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-	defer func() { ccdDir = &originalCcdDir }()
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	app := &OvpnAdmin{
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
@@ -631,15 +620,8 @@ func TestReconcile_FromMgmtSnapshot(t *testing.T) {
 }
 
 func TestReconcile_DriftCorrection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	originalCcdDir := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-	defer func() { ccdDir = &originalCcdDir }()
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(dir)}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
@@ -659,6 +641,7 @@ func TestReconcile_DriftCorrection(t *testing.T) {
 }
 
 func TestSubscribeAndPump_ParsesMultipleEvents(t *testing.T) {
+	t.Parallel()
 	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
@@ -702,15 +685,8 @@ func TestSubscribeAndPump_ParsesMultipleEvents(t *testing.T) {
 }
 
 func TestStart_RunsInitAndReconcile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	originalCcdDir := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-	defer func() { ccdDir = &originalCcdDir }()
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(dir)}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
@@ -739,6 +715,7 @@ func TestStart_RunsInitAndReconcile(t *testing.T) {
 }
 
 func TestStop_RunsCleanup(t *testing.T) {
+	t.Parallel()
 	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string

@@ -16,24 +16,11 @@ import (
 	"github.com/gobuffalo/packr/v2"
 )
 
-// withTempCcdEnv устанавливает временные ccdDir + filesystem-backend для теста.
-// Возвращает каталог + cleanup-функцию.
-func withTempCcdEnv(t *testing.T) (string, func()) {
+// withTempCcdEnv returns a temporary directory suitable for CCD tests.
+// No global state is mutated — use testFilesystemStore(dir) for the store.
+func withTempCcdEnv(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-
-	origCcdDir := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-
-	origStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-
-	return dir, func() {
-		ccdDir = &origCcdDir
-		storageBackend = &origStorage
-	}
+	return t.TempDir()
 }
 
 // testFilesystemStore creates a filesystemStore pointing at the given temp dir.
@@ -74,8 +61,8 @@ func withMockResolver(t *testing.T, mapping map[string][]string) func() {
 // --- parseCcd: схлопывание __user_domain__:DOMAIN маркеров ---
 
 func TestParseCcd_CollapsesUserDomainMarker(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	t.Parallel()
+	dir := withTempCcdEnv(t)
 
 	content := `ifconfig-push 10.0.0.5 255.255.255.0
 push "route 192.168.1.0 255.255.255.0" # corp
@@ -140,6 +127,7 @@ push "route 8.8.8.8 255.255.255.255" # __common__:static common-dns
 // --- validateCcd ---
 
 func TestValidateCcd_AcceptsDomain(t *testing.T) {
+	t.Parallel()
 	ccd := Ccd{
 		User:          "bob",
 		ClientAddress: "dynamic",
@@ -154,6 +142,7 @@ func TestValidateCcd_AcceptsDomain(t *testing.T) {
 }
 
 func TestValidateCcd_RejectsBadDomain(t *testing.T) {
+	t.Parallel()
 	cases := []string{"", "no_underscore.com", "-bad.com", "single"}
 	for _, d := range cases {
 		ccd := Ccd{
@@ -169,6 +158,7 @@ func TestValidateCcd_RejectsBadDomain(t *testing.T) {
 }
 
 func TestValidateCcd_RejectsUnknownKind(t *testing.T) {
+	t.Parallel()
 	ccd := Ccd{
 		User:          "bob",
 		ClientAddress: "dynamic",
@@ -180,6 +170,7 @@ func TestValidateCcd_RejectsUnknownKind(t *testing.T) {
 }
 
 func TestValidateCcd_BackwardCompat_EmptyKindTreatedAsIP(t *testing.T) {
+	t.Parallel()
 	ccd := Ccd{
 		User:          "bob",
 		ClientAddress: "dynamic",
@@ -193,8 +184,8 @@ func TestValidateCcd_BackwardCompat_EmptyKindTreatedAsIP(t *testing.T) {
 // --- modifyCcd render ---
 
 func TestModifyCcd_RendersDomainAsMultipleLines(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	t.Parallel()
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 
@@ -230,8 +221,8 @@ func TestModifyCcd_RendersDomainAsMultipleLines(t *testing.T) {
 }
 
 func TestModifyCcd_RoundTripDomainEntry(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	t.Parallel()
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 
@@ -266,8 +257,8 @@ func TestModifyCcd_RoundTripDomainEntry(t *testing.T) {
 // --- userApplyCcdHandler with mock DNS ---
 
 func TestUserApplyCcdHandler_ResolvesNewDomainSynchronously(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	// Cannot be parallel: mutates package-level domainResolver.
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 	app.role = "master"
@@ -305,8 +296,8 @@ func TestUserApplyCcdHandler_ResolvesNewDomainSynchronously(t *testing.T) {
 }
 
 func TestUserApplyCcdHandler_PreservesIPsOnUnchangedDomain(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	// Cannot be parallel: mutates package-level domainResolver.
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 	app.role = "master"
@@ -359,8 +350,8 @@ push "route 9.9.9.10 255.255.255.255" # __user_domain__:example.com test
 }
 
 func TestUserApplyCcdHandler_SlaveLocked(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	t.Parallel()
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 	app.role = "slave"
@@ -376,8 +367,8 @@ func TestUserApplyCcdHandler_SlaveLocked(t *testing.T) {
 }
 
 func TestUserApplyCcdHandler_MixedIPAndDomain(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	// Cannot be parallel: mutates package-level domainResolver.
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 	app.role = "master"
@@ -413,8 +404,8 @@ func TestUserApplyCcdHandler_MixedIPAndDomain(t *testing.T) {
 // --- refreshAllUserDomains scheduler ---
 
 func TestRefreshAllUserDomains_RewritesCcdOnIPChange(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	// Cannot be parallel: mutates package-level domainResolver.
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 	app.clients = []OpenvpnClient{
@@ -447,8 +438,8 @@ func TestRefreshAllUserDomains_RewritesCcdOnIPChange(t *testing.T) {
 }
 
 func TestRefreshAllUserDomains_SkipsRevokedUsers(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	// Cannot be parallel: mutates package-level domainResolver.
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 	app.clients = []OpenvpnClient{
@@ -487,8 +478,8 @@ func TestRefreshAllUserDomains_SkipsRevokedUsers(t *testing.T) {
 }
 
 func TestRefreshAllUserDomains_NoOpWhenIPsUnchanged(t *testing.T) {
-	dir, cleanup := withTempCcdEnv(t)
-	defer cleanup()
+	// Cannot be parallel: mutates package-level domainResolver.
+	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
 	app.clients = []OpenvpnClient{{Identity: "alice", AccountStatus: "Active"}}

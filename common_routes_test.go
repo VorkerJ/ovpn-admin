@@ -18,6 +18,7 @@ import (
 )
 
 func TestValidateCommonRoute_IP_OK(t *testing.T) {
+	t.Parallel()
 	e := CommonRouteEntry{Kind: "ip", Address: "10.0.0.0", Mask: "255.255.0.0", Description: "lan"}
 	if err := validateCommonRoute(e); err != nil {
 		t.Fatalf("expected ok, got: %v", err)
@@ -25,6 +26,7 @@ func TestValidateCommonRoute_IP_OK(t *testing.T) {
 }
 
 func TestValidateCommonRoute_IP_BadAddress(t *testing.T) {
+	t.Parallel()
 	e := CommonRouteEntry{Kind: "ip", Address: "10.0.0.999", Mask: "255.255.0.0"}
 	if err := validateCommonRoute(e); err == nil {
 		t.Fatal("expected error on bad address")
@@ -32,6 +34,7 @@ func TestValidateCommonRoute_IP_BadAddress(t *testing.T) {
 }
 
 func TestValidateCommonRoute_IP_BadMask(t *testing.T) {
+	t.Parallel()
 	e := CommonRouteEntry{Kind: "ip", Address: "10.0.0.0", Mask: "not-a-mask"}
 	if err := validateCommonRoute(e); err == nil {
 		t.Fatal("expected error on bad mask")
@@ -39,6 +42,7 @@ func TestValidateCommonRoute_IP_BadMask(t *testing.T) {
 }
 
 func TestValidateCommonRoute_IP_DomainFieldNotEmpty(t *testing.T) {
+	t.Parallel()
 	e := CommonRouteEntry{Kind: "ip", Address: "10.0.0.0", Mask: "255.255.0.0", Domain: "leak"}
 	if err := validateCommonRoute(e); err == nil {
 		t.Fatal("expected error when domain set for kind=ip")
@@ -46,6 +50,7 @@ func TestValidateCommonRoute_IP_DomainFieldNotEmpty(t *testing.T) {
 }
 
 func TestValidateCommonRoute_Domain_OK(t *testing.T) {
+	t.Parallel()
 	e := CommonRouteEntry{Kind: "domain", Domain: "youtube.com"}
 	if err := validateCommonRoute(e); err != nil {
 		t.Fatalf("expected ok, got: %v", err)
@@ -53,6 +58,7 @@ func TestValidateCommonRoute_Domain_OK(t *testing.T) {
 }
 
 func TestValidateCommonRoute_Domain_BadDomain(t *testing.T) {
+	t.Parallel()
 	cases := []string{"", "no_underscore_allowed.com", "-leading-dash.com", "trailing-.com", "single"}
 	for _, d := range cases {
 		e := CommonRouteEntry{Kind: "domain", Domain: d}
@@ -63,6 +69,7 @@ func TestValidateCommonRoute_Domain_BadDomain(t *testing.T) {
 }
 
 func TestValidateCommonRoute_Domain_IPFieldNotEmpty(t *testing.T) {
+	t.Parallel()
 	e := CommonRouteEntry{Kind: "domain", Domain: "youtube.com", Address: "1.1.1.1"}
 	if err := validateCommonRoute(e); err == nil {
 		t.Fatal("expected error when address set for kind=domain")
@@ -70,6 +77,7 @@ func TestValidateCommonRoute_Domain_IPFieldNotEmpty(t *testing.T) {
 }
 
 func TestValidateCommonRoute_BadKind(t *testing.T) {
+	t.Parallel()
 	e := CommonRouteEntry{Kind: "weird"}
 	if err := validateCommonRoute(e); err == nil {
 		t.Fatal("expected error on bad kind")
@@ -77,6 +85,7 @@ func TestValidateCommonRoute_BadKind(t *testing.T) {
 }
 
 func TestValidateCommonRoute_DescriptionTooLong(t *testing.T) {
+	t.Parallel()
 	long := make([]byte, 201)
 	for i := range long {
 		long[i] = 'x'
@@ -88,6 +97,7 @@ func TestValidateCommonRoute_DescriptionTooLong(t *testing.T) {
 }
 
 func TestCommonRoutesFileStore_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "_common_routes.json")
 
@@ -113,6 +123,7 @@ func TestCommonRoutesFileStore_RoundTrip(t *testing.T) {
 }
 
 func TestCommonRoutesFileStore_LoadMissingReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "missing.json")
 
@@ -126,6 +137,7 @@ func TestCommonRoutesFileStore_LoadMissingReturnsEmpty(t *testing.T) {
 }
 
 func TestCommonRoutesFileStore_AtomicWrite(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "_common_routes.json")
 
@@ -144,12 +156,14 @@ func TestCommonRoutesFileStore_AtomicWrite(t *testing.T) {
 }
 
 func TestCommonRoutesSecret_KeyName(t *testing.T) {
+	t.Parallel()
 	if commonRoutesSecretName != "ovpn-admin-common-routes" {
 		t.Fatalf("unexpected secret name: %s", commonRoutesSecretName)
 	}
 }
 
 func TestCommonRoutesSerialize(t *testing.T) {
+	t.Parallel()
 	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"}}}
 	data, err := serializeCommonRoutes(cfg)
 	if err != nil {
@@ -165,6 +179,7 @@ func TestCommonRoutesSerialize(t *testing.T) {
 }
 
 func TestCommonRoutesDeserialize_EmptyInput(t *testing.T) {
+	t.Parallel()
 	cfg, err := deserializeCommonRoutes(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -175,6 +190,7 @@ func TestCommonRoutesDeserialize_EmptyInput(t *testing.T) {
 }
 
 func TestCommonRoutesStore_ConcurrentReadWrite(t *testing.T) {
+	t.Parallel()
 	store := newCommonRoutesStoreForTesting()
 	store.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "a", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"}}})
 
@@ -194,6 +210,7 @@ func TestCommonRoutesStore_ConcurrentReadWrite(t *testing.T) {
 }
 
 func TestCommonRoutesStore_SnapshotIsCopy(t *testing.T) {
+	t.Parallel()
 	store := newCommonRoutesStoreForTesting()
 	store.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "a", Kind: "domain", Domain: "x.io", ResolvedIPs: []string{"1.1.1.1"}}}})
 
@@ -207,6 +224,7 @@ func TestCommonRoutesStore_SnapshotIsCopy(t *testing.T) {
 }
 
 func TestExpandCommonRoutes_IP(t *testing.T) {
+	t.Parallel()
 	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
 		{ID: "a", Kind: "ip", Address: "10.0.0.0", Mask: "255.255.0.0", Description: "lan"},
 	}}
@@ -220,6 +238,7 @@ func TestExpandCommonRoutes_IP(t *testing.T) {
 }
 
 func TestExpandCommonRoutes_Domain_MultipleIPs(t *testing.T) {
+	t.Parallel()
 	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
 		{ID: "b", Kind: "domain", Domain: "yt.com", ResolvedIPs: []string{"1.1.1.1", "2.2.2.2"}, Description: "youtube"},
 	}}
@@ -238,6 +257,7 @@ func TestExpandCommonRoutes_Domain_MultipleIPs(t *testing.T) {
 }
 
 func TestExpandCommonRoutes_Domain_EmptyResolved(t *testing.T) {
+	t.Parallel()
 	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
 		{ID: "c", Kind: "domain", Domain: "fail.com", ResolvedIPs: nil},
 	}}
@@ -248,6 +268,7 @@ func TestExpandCommonRoutes_Domain_EmptyResolved(t *testing.T) {
 }
 
 func TestExpandCommonRoutes_Mixed(t *testing.T) {
+	t.Parallel()
 	cfg := CommonRoutesConfig{Routes: []CommonRouteEntry{
 		{Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
 		{Kind: "domain", Domain: "yt.com", ResolvedIPs: []string{"1.1.1.1"}},
@@ -260,6 +281,7 @@ func TestExpandCommonRoutes_Mixed(t *testing.T) {
 }
 
 func TestParseCcd_FiltersCommonMarker(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	username := "alice"
 	path := dir + "/" + username
@@ -272,17 +294,6 @@ push "route 8.8.8.8 255.255.255.255" # dns
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	original := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-	defer func() { ccdDir = &original }()
-
-	// We also need to force storage backend to filesystem (in case it was changed by other tests)
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	oAdmin := &OvpnAdmin{store: testFilesystemStore(dir)}
 	ccd := oAdmin.parseCcd(username)
@@ -300,16 +311,8 @@ push "route 8.8.8.8 255.255.255.255" # dns
 }
 
 func TestModifyCcd_RendersCommonRoutes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	originalCcdDir := *ccdDir
-	tmp := dir
-	ccdDir = &tmp
-	defer func() { ccdDir = &originalCcdDir }()
-
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	app := &OvpnAdmin{store: testFilesystemStore(dir)}
 	app.templates = packr.New("template", "./templates")
@@ -342,6 +345,7 @@ func TestModifyCcd_RendersCommonRoutes(t *testing.T) {
 }
 
 func TestSameIPSet(t *testing.T) {
+	t.Parallel()
 	if !sameIPSet([]string{"1.1.1.1", "2.2.2.2"}, []string{"2.2.2.2", "1.1.1.1"}) {
 		t.Fatal("set equality must ignore order")
 	}
@@ -354,6 +358,7 @@ func TestSameIPSet(t *testing.T) {
 }
 
 func TestSortedIPv4Strings(t *testing.T) {
+	t.Parallel()
 	out := sortedIPv4Strings([]string{"10.0.0.1", "1.1.1.1", "192.168.1.1"})
 	want := []string{"1.1.1.1", "10.0.0.1", "192.168.1.1"} // lexicographic
 	for i := range out {
@@ -364,6 +369,7 @@ func TestSortedIPv4Strings(t *testing.T) {
 }
 
 func TestRefreshAllDomains_MarksChangedAndStatus(t *testing.T) {
+	// Cannot be parallel: mutates package-level domainResolver.
 	original := domainResolver
 	defer func() { domainResolver = original }()
 
@@ -404,10 +410,6 @@ func TestRefreshAllDomains_MarksChangedAndStatus(t *testing.T) {
 func newTestAdmin(t *testing.T) *OvpnAdmin {
 	t.Helper()
 	dir := t.TempDir()
-	tmp := dir
-	ccdDir = &tmp
-	storage := "filesystem"
-	storageBackend = &storage
 	app := &OvpnAdmin{
 		role:         "master",
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}},
@@ -418,6 +420,7 @@ func newTestAdmin(t *testing.T) *OvpnAdmin {
 }
 
 func TestCommonRoutesHandler_GET_Empty(t *testing.T) {
+	t.Parallel()
 	app := newTestAdmin(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/common-routes", nil)
 	rec := httptest.NewRecorder()
@@ -437,6 +440,7 @@ func TestCommonRoutesHandler_GET_Empty(t *testing.T) {
 }
 
 func TestCommonRoutesHandler_POST_CreatesEntry(t *testing.T) {
+	t.Parallel()
 	app := newTestAdmin(t)
 	body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.255.0.0","description":"lan"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/common-routes", bytes.NewReader(body))
@@ -452,6 +456,7 @@ func TestCommonRoutesHandler_POST_CreatesEntry(t *testing.T) {
 }
 
 func TestCommonRoutesHandler_POST_RejectsDuplicate(t *testing.T) {
+	t.Parallel()
 	app := newTestAdmin(t)
 	body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.255.0.0"}`)
 	for i := 0; i < 2; i++ {
@@ -465,6 +470,7 @@ func TestCommonRoutesHandler_POST_RejectsDuplicate(t *testing.T) {
 }
 
 func TestCommonRoutesHandler_Slave_Locked(t *testing.T) {
+	t.Parallel()
 	app := newTestAdmin(t)
 	app.role = "slave"
 	body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.0.0.0"}`)
@@ -477,6 +483,7 @@ func TestCommonRoutesHandler_Slave_Locked(t *testing.T) {
 }
 
 func TestCommonRoutesItemHandler_DELETE(t *testing.T) {
+	t.Parallel()
 	app := newTestAdmin(t)
 	id := "test-uuid"
 	app.commonRoutes.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: id, Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"}}})
@@ -493,6 +500,7 @@ func TestCommonRoutesItemHandler_DELETE(t *testing.T) {
 }
 
 func TestCommonRoutesItemHandler_PUT(t *testing.T) {
+	t.Parallel()
 	app := newTestAdmin(t)
 	id := "test-uuid"
 	app.commonRoutes.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: id, Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0", Description: "old"}}})

@@ -16,6 +16,7 @@ import (
 )
 
 func TestDefaultServerConfig_PreservesBackwardCompat(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 
 	// proto/tls остаются текущими prod-значениями, чтобы upgrade не сломал клиентов
@@ -55,6 +56,7 @@ func TestDefaultServerConfig_PreservesBackwardCompat(t *testing.T) {
 }
 
 func TestServerConfigStore_RoundTrip(t *testing.T) {
+	t.Parallel()
 	store := newServerConfigStore()
 	cfg := defaultServerConfig()
 	cfg.Port = 8443
@@ -71,6 +73,7 @@ func TestServerConfigStore_RoundTrip(t *testing.T) {
 }
 
 func TestServerConfigStore_SnapshotIsDeepCopy(t *testing.T) {
+	t.Parallel()
 	store := newServerConfigStore()
 	cfg := defaultServerConfig()
 	cfg.DNSServers = []string{"1.1.1.1"}
@@ -90,6 +93,7 @@ func TestServerConfigStore_SnapshotIsDeepCopy(t *testing.T) {
 }
 
 func TestServerConfigStore_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	store := newServerConfigStore()
 	store.replace(defaultServerConfig())
 
@@ -103,6 +107,7 @@ func TestServerConfigStore_ConcurrentAccess(t *testing.T) {
 }
 
 func TestServerConfigStore_NilSlicesNormalized(t *testing.T) {
+	t.Parallel()
 	store := newServerConfigStore()
 	cfg := defaultServerConfig()
 	cfg.DataCiphers = nil
@@ -118,6 +123,7 @@ func TestServerConfigStore_NilSlicesNormalized(t *testing.T) {
 }
 
 func TestValidateServerConfig_OK(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	if err := validateServerConfig(cfg); err != nil {
 		t.Errorf("default config must validate, got: %v", err)
@@ -125,6 +131,7 @@ func TestValidateServerConfig_OK(t *testing.T) {
 }
 
 func TestValidateServerConfig_BadProto(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.Proto = "sctp"
 	if err := validateServerConfig(cfg); err == nil {
@@ -133,6 +140,7 @@ func TestValidateServerConfig_BadProto(t *testing.T) {
 }
 
 func TestValidateServerConfig_PortRange(t *testing.T) {
+	t.Parallel()
 	for _, p := range []int{0, -1, 65536, 100000} {
 		cfg := defaultServerConfig()
 		cfg.Port = p
@@ -143,6 +151,7 @@ func TestValidateServerConfig_PortRange(t *testing.T) {
 }
 
 func TestValidateServerConfig_MTURange(t *testing.T) {
+	t.Parallel()
 	for _, m := range []int{0, 100, 9001, 100000} {
 		cfg := defaultServerConfig()
 		cfg.TunMTU = m
@@ -153,6 +162,7 @@ func TestValidateServerConfig_MTURange(t *testing.T) {
 }
 
 func TestValidateServerConfig_MssFix(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.MssFix = 0
 	if err := validateServerConfig(cfg); err != nil {
@@ -165,6 +175,7 @@ func TestValidateServerConfig_MssFix(t *testing.T) {
 }
 
 func TestValidateServerConfig_DataCipherWhitelist(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.DataCiphers = []string{"BF-CBC"}
 	if err := validateServerConfig(cfg); err == nil {
@@ -173,6 +184,7 @@ func TestValidateServerConfig_DataCipherWhitelist(t *testing.T) {
 }
 
 func TestValidateServerConfig_TLSVersion(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.TLSVersionMin = "1.0"
 	if err := validateServerConfig(cfg); err == nil {
@@ -181,6 +193,7 @@ func TestValidateServerConfig_TLSVersion(t *testing.T) {
 }
 
 func TestValidateServerConfig_TLSAuthMode(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.TLSAuthMode = "tls-magic"
 	if err := validateServerConfig(cfg); err == nil {
@@ -189,6 +202,7 @@ func TestValidateServerConfig_TLSAuthMode(t *testing.T) {
 }
 
 func TestValidateServerConfig_Verb(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.Verb = -1
 	if err := validateServerConfig(cfg); err == nil {
@@ -201,6 +215,7 @@ func TestValidateServerConfig_Verb(t *testing.T) {
 }
 
 func TestValidateServerConfig_DNSServers(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.DNSServers = []string{"1.1.1.1", "not-an-ip"}
 	if err := validateServerConfig(cfg); err == nil {
@@ -209,6 +224,7 @@ func TestValidateServerConfig_DNSServers(t *testing.T) {
 }
 
 func TestValidateServerConfig_CustomDirective_Whitelist(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.CustomDirectives = []string{"route 10.0.0.0 255.0.0.0"}
 	if err := validateServerConfig(cfg); err != nil {
@@ -227,6 +243,7 @@ func TestValidateServerConfig_CustomDirective_Whitelist(t *testing.T) {
 }
 
 func TestValidateServerConfig_KeepaliveRelation(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.KeepaliveInterval = 100
 	cfg.KeepaliveTimeout = 50
@@ -236,6 +253,7 @@ func TestValidateServerConfig_KeepaliveRelation(t *testing.T) {
 }
 
 func TestRenderServerConfig_Defaults(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	out, err := renderServerConfig(cfg, false /* dco available */, true /* ccd enabled */)
 	if err != nil {
@@ -275,6 +293,7 @@ func TestRenderServerConfig_Defaults(t *testing.T) {
 }
 
 func TestRenderServerConfig_DCOEnabled(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	out, _ := renderServerConfig(cfg, true, false)
 	if !strings.Contains(out, "data-channel-offload") {
@@ -283,6 +302,7 @@ func TestRenderServerConfig_DCOEnabled(t *testing.T) {
 }
 
 func TestRenderServerConfig_TLSCrypt(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.TLSAuthMode = "tls-crypt"
 	out, _ := renderServerConfig(cfg, false, false)
@@ -298,6 +318,7 @@ func TestRenderServerConfig_TLSCrypt(t *testing.T) {
 }
 
 func TestRenderServerConfig_RedirectGateway(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.RedirectGateway = true
 	out, _ := renderServerConfig(cfg, false, false)
@@ -307,6 +328,7 @@ func TestRenderServerConfig_RedirectGateway(t *testing.T) {
 }
 
 func TestRenderServerConfig_Compression(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.Compression = "lz4-v2"
 	out, _ := renderServerConfig(cfg, false, false)
@@ -316,6 +338,7 @@ func TestRenderServerConfig_Compression(t *testing.T) {
 }
 
 func TestRenderServerConfig_MaxClients(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.MaxClients = 100
 	out, _ := renderServerConfig(cfg, false, false)
@@ -330,6 +353,7 @@ func TestRenderServerConfig_MaxClients(t *testing.T) {
 }
 
 func TestRenderServerConfig_CustomDirectivesAtEnd(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.CustomDirectives = []string{"route 10.0.0.0 255.0.0.0", "explicit-exit-notify"}
 	out, _ := renderServerConfig(cfg, false, false)
@@ -342,6 +366,7 @@ func TestRenderServerConfig_CustomDirectivesAtEnd(t *testing.T) {
 }
 
 func TestRenderServerConfig_PushExtra(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.PushExtra = []string{`route 10.0.0.0 255.0.0.0`}
 	out, _ := renderServerConfig(cfg, false, false)
@@ -351,6 +376,7 @@ func TestRenderServerConfig_PushExtra(t *testing.T) {
 }
 
 func TestRenderServerConfig_CcdEnabledFalse(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	out, _ := renderServerConfig(cfg, false, false)
 	if strings.Contains(out, "client-config-dir") {
@@ -359,6 +385,7 @@ func TestRenderServerConfig_CcdEnabledFalse(t *testing.T) {
 }
 
 func TestDetectDCOSupport_NoModule(t *testing.T) {
+	t.Parallel()
 	available := detectDCOSupport()
 	if runtimeIsLinux() && available {
 		t.Logf("DCO available on this host (Linux kernel with ovpn module)")
@@ -374,6 +401,7 @@ func runtimeIsLinux() bool {
 }
 
 func TestCategorizeChanges_NoChange(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	kind := categorizeChanges(cfg, cfg)
 	if kind != "none" {
@@ -382,6 +410,7 @@ func TestCategorizeChanges_NoChange(t *testing.T) {
 }
 
 func TestCategorizeChanges_SoftFields(t *testing.T) {
+	t.Parallel()
 	for _, mod := range []func(*ServerConfig){
 		func(c *ServerConfig) { c.Verb = 5 },
 		func(c *ServerConfig) { c.DNSServers = append(c.DNSServers, "9.9.9.9") },
@@ -402,6 +431,7 @@ func TestCategorizeChanges_SoftFields(t *testing.T) {
 }
 
 func TestCategorizeChanges_HardFields(t *testing.T) {
+	t.Parallel()
 	for _, mod := range []func(*ServerConfig){
 		func(c *ServerConfig) { c.Proto = "udp" },
 		func(c *ServerConfig) { c.Port = 8443 },
@@ -427,6 +457,7 @@ func TestCategorizeChanges_HardFields(t *testing.T) {
 }
 
 func TestCategorizeChanges_HardWinsOverSoft(t *testing.T) {
+	t.Parallel()
 	old := defaultServerConfig()
 	new := defaultServerConfig()
 	new.Verb = 5
@@ -437,6 +468,7 @@ func TestCategorizeChanges_HardWinsOverSoft(t *testing.T) {
 }
 
 func TestServerConfig_FilePersist_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "_server_config.json")
 
@@ -457,6 +489,7 @@ func TestServerConfig_FilePersist_RoundTrip(t *testing.T) {
 }
 
 func TestServerConfig_FilePersist_LoadMissingReturnsDefaults(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "_missing.json")
 	cfg, err := loadServerConfigFromFile(path)
@@ -469,6 +502,7 @@ func TestServerConfig_FilePersist_LoadMissingReturnsDefaults(t *testing.T) {
 }
 
 func TestServerConfig_AtomicWrite(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "_server_config.json")
 	cfg := defaultServerConfig()
@@ -485,6 +519,7 @@ func TestServerConfig_AtomicWrite(t *testing.T) {
 }
 
 func TestServerConfig_Serialize_Deserialize(t *testing.T) {
+	t.Parallel()
 	cfg := defaultServerConfig()
 	cfg.Port = 8443
 	data, err := serializeServerConfig(cfg)
@@ -501,6 +536,7 @@ func TestServerConfig_Serialize_Deserialize(t *testing.T) {
 }
 
 func TestServerConfig_Deserialize_Empty(t *testing.T) {
+	t.Parallel()
 	cfg, err := deserializeServerConfig(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -567,6 +603,7 @@ func (f *fakeMgmtServer) serve() {
 }
 
 func TestServerManager_SoftReload_SendsSIGHUP(t *testing.T) {
+	t.Parallel()
 	mgmt := startFakeMgmt(t)
 	mgr := &serverManager{mgmtAddr: mgmt.addr()}
 
@@ -580,6 +617,7 @@ func TestServerManager_SoftReload_SendsSIGHUP(t *testing.T) {
 }
 
 func TestServerManager_HardReload_SendsSIGTERM(t *testing.T) {
+	t.Parallel()
 	mgmt := startFakeMgmt(t)
 	mgr := &serverManager{mgmtAddr: mgmt.addr()}
 
@@ -593,6 +631,7 @@ func TestServerManager_HardReload_SendsSIGTERM(t *testing.T) {
 }
 
 func TestServerManager_WaitMgmtReady_Timeout(t *testing.T) {
+	t.Parallel()
 	mgr := &serverManager{mgmtAddr: "127.0.0.1:0"}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -603,6 +642,7 @@ func TestServerManager_WaitMgmtReady_Timeout(t *testing.T) {
 }
 
 func TestServerManager_WaitMgmtReady_Success(t *testing.T) {
+	t.Parallel()
 	mgmt := startFakeMgmt(t)
 	mgr := &serverManager{mgmtAddr: mgmt.addr()}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -613,6 +653,7 @@ func TestServerManager_WaitMgmtReady_Success(t *testing.T) {
 }
 
 func TestServerManager_Apply_NoChange(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	confPath := filepath.Join(dir, "server.conf")
 	store := newServerConfigStore()
@@ -636,15 +677,11 @@ func TestServerManager_Apply_NoChange(t *testing.T) {
 }
 
 func TestServerManager_Apply_Soft(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	confPath := filepath.Join(dir, "server.conf")
 	mgmt := startFakeMgmt(t)
 	store := newServerConfigStore()
-
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	mgr := &serverManager{
 		store:          store,
@@ -681,13 +718,9 @@ func TestServerManager_Apply_Soft(t *testing.T) {
 }
 
 func TestServerManager_Apply_RejectsInvalid(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := newServerConfigStore()
-
-	originalStorage := *storageBackend
-	fs := "filesystem"
-	storageBackend = &fs
-	defer func() { storageBackend = &originalStorage }()
 
 	mgr := &serverManager{
 		store:       store,
@@ -722,12 +755,11 @@ func newServerConfigTestAdmin(t *testing.T) (*OvpnAdmin, *fakeMgmtServer, string
 		confPath:       filepath.Join(dir, "server.conf"),
 		ccdEnabled:     true,
 	}
-	fs := "filesystem"
-	storageBackend = &fs
 	return app, mgmt, dir
 }
 
 func TestServerConfigHandler_GET(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newServerConfigTestAdmin(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/server-config", nil)
 	rec := httptest.NewRecorder()
@@ -746,6 +778,7 @@ func TestServerConfigHandler_GET(t *testing.T) {
 }
 
 func TestServerConfigHandler_PUT_Soft(t *testing.T) {
+	t.Parallel()
 	app, mgmt, _ := newServerConfigTestAdmin(t)
 
 	cfg := app.serverConfigStore.snapshot()
@@ -774,6 +807,7 @@ func TestServerConfigHandler_PUT_Soft(t *testing.T) {
 }
 
 func TestServerConfigHandler_PUT_RejectsInvalid(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newServerConfigTestAdmin(t)
 	cfg := app.serverConfigStore.snapshot()
 	cfg.Port = 99999
@@ -789,6 +823,7 @@ func TestServerConfigHandler_PUT_RejectsInvalid(t *testing.T) {
 }
 
 func TestServerConfigHandler_PUT_SlaveLocked(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newServerConfigTestAdmin(t)
 	app.role = "slave"
 
@@ -803,6 +838,7 @@ func TestServerConfigHandler_PUT_SlaveLocked(t *testing.T) {
 }
 
 func TestServerConfigHandler_Test_DryRun(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newServerConfigTestAdmin(t)
 	cfg := app.serverConfigStore.snapshot()
 	cfg.Port = 8443
@@ -821,6 +857,7 @@ func TestServerConfigHandler_Test_DryRun(t *testing.T) {
 }
 
 func TestServerConfigHandler_Defaults(t *testing.T) {
+	t.Parallel()
 	app, _, _ := newServerConfigTestAdmin(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/server-config/defaults", nil)
 	rec := httptest.NewRecorder()
