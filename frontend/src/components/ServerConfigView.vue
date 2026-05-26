@@ -1,0 +1,278 @@
+<!-- frontend/src/components/ServerConfigView.vue -->
+<script setup>
+import { ref, onMounted, computed } from 'vue'
+import Input from '@/components/ui/Input.vue'
+import Button from '@/components/ui/Button.vue'
+import SectionCard from '@/components/server-config/SectionCard.vue'
+import ChipInput from '@/components/server-config/ChipInput.vue'
+import { useToast } from '@/composables/useToast'
+import {
+  fetchServerConfig, updateServerConfig, fetchServerConfigDefaults,
+} from '@/api.js'
+import { Save, RotateCcw, AlertTriangle, CheckCircle2 } from 'lucide-vue-next'
+
+const props = defineProps({
+  serverRole: { type: String, default: 'master' },
+})
+
+const cfg = ref(null)
+const dcoAvailable = ref(false)
+const loading = ref(false)
+const submitting = ref(false)
+
+const { toast: _toast } = useToast()
+function notify(title, variant = 'default') { _toast({ title, variant }) }
+
+const isMaster = computed(() => props.serverRole === 'master')
+
+const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/
+
+const dataCipherChoices = ['AES-256-GCM', 'AES-128-GCM', 'CHACHA20-POLY1305', 'AES-256-CBC', 'AES-128-CBC']
+
+const pushExtraText = computed({
+  get: () => (cfg.value?.push_extra || []).join('\n'),
+  set: (v) => { cfg.value.push_extra = v.split('\n').map(s => s.trim()).filter(Boolean) },
+})
+
+const customDirectivesText = computed({
+  get: () => (cfg.value?.custom_directives || []).join('\n'),
+  set: (v) => { cfg.value.custom_directives = v.split('\n').map(s => s.trim()).filter(Boolean) },
+})
+
+async function reload() {
+  loading.value = true
+  try {
+    const data = await fetchServerConfig()
+    cfg.value = data.config
+    dcoAvailable.value = data.dco_available
+  } finally { loading.value = false }
+}
+
+async function save() {
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    const r = await updateServerConfig(cfg.value)
+    cfg.value = r.config
+    if (r.reload_kind === 'hard') {
+      notify('Сохранено. OpenVPN перезапущен — клиенты переподключатся.', 'success')
+    } else if (r.reload_kind === 'soft') {
+      notify('Сохранено. Изменения применены без рестарта.', 'success')
+    } else {
+      notify('Изменений нет', 'default')
+    }
+  } catch (e) {
+    notify(`Ошибка: ${e.response?.data || e.message}`, 'destructive')
+  } finally { submitting.value = false }
+}
+
+async function resetToDefaults() {
+  if (!confirm('Сбросить все настройки сервера к дефолтам?')) return
+  const def = await fetchServerConfigDefaults()
+  cfg.value = def
+}
+
+function toggleCipher(c) {
+  const idx = cfg.value.data_ciphers.indexOf(c)
+  if (idx === -1) cfg.value.data_ciphers.push(c)
+  else cfg.value.data_ciphers.splice(idx, 1)
+}
+
+onMounted(reload)
+</script>
+
+<template>
+  <div class="space-y-4">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Сервер</p>
+        <p class="text-sm text-muted-foreground max-w-2xl">
+          Параметры OpenVPN-сервера. Изменения часть применяются hot (push routes, verb, keepalive),
+          часть требует перезапуска openvpn-процесса (port, proto, MTU, шифр, DCO).
+        </p>
+      </div>
+      <div class="flex gap-2">
+        <Button v-if="isMaster" variant="secondary" size="sm" @click="resetToDefaults">
+          <RotateCcw :size="14" /> Сбросить
+        </Button>
+        <Button v-if="isMaster" :loading="submitting" :disabled="!cfg" @click="save">
+          <Save :size="14" /> Сохранить
+        </Button>
+      </div>
+    </div>
+
+    <div v-if="loading" class="text-sm text-muted-foreground">Загрузка…</div>
+    <div v-else-if="cfg" class="space-y-3">
+      <div
+        :class="[
+          'rounded-md border px-3 py-2 text-sm flex items-center gap-2',
+          dcoAvailable
+            ? 'border-green-500/30 bg-green-500/5 text-green-700 dark:text-green-300'
+            : 'border-yellow-500/30 bg-yellow-500/5 text-yellow-700 dark:text-yellow-300'
+        ]"
+      >
+        <CheckCircle2 v-if="dcoAvailable" :size="16" />
+        <AlertTriangle v-else :size="16" />
+        <span>
+          <strong>DCO (kernel offload):</strong>
+          {{ dcoAvailable ? 'доступен на этой ноде' : 'не загружен kernel-модуль ovpn — toggle ниже неактивен' }}
+        </span>
+      </div>
+
+      <SectionCard title="Сеть и транспорт" description="Протокол, порт, MTU, подсеть VPN">
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Proto</span>
+            <select v-model="cfg.proto" :disabled="!isMaster" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+              <option value="udp">UDP (быстрее, рекомендуется)</option>
+              <option value="tcp">TCP</option>
+            </select>
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Port</span>
+            <Input v-model.number="cfg.port" type="number" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Network</span>
+            <Input v-model="cfg.network" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Network mask</span>
+            <Input v-model="cfg.network_mask" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">tun-mtu (576–9000)</span>
+            <Input v-model.number="cfg.tun_mtu" type="number" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">mssfix (0=выкл, 100–9000)</span>
+            <Input v-model.number="cfg.mss_fix" type="number" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Шифрование" description="Cipher, TLS, DCO">
+        <div class="space-y-3">
+          <div>
+            <span class="text-xs text-muted-foreground">Data ciphers (порядок = приоритет NCP)</span>
+            <div class="flex flex-wrap gap-1.5 mt-1">
+              <button
+                v-for="c in dataCipherChoices"
+                :key="c"
+                type="button"
+                :disabled="!isMaster"
+                @click="toggleCipher(c)"
+                :class="[
+                  'inline-flex items-center gap-1 rounded-md border px-2.5 h-7 text-xs font-mono transition-colors',
+                  cfg.data_ciphers.includes(c)
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-background text-muted-foreground hover:bg-accent'
+                ]"
+              >
+                {{ c }}
+              </button>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block text-sm">
+              <span class="text-xs text-muted-foreground">TLS version min</span>
+              <select v-model="cfg.tls_version_min" :disabled="!isMaster" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+                <option value="1.2">1.2</option>
+                <option value="1.3">1.3 (рекомендуется)</option>
+              </select>
+            </label>
+            <label class="block text-sm">
+              <span class="text-xs text-muted-foreground">TLS auth mode</span>
+              <select v-model="cfg.tls_auth_mode" :disabled="!isMaster" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+                <option value="tls-auth">tls-auth (HMAC)</option>
+                <option value="tls-crypt">tls-crypt (encrypted, рекомендуется)</option>
+              </select>
+            </label>
+          </div>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" v-model="cfg.dco_enabled" :disabled="!isMaster || !dcoAvailable" />
+            DCO (kernel offload) {{ !dcoAvailable ? '— недоступен на этой ноде' : '' }}
+          </label>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Поведение" description="Keepalive, лимиты, логи">
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Keepalive interval (sec)</span>
+            <Input v-model.number="cfg.keepalive_interval" type="number" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Keepalive timeout (sec)</span>
+            <Input v-model.number="cfg.keepalive_timeout" type="number" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Max clients (0 = unlimited)</span>
+            <Input v-model.number="cfg.max_clients" type="number" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Compression</span>
+            <select v-model="cfg.compression" :disabled="!isMaster" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+              <option value="">отключено (рекомендуется — VORACLE)</option>
+              <option value="lz4-v2">lz4-v2</option>
+              <option value="lzo">lzo</option>
+            </select>
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Verb (log level 0–11)</span>
+            <Input v-model.number="cfg.verb" type="number" :disabled="!isMaster" class="font-mono mt-1" />
+          </label>
+        </div>
+        <div class="flex gap-4 pt-2">
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" v-model="cfg.client_to_client" :disabled="!isMaster" />
+            client-to-client
+          </label>
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" v-model="cfg.duplicate_cn" :disabled="!isMaster" />
+            duplicate-cn
+          </label>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Пуш клиентам" description="Маршруты, DNS, gateway">
+        <label class="inline-flex items-center gap-2 text-sm">
+          <input type="checkbox" v-model="cfg.redirect_gateway" :disabled="!isMaster" />
+          redirect-gateway def1 (весь трафик через VPN)
+        </label>
+        <div>
+          <span class="text-xs text-muted-foreground">DNS-серверы (push клиентам)</span>
+          <ChipInput
+            v-model="cfg.dns_servers"
+            placeholder="1.1.1.1 (Enter / запятая)"
+            :validator="(v) => ipPattern.test(v)"
+          />
+        </div>
+        <div>
+          <span class="text-xs text-muted-foreground">Push extra (одна строка = одна push-директива; whitelist)</span>
+          <textarea
+            v-model="pushExtraText"
+            :disabled="!isMaster"
+            rows="3"
+            class="w-full mt-1 rounded-md border border-border bg-background px-2 py-1 text-sm font-mono"
+            placeholder="route 10.0.0.0 255.0.0.0"
+          />
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Дополнительно" description="Custom OpenVPN directives (whitelist)" :default-open="false">
+        <textarea
+          v-model="customDirectivesText"
+          :disabled="!isMaster"
+          rows="5"
+          class="w-full rounded-md border border-border bg-background px-2 py-1 text-sm font-mono"
+          placeholder="explicit-exit-notify
+route 192.168.0.0 255.255.0.0"
+        />
+        <p class="text-xs text-muted-foreground">
+          Разрешены: <span class="font-mono">route, route-nopull, topology, mtu-test, fragment, tx-queue-len, fast-io, explicit-exit-notify, sndbuf, rcvbuf</span>.
+        </p>
+      </SectionCard>
+    </div>
+  </div>
+</template>
