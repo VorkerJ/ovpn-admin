@@ -13,6 +13,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const serverConfigSecretName = "ovpn-admin-server-config"
@@ -561,4 +563,90 @@ func (m *serverManager) waitMgmtReady(ctx context.Context) error {
 		case <-tick.C:
 		}
 	}
+}
+
+// apply применяет новый конфиг: валидирует, рендерит, сохраняет, перезагружает.
+func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedBy string) (string, error) {
+	if err := validateServerConfig(newCfg); err != nil {
+		return "", fmt.Errorf("validate: %w", err)
+	}
+
+	current := m.store.snapshot()
+	kind := categorizeChanges(current, newCfg)
+	if kind == "none" {
+		return "none", nil
+	}
+
+	newCfg.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	newCfg.UpdatedBy = updatedBy
+
+	rendered, err := renderServerConfig(newCfg, m.dcoAvailable, m.ccdEnabled)
+	if err != nil {
+		return "", err
+	}
+	if err := writeFileAtomic(m.confPath, []byte(rendered)); err != nil {
+		return "", fmt.Errorf("write conf: %w", err)
+	}
+
+	backup := current
+	m.store.replace(newCfg)
+	if err := m.persist(newCfg); err != nil {
+		log.Warnf("apply: persist failed: %v", err)
+	}
+
+	switch kind {
+	case "soft":
+		if err := m.softReload(); err != nil {
+			log.Warnf("soft reload (SIGHUP) failed: %v — config saved, will pick up at next restart", err)
+		}
+		return "soft", nil
+	case "hard":
+		if err := m.sendSignal("SIGTERM"); err != nil {
+			log.Warnf("SIGTERM via mgmt failed: %v", err)
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if err := m.waitMgmtReady(waitCtx); err != nil {
+			log.Warnf("openvpn did not come back after %v — rolling back", 15*time.Second)
+			return m.rollback(backup, updatedBy)
+		}
+		return "hard", nil
+	}
+	return kind, nil
+}
+
+func (m *serverManager) rollback(backup ServerConfig, updatedBy string) (string, error) {
+	backup.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	backup.UpdatedBy = updatedBy + " (rollback)"
+
+	rendered, err := renderServerConfig(backup, m.dcoAvailable, m.ccdEnabled)
+	if err != nil {
+		return "rolled-back", fmt.Errorf("rollback render: %w", err)
+	}
+	if err := writeFileAtomic(m.confPath, []byte(rendered)); err != nil {
+		return "rolled-back", err
+	}
+	m.store.replace(backup)
+	_ = m.persist(backup)
+	_ = m.sendSignal("SIGTERM")
+	return "rolled-back", fmt.Errorf("new config invalid (openvpn did not restart); rolled back to previous version")
+}
+
+func (m *serverManager) persist(cfg ServerConfig) error {
+	if *storageBackend == "kubernetes.secrets" {
+		data, err := serializeServerConfig(cfg)
+		if err != nil {
+			return err
+		}
+		return app.secretUpdateServerConfig(data)
+	}
+	return saveServerConfigToFile(m.storagePath, cfg)
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

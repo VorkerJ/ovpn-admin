@@ -607,3 +607,96 @@ func TestServerManager_WaitMgmtReady_Success(t *testing.T) {
 		t.Errorf("waitMgmtReady: %v", err)
 	}
 }
+
+func TestServerManager_Apply_NoChange(t *testing.T) {
+	dir := t.TempDir()
+	confPath := filepath.Join(dir, "server.conf")
+	store := newServerConfigStore()
+
+	mgr := &serverManager{
+		store:       store,
+		storagePath: filepath.Join(dir, "store.json"),
+		mgmtAddr:    "127.0.0.1:0",
+		confPath:    confPath,
+		ccdEnabled:  true,
+	}
+
+	cfg := store.snapshot()
+	kind, err := mgr.apply(context.Background(), cfg, "admin")
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if kind != "none" {
+		t.Errorf("expected none for identical config, got %q", kind)
+	}
+}
+
+func TestServerManager_Apply_Soft(t *testing.T) {
+	dir := t.TempDir()
+	confPath := filepath.Join(dir, "server.conf")
+	mgmt := startFakeMgmt(t)
+	store := newServerConfigStore()
+
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	mgr := &serverManager{
+		store:       store,
+		storagePath: filepath.Join(dir, "store.json"),
+		mgmtAddr:    mgmt.addr(),
+		confPath:    confPath,
+		ccdEnabled:  true,
+	}
+
+	cfg := store.snapshot()
+	cfg.Verb = 5
+
+	kind, err := mgr.apply(context.Background(), cfg, "admin")
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if kind != "soft" {
+		t.Errorf("expected soft, got %q", kind)
+	}
+	time.Sleep(100 * time.Millisecond)
+	found := false
+	for _, sig := range mgmt.gotSignals {
+		if strings.Contains(sig, "SIGHUP") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected SIGHUP in signals, got %v", mgmt.gotSignals)
+	}
+	if _, err := os.Stat(confPath); err != nil {
+		t.Errorf("server.conf not written: %v", err)
+	}
+}
+
+func TestServerManager_Apply_RejectsInvalid(t *testing.T) {
+	dir := t.TempDir()
+	store := newServerConfigStore()
+
+	originalStorage := *storageBackend
+	fs := "filesystem"
+	storageBackend = &fs
+	defer func() { storageBackend = &originalStorage }()
+
+	mgr := &serverManager{
+		store:       store,
+		storagePath: filepath.Join(dir, "store.json"),
+		mgmtAddr:    "127.0.0.1:0",
+		confPath:    filepath.Join(dir, "server.conf"),
+		ccdEnabled:  true,
+	}
+
+	cfg := store.snapshot()
+	cfg.Port = 99999
+
+	_, err := mgr.apply(context.Background(), cfg, "admin")
+	if err == nil {
+		t.Error("expected validation error")
+	}
+}
