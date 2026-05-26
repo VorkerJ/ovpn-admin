@@ -1,54 +1,79 @@
 version: '3'
 
+# ───────────────────────────────────────────────────────────────────────
+#  ovpn-admin + OpenVPN, production-friendly docker-compose
+#
+#  Quick start (local dev / staging):
+#      docker compose up -d
+#
+#  Single-VPS deployment:
+#      cp .env.example .env
+#      nano .env          # set OVPN_PUBLIC_HOSTNAME, port, proto, etc.
+#      docker compose up -d
+#
+#  Admin UI binds to 127.0.0.1:8080 by default — reach it via SSH tunnel.
+#  See README "Deploy on a single VPS" for the full guide.
+# ───────────────────────────────────────────────────────────────────────
+
 services:
   openvpn:
     build:
       context: .
       dockerfile: Dockerfile.openvpn
-    image: openvpn:local
+    image: ${OVPN_IMAGE:-openvpn:local}
     command: /etc/openvpn/setup/configure.sh
     restart: unless-stopped
     environment:
-      OVPN_SERVER_NET: "192.168.100.0"
-      OVPN_SERVER_MASK: "255.255.255.0"
-      OVPN_PASSWD_AUTH: "true"
+      OVPN_SERVER_NET: "${OVPN_NETWORK_BASE:-172.16.100.0}"
+      OVPN_SERVER_MASK: "${OVPN_NETWORK_MASK:-255.255.255.0}"
+      OVPN_PASSWD_AUTH: "${OVPN_PASSWD_AUTH:-false}"
     cap_add:
       - NET_ADMIN
     ports:
-      - 7777:1194 # for openvpn
-      - 8080:8080 # for ovpn-admin because of network_mode
+      # OpenVPN public port. Defaults to UDP/1194 — change OVPN_PROTO to "tcp" if needed.
+      - "${OVPN_PORT:-1194}:1194/${OVPN_PROTO:-udp}"
+      # Admin UI. Defaults to localhost-only (127.0.0.1) so it's not exposed publicly.
+      # Override OVPN_ADMIN_BIND=0.0.0.0 to expose (then put a TLS reverse proxy in front).
+      - "${OVPN_ADMIN_BIND:-127.0.0.1}:${OVPN_ADMIN_PORT:-8080}:8080"
     volumes:
-      - ./easyrsa_master:/etc/openvpn/easyrsa
-      - ./ccd_master:/etc/openvpn/ccd
+      - ${OVPN_EASYRSA_PATH:-./easyrsa_master}:/etc/openvpn/easyrsa
+      - ${OVPN_CCD_PATH:-./ccd_master}:/etc/openvpn/ccd
       - ovpn_dynamic_conf:/etc/openvpn-dynamic
+
   ovpn-admin:
     build:
       context: .
       dockerfile: Dockerfile.ovpn-admin
-    image: ovpn-admin:local
+    image: ${OVPN_ADMIN_IMAGE:-ovpn-admin:local}
     command: /app/ovpn-admin
     restart: unless-stopped
     environment:
-      OVPN_DEBUG: "true"
-      OVPN_VERBOSE: "true"
-      OVPN_NETWORK: "192.168.100.0/24"
+      OVPN_NETWORK: "${OVPN_NETWORK_BASE:-172.16.100.0}/24"
       OVPN_CCD: "true"
       OVPN_CCD_PATH: "/mnt/ccd"
       EASYRSA_PATH: "/mnt/easyrsa"
-      OVPN_SERVER: "127.0.0.1:7777:tcp"
+      # Tells generated .ovpn client configs where to connect.
+      # For VPS: set OVPN_PUBLIC_HOSTNAME to your public IP or DNS name.
+      OVPN_SERVER: "${OVPN_PUBLIC_HOSTNAME:-127.0.0.1}:${OVPN_PORT:-1194}:${OVPN_PROTO:-udp}"
       OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"
-      OVPN_AUTH: "true"
+      OVPN_AUTH: "${OVPN_PASSWD_AUTH:-false}"
       OVPN_AUTH_DB_PATH: "/mnt/easyrsa/pki/users.db"
-      LOG_LEVEL: "debug"
-      OVPN_FIREWALL: "true"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      OVPN_FIREWALL: "${OVPN_FIREWALL:-true}"
       OVPN_SERVER_CONFIG_PATH: "/etc/openvpn-dynamic/server.conf"
+      # Pin admin password by mounting ./htpasswd → /mnt/auth/htpasswd (read-only)
+      # When unset, ovpn-admin auto-generates a temporary password printed in logs.
+      ADMIN_HTPASSWD_FILE: "${ADMIN_HTPASSWD_FILE:-}"
     cap_add:
       - NET_ADMIN
     network_mode: service:openvpn
     volumes:
-      - ./easyrsa_master:/mnt/easyrsa
-      - ./ccd_master:/mnt/ccd
+      - ${OVPN_EASYRSA_PATH:-./easyrsa_master}:/mnt/easyrsa
+      - ${OVPN_CCD_PATH:-./ccd_master}:/mnt/ccd
       - ovpn_dynamic_conf:/etc/openvpn-dynamic
+      # Uncomment to pin admin UI password via htpasswd file:
+      # - ./htpasswd:/mnt/auth/htpasswd:ro
+      # Then set ADMIN_HTPASSWD_FILE=/mnt/auth/htpasswd in .env
 
 volumes:
   ovpn_dynamic_conf:

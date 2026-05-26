@@ -65,6 +65,83 @@ The admin password is auto-generated on first start. Check the logs:
 docker compose logs ovpn-admin | grep "Временный пароль"
 ```
 
+By default the admin UI binds to `127.0.0.1:8080` on the host — it is **not** reachable from the network. See the next section for how to deploy on a public VPS.
+
+### Deploy on a single VPS
+
+Run everything on one Linux box (Ubuntu/Debian/Alma — anything with a recent kernel). The two containers from `docker-compose.yaml` are exactly the same images the Helm chart uses, so there's no second code path to maintain.
+
+**Prerequisites**
+
+- A VPS with a public IP, port `1194/udp` open (or the port you pick).
+- Docker Engine ≥ 24 with the Compose plugin. On Ubuntu:
+  ```bash
+  curl -fsSL https://get.docker.com | sh
+  ```
+- DNS A-record pointing at the VPS (optional, but nicer than typing the IP).
+
+**1. Clone and configure**
+
+```bash
+git clone https://github.com/VorkerJ/ovpn-admin.git
+cd ovpn-admin
+cp .env.example .env
+```
+
+Edit `.env` and set at minimum:
+
+```env
+OVPN_PUBLIC_HOSTNAME=vpn.example.com   # IP or DNS — goes into client .ovpn files
+OVPN_PORT=1194
+OVPN_PROTO=udp
+OVPN_NETWORK_BASE=172.16.100.0          # don't collide with your LAN
+```
+
+All other variables have defaults; see `.env.example` for the full list.
+
+**2. Start the stack**
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+docker compose logs -f
+```
+
+The OpenVPN container handles its own iptables/NAT for the VPN subnet — just leave the firewall on the VPS at "allow `1194/udp`" and you're done.
+
+**3. Reach the admin UI**
+
+Admin UI is bound to `127.0.0.1:8080` inside the VPS for security. SSH-tunnel into it from your laptop:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@vpn.example.com
+# then open http://127.0.0.1:8080 in your browser
+```
+
+The first time you connect, ovpn-admin will ask for a username/password. With the default setup it generates a random temporary password at startup — grab it from the logs:
+
+```bash
+docker compose logs ovpn-admin | grep "Временный пароль"
+```
+
+If you'd rather have a stable password, mount your own htpasswd file — see the [Authentication](#authentication) section above.
+
+If you ever want to expose the UI without SSH, put a TLS-terminating reverse proxy (Caddy, nginx, Traefik) in front of it, set `OVPN_ADMIN_BIND=0.0.0.0` in `.env`, and **definitely** pin the admin password via htpasswd. Don't expose port 8080 raw over the public internet — it's HTTP only.
+
+**4. Add your first VPN client**
+
+Open the admin UI, click *Создать* (Create), download the generated `.ovpn`, hand it to the user.
+
+**Backups.** All state lives in `./easyrsa_master` (CA, keys, PKI) and `./ccd_master` (per-user routes). Snapshot those two directories — that's a full backup. For a production VPS, change `OVPN_EASYRSA_PATH` and `OVPN_CCD_PATH` to absolute paths under `/var/lib/ovpn-admin` and back them up from there.
+
+**Upgrades.**
+```bash
+git pull
+docker compose build --no-cache
+docker compose up -d
+```
+`--no-cache` is required — the frontend is baked into the binary via packr2, and Docker's layer cache silently misses frontend changes.
+
 ### Building from source
 
 Requirements: Go 1.25+, packr2, Node.js 20+
