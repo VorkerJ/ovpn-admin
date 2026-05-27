@@ -28,3 +28,7 @@ packrd/
 
 # Playwright MCP artifacts
 .playwright-mcp/
+
+# Playwright E2E test artifacts
+frontend/test-results/
+frontend/playwright-report/
