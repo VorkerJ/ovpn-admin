@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gobuffalo/packr/v2"
+	"io/fs"
 )
 
 func TestValidateCommonRoute_IP_OK(t *testing.T) {
@@ -315,7 +315,11 @@ func TestModifyCcd_RendersCommonRoutes(t *testing.T) {
 	dir := t.TempDir()
 
 	app := &OvpnAdmin{store: testFilesystemStore(dir)}
-	app.templates = packr.New("template", "./templates")
+	tplSub, err := fs.Sub(templatesFS, "templates")
+	if err != nil {
+		t.Fatalf("cannot create sub-FS for templates: %v", err)
+	}
+	app.templates = tplSub
 
 	ccd := Ccd{
 		User:          "bob",

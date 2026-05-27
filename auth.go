@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ var htpasswdUsers map[string]string
 // revokedTokens — blacklist токенов после логаута (hmac → expiry)
 var revokedTokens = map[string]int64{}
 var revokedTokensMu sync.Mutex
+var revokedTokensFile string
 
 // ── Login rate limiting ──────────────────────────────────────────────────────
 
@@ -78,6 +80,39 @@ func recordLoginSuccess(ip string) {
 	loginAttempts.Delete(ip)
 }
 
+// loadRevokedTokens reads the persisted blacklist from disk, discarding expired entries.
+func loadRevokedTokens() {
+	if revokedTokensFile == "" {
+		return
+	}
+	data, err := os.ReadFile(revokedTokensFile)
+	if err != nil {
+		return // file doesn't exist yet — that's fine
+	}
+	revokedTokensMu.Lock()
+	defer revokedTokensMu.Unlock()
+	_ = json.Unmarshal(data, &revokedTokens)
+	now := time.Now().Unix()
+	for token, exp := range revokedTokens {
+		if exp < now {
+			delete(revokedTokens, token)
+		}
+	}
+}
+
+// saveRevokedTokens writes the current blacklist to disk.
+func saveRevokedTokens() {
+	if revokedTokensFile == "" {
+		return
+	}
+	revokedTokensMu.Lock()
+	data, _ := json.Marshal(revokedTokens)
+	revokedTokensMu.Unlock()
+	if err := os.WriteFile(revokedTokensFile, data, 0600); err != nil {
+		log.Warnf("failed to persist revoked tokens: %v", err)
+	}
+}
+
 // initAuth загружает htpasswd-файл или генерирует временные credentials.
 // Вызывается после kingpin.Parse().
 func initAuth() {
@@ -88,18 +123,21 @@ func initAuth() {
 			log.Fatalf("Не удалось загрузить htpasswd-файл %s: %v", *adminHtpasswdFile, err)
 		}
 		log.Infof("Авторизация: загружено %d пользователей из %s", len(htpasswdUsers), *adminHtpasswdFile)
-		return
+		revokedTokensFile = filepath.Join(filepath.Dir(*adminHtpasswdFile), ".session_blacklist.json")
+	} else {
+		// Файл не задан — генерируем временный пароль для admin
+		pass := generatePassword(16)
+		hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+		if err != nil {
+			log.Fatalf("Ошибка генерации пароля: %v", err)
+		}
+		htpasswdUsers["admin"] = string(hash)
+		log.Warnf("ADMIN_HTPASSWD_FILE не задан. Временный пароль для admin: %s", pass)
+		log.Warn("Для постоянных учётных данных создайте htpasswd-файл и задайте ADMIN_HTPASSWD_FILE.")
+		revokedTokensFile = "/tmp/.ovpn-admin-session-blacklist.json"
 	}
 
-	// Файл не задан — генерируем временный пароль для admin
-	pass := generatePassword(16)
-	hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
-	if err != nil {
-		log.Fatalf("Ошибка генерации пароля: %v", err)
-	}
-	htpasswdUsers["admin"] = string(hash)
-	log.Warnf("ADMIN_HTPASSWD_FILE не задан. Временный пароль для admin: %s", pass)
-	log.Warn("Для постоянных учётных данных создайте htpasswd-файл и задайте ADMIN_HTPASSWD_FILE.")
+	loadRevokedTokens()
 }
 
 // loadHtpasswd читает файл формата Apache htpasswd (username:hash, по одной записи на строку).
@@ -205,6 +243,8 @@ func revokeToken(token string) {
 		}
 	}
 	revokedTokensMu.Unlock()
+
+	saveRevokedTokens()
 }
 
 // sessionSecret возвращает секрет для HMAC — хэш всех htpasswd-хэшей.

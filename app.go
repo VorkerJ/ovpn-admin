@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"embed"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -20,12 +22,17 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/gobuffalo/packr/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 
 	"ovpn-admin/internal/storage"
 )
+
+//go:embed templates
+var templatesFS embed.FS
+
+//go:embed frontend/static
+var staticFS embed.FS
 
 type OvpnAdmin struct {
 	role                   string
@@ -37,7 +44,7 @@ type OvpnAdmin struct {
 	activeClients          []clientStatus
 	promRegistry           *prometheus.Registry
 	mgmtInterfaces         map[string]string
-	templates              *packr.Box
+	templates              fs.FS
 	modules                []string
 	mgmtStatusTimeFormat   string
 	createUserMutex        *sync.Mutex
@@ -251,11 +258,11 @@ func (oAdmin *OvpnAdmin) getClientConfigTemplate() *template.Template {
 	if *clientConfigTemplatePath != "" {
 		return template.Must(template.ParseFiles(*clientConfigTemplatePath))
 	} else {
-		clientConfigTpl, clientConfigTplErr := oAdmin.templates.FindString("client.conf.tpl")
-		if clientConfigTplErr != nil {
-			log.Error("clientConfigTpl not found in templates box")
+		data, err := fs.ReadFile(oAdmin.templates, "client.conf.tpl")
+		if err != nil {
+			log.Errorf("clientConfigTpl not found in embedded templates: %v", err)
 		}
-		return template.Must(template.New("client-config").Parse(clientConfigTpl))
+		return template.Must(template.New("client-config").Parse(string(data)))
 	}
 }
 

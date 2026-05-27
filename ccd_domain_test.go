@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gobuffalo/packr/v2"
+	"io/fs"
 )
 
 // withTempCcdEnv returns a temporary directory suitable for CCD tests.
@@ -33,14 +33,18 @@ func testFilesystemStore(dir string) *filesystemStore {
 	}
 }
 
-// newTestAdminCcd возвращает OvpnAdmin с packr templates и пустым commonRoutes-store.
+// newTestAdminCcd returns an OvpnAdmin with embedded templates and an empty commonRoutes store.
 func newTestAdminCcd(t *testing.T, dir string) *OvpnAdmin {
 	t.Helper()
+	tplSub, err := fs.Sub(templatesFS, "templates")
+	if err != nil {
+		t.Fatalf("cannot create sub-FS for templates: %v", err)
+	}
 	app := &OvpnAdmin{
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}},
 		store:        testFilesystemStore(dir),
 	}
-	app.templates = packr.New("template", "./templates")
+	app.templates = tplSub
 	return app
 }
 

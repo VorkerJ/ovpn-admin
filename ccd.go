@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"strings"
@@ -18,11 +19,11 @@ func (oAdmin *OvpnAdmin) getCcdTemplate() *template.Template {
 	if *ccdTemplatePath != "" {
 		return template.Must(template.ParseFiles(*ccdTemplatePath))
 	} else {
-		ccdTpl, ccdTplErr := oAdmin.templates.FindString("ccd.tpl")
-		if ccdTplErr != nil {
-			log.Errorf("ccdTpl not found in templates box")
+		data, err := fs.ReadFile(oAdmin.templates, "ccd.tpl")
+		if err != nil {
+			log.Errorf("ccdTpl not found in embedded templates: %v", err)
 		}
-		return template.Must(template.New("ccd").Parse(ccdTpl))
+		return template.Must(template.New("ccd").Parse(string(data)))
 	}
 }
 

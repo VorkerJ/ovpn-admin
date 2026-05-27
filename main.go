@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
 
-	"github.com/gobuffalo/packr/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -323,10 +323,17 @@ func main() {
 		go ovpnAdmin.syncWithMaster()
 	}
 
-	ovpnAdmin.templates = packr.New("template", "./templates")
+	tplSub, err := fs.Sub(templatesFS, "templates")
+	if err != nil {
+		log.Fatalf("cannot create sub-FS for templates: %v", err)
+	}
+	ovpnAdmin.templates = tplSub
 
-	staticBox := packr.New("static", "./frontend/static")
-	static := CacheControlWrapper(http.FileServer(staticBox))
+	staticSub, err := fs.Sub(staticFS, "frontend/static")
+	if err != nil {
+		log.Fatalf("cannot create sub-FS for static: %v", err)
+	}
+	static := CacheControlWrapper(http.FileServer(http.FS(staticSub)))
 
 	http.Handle(*listenBaseUrl, http.StripPrefix(strings.TrimRight(*listenBaseUrl, "/"), static))
 
