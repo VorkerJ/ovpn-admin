@@ -11,6 +11,7 @@ import DeleteUserModal from '@/components/modals/DeleteUserModal.vue'
 import RotateUserModal from '@/components/modals/RotateUserModal.vue'
 import ChangePasswordModal from '@/components/modals/ChangePasswordModal.vue'
 import CcdModal from '@/components/modals/CcdModal.vue'
+import MfaSetupModal from '@/components/modals/MfaSetupModal.vue'
 import LoginPage from '@/components/LoginPage.vue'
 import TabBar from '@/components/TabBar.vue'
 import CommonRoutesView from '@/components/CommonRoutesView.vue'
@@ -102,6 +103,7 @@ const modalSubmitting = ref({
   ccd: false,
 })
 
+const mfaModalOpen = ref(false)
 const ccdData = ref({ Name: '', ClientAddress: '', CustomRoutes: [] })
 
 function openModal(name, username = '') {
@@ -240,6 +242,7 @@ async function submitCcd(ccd) {
       :server-role="serverRole"
       :last-sync="lastSync"
       @add-user="openModal('addUser')"
+      @open-mfa="mfaModalOpen = true"
       @logout="handleLogout"
     />
 
@@ -319,6 +322,11 @@ async function submitCcd(ccd) {
       :error="modalErrors.ccd"
       @close="closeModal('ccd')"
       @submit="submitCcd"
+    />
+
+    <MfaSetupModal
+      :open="mfaModalOpen"
+      @close="mfaModalOpen = false"
     />
 
     <!-- Toast notifications -->

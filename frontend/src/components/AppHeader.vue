@@ -9,7 +9,7 @@ defineProps({
   lastSync: { type: String, default: '' },
 })
 
-defineEmits(['add-user', 'logout'])
+defineEmits(['add-user', 'logout', 'open-mfa'])
 
 const { isDark, toggle } = useTheme()
 </script>
@@ -36,6 +36,10 @@ const { isDark, toggle } = useTheme()
         <Button variant="ghost" size="icon-sm" :title="isDark ? 'Светлая тема' : 'Тёмная тема'" @click="toggle">
           <Sun v-if="isDark" :size="16" />
           <Moon v-else :size="16" />
+        </Button>
+
+        <Button variant="ghost" size="icon-sm" title="Двухфакторная аутентификация" @click="$emit('open-mfa')">
+          <ShieldCheck :size="16" />
         </Button>
 
         <Button

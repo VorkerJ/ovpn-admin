@@ -129,3 +129,35 @@ export async function fetchServerConfigDefaults() {
   const { data } = await axios.get('api/server-config/defaults')
   return data
 }
+
+export async function loginMfa(mfaToken, code) {
+  const { data } = await axios.post('api/login/mfa', JSON.stringify({ mfa_token: mfaToken, code }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data
+}
+
+export async function fetchMfaStatus() {
+  const { data } = await axios.get('api/mfa/status')
+  return data
+}
+
+export async function setupMfa() {
+  const { data } = await axios.post('api/mfa/setup')
+  return data
+}
+
+export async function confirmMfa(code) {
+  const { data } = await axios.post('api/mfa/confirm', JSON.stringify({ code }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data
+}
+
+export async function disableMfa(code) {
+  const { data } = await axios.delete('api/mfa', {
+    data: JSON.stringify({ code }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data
+}
