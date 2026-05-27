@@ -54,6 +54,7 @@ type OvpnAdmin struct {
 	serverConfigStore      *serverConfigStore
 	serverManager          *serverManager
 	store                  storage.Store
+	mfaStore               *mfaStore
 }
 
 type OpenvpnServer struct {

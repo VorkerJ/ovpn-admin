@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -79,6 +80,11 @@ var (
 	serverConfigPath = kingpin.Flag("server-config.conf-path",
 		"path where ovpn-admin writes the rendered server.conf").
 		Default("/etc/openvpn/server.conf").Envar("OVPN_SERVER_CONFIG_PATH").String()
+
+	mfaEnabled = kingpin.Flag("mfa", "enable TOTP two-factor authentication for admin UI").
+		Default("true").Envar("OVPN_MFA").Bool()
+	mfaDBPath = kingpin.Flag("mfa.db-path", "path to MFA secrets JSON file").
+		Default("").Envar("OVPN_MFA_DB_PATH").String()
 
 	firewallEnabled = kingpin.Flag("firewall",
 		"enable per-client iptables enforcement").
@@ -170,6 +176,19 @@ func main() {
 	ovpnAdmin.mgmtInterfaces = make(map[string]string)
 	ovpnAdmin.commonRoutes = &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}
 	ovpnAdmin.store = store
+
+	if *mfaEnabled {
+		mfaPath := *mfaDBPath
+		if mfaPath == "" {
+			if *adminHtpasswdFile != "" {
+				mfaPath = filepath.Join(filepath.Dir(*adminHtpasswdFile), "_mfa_secrets.json")
+			} else {
+				mfaPath = "./mfa_secrets.json"
+			}
+		}
+		ovpnAdmin.mfaStore = newMfaStore(mfaPath)
+		log.Infof("MFA: enabled, secrets at %s", mfaPath)
+	}
 
 	for _, mgmtInterface := range *mgmtAddress {
 		parts := strings.SplitN(mgmtInterface, "=", 2)
@@ -341,6 +360,13 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/login", ovpnAdmin.loginHandler)
 	http.HandleFunc(*listenBaseUrl+"api/logout", ovpnAdmin.requireAuth(ovpnAdmin.logoutHandler))
 	http.HandleFunc(*listenBaseUrl+"api/auth/check", ovpnAdmin.requireAuth(ovpnAdmin.authCheckHandler))
+
+	// MFA endpoints
+	http.HandleFunc(*listenBaseUrl+"api/login/mfa", ovpnAdmin.mfaLoginHandler)
+	http.HandleFunc(*listenBaseUrl+"api/mfa/status", ovpnAdmin.requireAuth(ovpnAdmin.mfaStatusHandler))
+	http.HandleFunc(*listenBaseUrl+"api/mfa/setup", ovpnAdmin.requireAuth(ovpnAdmin.mfaSetupHandler))
+	http.HandleFunc(*listenBaseUrl+"api/mfa/confirm", ovpnAdmin.requireAuth(ovpnAdmin.mfaConfirmHandler))
+	http.HandleFunc(*listenBaseUrl+"api/mfa", ovpnAdmin.requireAuth(ovpnAdmin.mfaDisableHandler))
 
 	// Protected API endpoints
 	http.HandleFunc(*listenBaseUrl+"api/server/settings", ovpnAdmin.requireAuth(ovpnAdmin.serverSettingsHandler))

@@ -306,6 +306,17 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	recordLoginSuccess(ip)
+
+	if oAdmin.mfaStore != nil && oAdmin.mfaStore.isEnabled(user) {
+		mfaToken := signMfaToken(user)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"mfa_required": true,
+			"mfa_token":    mfaToken,
+		})
+		return
+	}
+
 	token := signSession(user)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
