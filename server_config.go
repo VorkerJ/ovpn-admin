@@ -316,7 +316,7 @@ group nogroup
 mode server
 tls-server
 dev tun
-proto {{ .Cfg.Proto }}-server
+proto {{ if eq .Cfg.Proto "tcp" }}tcp-server{{ else }}udp{{ end }}
 port {{ .Cfg.Port }}
 management 127.0.0.1 8989
 management-client-auth
