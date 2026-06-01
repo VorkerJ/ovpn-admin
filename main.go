@@ -437,9 +437,13 @@ func main() {
 
 	http.HandleFunc(*listenBaseUrl+"api/sync/last/try", auth(get(ovpnAdmin.lastSyncTimeHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/sync/last/successful", auth(get(ovpnAdmin.lastSuccessfulSyncTimeHandler)))
-	// downloadCerts/Ccd are master-only sync endpoints called by slaves via X-Sync-Token.
-	http.HandleFunc(*listenBaseUrl+downloadCertsApiUrl, auth(master(get(ovpnAdmin.downloadCertsHandler))))
-	http.HandleFunc(*listenBaseUrl+downloadCcdApiUrl, auth(master(get(ovpnAdmin.downloadCcdHandler))))
+	// downloadCerts/Ccd are master-only sync endpoints called by slaves via
+	// X-Sync-Token (verified inside the handler with subtle.ConstantTimeCompare).
+	// They must NOT be wrapped in requireAuth — slaves do not present a session
+	// cookie, so requireAuth would reject every sync request with 401 before the
+	// token check could run, breaking master→slave replication entirely.
+	http.HandleFunc(*listenBaseUrl+downloadCertsApiUrl, master(get(ovpnAdmin.downloadCertsHandler)))
+	http.HandleFunc(*listenBaseUrl+downloadCcdApiUrl, master(get(ovpnAdmin.downloadCcdHandler)))
 
 	http.HandleFunc(*metricsPath, ovpnAdmin.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		promhttp.HandlerFor(ovpnAdmin.promRegistry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
