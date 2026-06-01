@@ -7,6 +7,9 @@ import { Sun, Moon, Plus, LogOut, ShieldCheck } from 'lucide-vue-next'
 defineProps({
   serverRole: { type: String, default: 'master' },
   lastSync: { type: String, default: '' },
+  // serverInitialized=false блокирует кнопку «Добавить пользователя» (бэкенд
+  // вернёт 412 — лучше не давать кликнуть и показать tooltip).
+  serverInitialized: { type: Boolean, default: true },
 })
 
 defineEmits(['add-user', 'logout', 'open-mfa'])
@@ -45,6 +48,8 @@ const { isDark, toggle } = useTheme()
         <Button
           v-if="serverRole === 'master'"
           size="sm"
+          :disabled="!serverInitialized"
+          :title="serverInitialized ? '' : 'Сначала настройте сервер во вкладке «Сервер»'"
           @click="$emit('add-user')"
         >
           <Plus :size="14" />

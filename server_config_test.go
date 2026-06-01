@@ -919,6 +919,74 @@ func TestServerConfigHandler_Test_DryRun(t *testing.T) {
 	}
 }
 
+func TestServerConfig_DefaultsNotInitialized(t *testing.T) {
+	t.Parallel()
+	cfg := defaultServerConfig()
+	if cfg.Initialized {
+		t.Error("defaultServerConfig() must return Initialized=false (admin hasn't saved yet)")
+	}
+}
+
+func TestServerConfig_SaveMarksInitialized(t *testing.T) {
+	t.Parallel()
+	app, _, _ := newServerConfigTestAdmin(t)
+
+	if app.serverConfigStore.snapshot().Initialized {
+		t.Fatal("precondition: store must start with Initialized=false")
+	}
+
+	// PUT с изменением порта — должен пройти через apply() и сохранить Initialized=true.
+	cfg := app.serverConfigStore.snapshot()
+	cfg.Verb = 5
+
+	body, _ := json.Marshal(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/server-config", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.serverConfigHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !app.serverConfigStore.snapshot().Initialized {
+		t.Error("after successful PUT, snapshot().Initialized must be true")
+	}
+
+	// GET должен вернуть и поле в config, и зеркало Initialized в response.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/server-config", nil)
+	getRec := httptest.NewRecorder()
+	app.serverConfigHandler(getRec, getReq)
+	var resp ServerConfigResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Config.Initialized {
+		t.Error("GET response Config.Initialized must be true")
+	}
+	if !resp.Initialized {
+		t.Error("GET response top-level Initialized must be true")
+	}
+}
+
+func TestServerConfig_SaveMarksInitialized_EvenWithoutChanges(t *testing.T) {
+	t.Parallel()
+	app, _, _ := newServerConfigTestAdmin(t)
+
+	// PUT текущего конфига без изменений — kind=="none", но Initialized всё равно
+	// должен стать true, иначе UI "сохраните чтобы разблокировать создание" зависнет.
+	cfg := app.serverConfigStore.snapshot()
+	body, _ := json.Marshal(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/server-config", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.serverConfigHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !app.serverConfigStore.snapshot().Initialized {
+		t.Error("PUT with no openvpn-param changes must still mark Initialized=true")
+	}
+}
+
 func TestServerConfigHandler_Defaults(t *testing.T) {
 	t.Parallel()
 	app, _, _ := newServerConfigTestAdmin(t)

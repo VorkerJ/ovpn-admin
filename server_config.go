@@ -84,6 +84,11 @@ type ServerConfig struct {
 	// Bookkeeping
 	UpdatedAt string `json:"updated_at"`
 	UpdatedBy string `json:"updated_by"`
+
+	// Initialized=true означает что admin явно сохранил настройки через UI
+	// хотя бы раз. До этого создание пользователей заблокировано (defaults
+	// нужны только чтобы openvpn-сервер мог стартовать).
+	Initialized bool `json:"initialized"`
 }
 
 // ServerConfigResponse — обёртка для API-ответа, добавляет runtime DCO-detection
@@ -91,10 +96,15 @@ type ServerConfig struct {
 type ServerConfigResponse struct {
 	Config       ServerConfig `json:"config"`
 	DCOAvailable bool         `json:"dco_available"`
+	// Initialized — продублирован из Config.Initialized для удобства
+	// frontend (отдельный флаг рядом с runtime-полями).
+	Initialized bool `json:"initialized"`
 }
 
 // defaultServerConfig — дефолты при первом запуске (store пустой).
 // Подобраны под текущие production-значения чтобы upgrade не ломал клиентов.
+// Initialized=false (zero value) — admin ещё не сохранял настройки через UI;
+// до явного сохранения создание пользователей будет заблокировано.
 func defaultServerConfig() ServerConfig {
 	return ServerConfig{
 		Proto:             "tcp",
@@ -617,6 +627,18 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 	current := m.store.snapshot()
 	kind := categorizeChanges(current, newCfg)
 	if kind == "none" {
+		// Даже если openvpn-параметры не изменились, факт явного
+		// сохранения должен пометить конфиг как инициализированный
+		// (admin осознанно подтвердил defaults).
+		if newCfg.Initialized && !current.Initialized {
+			current.Initialized = true
+			current.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			current.UpdatedBy = updatedBy
+			m.store.replace(current)
+			if err := m.persist(current); err != nil {
+				log.Warnf("apply: persist (initialized flag only) failed: %v", err)
+			}
+		}
 		return "none", nil
 	}
 
@@ -700,9 +722,11 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	switch r.Method {
 	case http.MethodGet:
+		snap := oAdmin.serverConfigStore.snapshot()
 		resp := ServerConfigResponse{
-			Config:       oAdmin.serverConfigStore.snapshot(),
+			Config:       snap,
 			DCOAvailable: oAdmin.serverManager.dcoAvailable,
+			Initialized:  snap.Initialized,
 		}
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPut:
@@ -715,6 +739,9 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		// Любое успешное сохранение через UI помечает конфиг как
+		// инициализированный — это и есть сигнал "admin осознанно настроил сервер".
+		cfg.Initialized = true
 		updatedBy := "admin"
 		kind, err := oAdmin.serverManager.apply(r.Context(), cfg, updatedBy)
 		if err != nil {

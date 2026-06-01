@@ -64,6 +64,14 @@ func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
 		return
 	}
+	// Гейт: если модуль server-config включён и admin ещё не сохранял
+	// настройки через UI — блокируем создание (defaults на диске нужны
+	// только чтобы openvpn-сервер стартовал, это не означает что admin
+	// согласен с этими параметрами).
+	if oAdmin.serverConfigStore != nil && !oAdmin.serverConfigStore.snapshot().Initialized {
+		http.Error(w, `{"error":"server not initialized — configure server in UI first"}`, http.StatusPreconditionFailed)
+		return
+	}
 	var req usernamePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -88,6 +96,12 @@ func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Reques
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
+		return
+	}
+	// Ротация выпускает новый сертификат, поэтому блокируется тем же
+	// гейтом что и создание пользователя.
+	if oAdmin.serverConfigStore != nil && !oAdmin.serverConfigStore.snapshot().Initialized {
+		http.Error(w, `{"error":"server not initialized — configure server in UI first"}`, http.StatusPreconditionFailed)
 		return
 	}
 	var req usernamePasswordRequest

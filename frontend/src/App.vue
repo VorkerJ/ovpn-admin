@@ -5,6 +5,7 @@ import { useToast } from '@/composables/useToast'
 import AppHeader from '@/components/AppHeader.vue'
 import StatCards from '@/components/StatCards.vue'
 import UsersTable from '@/components/UsersTable.vue'
+import { AlertTriangle } from 'lucide-vue-next'
 import Toast from '@/components/ui/Toast.vue'
 import AddUserModal from '@/components/modals/AddUserModal.vue'
 import DeleteUserModal from '@/components/modals/DeleteUserModal.vue'
@@ -56,6 +57,9 @@ function handleLogin() {
 const users = ref([])
 const serverRole = ref('master')
 const modulesEnabled = ref([])
+// serverInitialized — admin сохранял настройки сервера через UI хотя бы раз.
+// До этого создание/ротация пользователей заблокировано на бэкенде (412).
+const serverInitialized = ref(true)
 const lastSync = ref('')
 
 const activeTab = ref('users')
@@ -125,6 +129,9 @@ async function loadSettings() {
   const settings = await fetchServerSettings()
   serverRole.value = settings.serverRole
   modulesEnabled.value = settings.modules
+  // Если бэкенд не вернул поле (старый билд) — считаем инициализированным,
+  // чтобы не блокировать пользователя на ровном месте.
+  serverInitialized.value = settings.serverInitialized !== false
   if (settings.serverRole === 'slave') {
     lastSync.value = await fetchLastSync()
   }
@@ -171,7 +178,13 @@ async function submitAddUser({ username, password }) {
     closeModal('addUser')
     loadUsers()
   } catch (e) {
-    modalErrors.value.addUser = e.response?.data || 'Ошибка создания'
+    if (e.response?.status === 412) {
+      // Backend гейт — обновим локальный флаг и покажем понятное сообщение.
+      serverInitialized.value = false
+      modalErrors.value.addUser = 'Сервер ещё не настроен. Откройте вкладку «Сервер» и сохраните конфигурацию.'
+    } else {
+      modalErrors.value.addUser = e.response?.data || 'Ошибка создания'
+    }
   } finally {
     modalSubmitting.value.addUser = false
   }
@@ -199,7 +212,12 @@ async function submitRotateUser({ username, password }) {
     closeModal('rotateUser')
     loadUsers()
   } catch (e) {
-    modalErrors.value.rotateUser = e.response?.data?.message || 'Ошибка ротации'
+    if (e.response?.status === 412) {
+      serverInitialized.value = false
+      modalErrors.value.rotateUser = 'Сервер ещё не настроен. Откройте вкладку «Сервер» и сохраните конфигурацию.'
+    } else {
+      modalErrors.value.rotateUser = e.response?.data?.message || 'Ошибка ротации'
+    }
   } finally {
     modalSubmitting.value.rotateUser = false
   }
@@ -241,6 +259,7 @@ async function submitCcd(ccd) {
     <AppHeader
       :server-role="serverRole"
       :last-sync="lastSync"
+      :server-initialized="serverInitialized"
       @add-user="openModal('addUser')"
       @open-mfa="mfaModalOpen = true"
       @logout="handleLogout"
@@ -250,6 +269,20 @@ async function submitCcd(ccd) {
 
     <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
       <template v-if="activeTab === 'users'">
+        <div
+          v-if="!serverInitialized"
+          class="rounded-md bg-amber-500/10 border border-amber-500/30 px-4 py-3 flex items-start gap-2"
+          data-testid="server-not-initialized-banner"
+        >
+          <AlertTriangle :size="16" class="text-amber-500 mt-0.5 shrink-0" />
+          <div class="text-sm">
+            <p class="font-medium">Сервер не настроен</p>
+            <p class="text-muted-foreground">
+              Откройте вкладку «Сервер», проверьте настройки и нажмите «Сохранить». До этого создание пользователей заблокировано.
+            </p>
+          </div>
+        </div>
+
         <div>
           <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Обзор</p>
           <StatCards :users="users" />
@@ -261,6 +294,7 @@ async function submitCcd(ccd) {
             :users="users"
             :server-role="serverRole"
             :modules-enabled="modulesEnabled"
+            :server-initialized="serverInitialized"
             @revoke="handleRevoke"
             @unrevoke="handleUnrevoke"
             @rotate="(u) => openModal('rotateUser', u)"
@@ -275,7 +309,7 @@ async function submitCcd(ccd) {
         <CommonRoutesView :server-role="serverRole" />
       </template>
       <template v-else-if="activeTab === 'server-config'">
-        <ServerConfigView :server-role="serverRole" />
+        <ServerConfigView :server-role="serverRole" @saved="loadSettings" />
       </template>
     </main>
 

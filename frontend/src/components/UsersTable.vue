@@ -9,6 +9,9 @@ const props = defineProps({
   users: { type: Array, default: () => [] },
   serverRole: { type: String, default: 'master' },
   modulesEnabled: { type: Array, default: () => [] },
+  // serverInitialized — пробрасывается ниже в ActionsMenu чтобы при необходимости
+  // визуально приглушить «Ротация» (бэкенд всё равно вернёт 412).
+  serverInitialized: { type: Boolean, default: true },
 })
 
 const emit = defineEmits([

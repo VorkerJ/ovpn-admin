@@ -334,17 +334,45 @@ func CacheControlWrapper(h http.Handler) http.Handler {
 	})
 }
 
+type serverSettingsResponse struct {
+	Status            string   `json:"status"`
+	ServerRole        string   `json:"serverRole"`
+	Modules           []string `json:"modules"`
+	ServerInitialized bool     `json:"serverInitialized"`
+}
+
 func (oAdmin *OvpnAdmin) serverSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	enabledModules, enabledModulesErr := json.Marshal(oAdmin.modules)
-	if enabledModulesErr != nil {
-		log.Errorln(enabledModulesErr)
+
+	// Если модуль server-config отключён — гейт неприменим, считаем
+	// сервер всегда инициализированным (поведение как до фичи).
+	initialized := true
+	if oAdmin.serverConfigStore != nil {
+		initialized = oAdmin.serverConfigStore.snapshot().Initialized
 	}
-	fmt.Fprintf(w, `{"status":"ok", "serverRole": "%s", "modules": %s }`, oAdmin.role, string(enabledModules))
+
+	modules := oAdmin.modules
+	if modules == nil {
+		modules = []string{}
+	}
+	resp := serverSettingsResponse{
+		Status:            "ok",
+		ServerRole:        oAdmin.role,
+		Modules:           modules,
+		ServerInitialized: initialized,
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		log.Errorln(err)
+		http.Error(w, `{"status":"error"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
 }
 
 func getOvpnCaCertExpireDate() time.Time {

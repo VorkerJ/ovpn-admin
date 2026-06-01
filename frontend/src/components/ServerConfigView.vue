@@ -15,6 +15,10 @@ const props = defineProps({
   serverRole: { type: String, default: 'master' },
 })
 
+// saved — успешное сохранение конфига; App.vue использует это чтобы
+// перечитать /api/server/settings и убрать баннер "сервер не настроен".
+const emit = defineEmits(['saved'])
+
 const cfg = ref(null)
 const dcoAvailable = ref(false)
 const loading = ref(false)
@@ -54,12 +58,13 @@ async function save() {
   try {
     const r = await updateServerConfig(cfg.value)
     cfg.value = r.config
+    emit('saved')
     if (r.reload_kind === 'hard') {
       notify('Сохранено. OpenVPN перезапущен — клиенты переподключатся.', 'success')
     } else if (r.reload_kind === 'soft') {
       notify('Сохранено. Изменения применены без рестарта.', 'success')
     } else {
-      notify('Изменений нет', 'default')
+      notify('Настройки сохранены.', 'success')
     }
   } catch (e) {
     notify(`Ошибка: ${e.response?.data || e.message}`, 'destructive')
