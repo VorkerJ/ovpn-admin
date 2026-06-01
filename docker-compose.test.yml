@@ -37,7 +37,7 @@ services:
       pki-init:
         condition: service_completed_successfully
     ports:
-      - "8088:8080"
+      - "127.0.0.1:8088:8080"
     environment:
       OVPN_NETWORK: "192.168.100.0/24"
       OVPN_CCD: "true"

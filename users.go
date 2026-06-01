@@ -54,12 +54,24 @@ func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request)
 	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 
+	// Storage refresh failures should not block the response — the cached
+	// client list is still useful for read-only display and panicking would
+	// log out the admin for no actionable reason.
 	if err := oAdmin.store.UpdateIndexTxtOnDisk(); err != nil {
-		log.Errorln(err)
+		log.Errorf("userListHandler: UpdateIndexTxtOnDisk: %v", err)
 	}
 	oAdmin.clients = oAdmin.usersList()
+	if oAdmin.clients == nil {
+		oAdmin.clients = []OpenvpnClient{}
+	}
 
-	usersList, _ := json.Marshal(oAdmin.clients)
+	w.Header().Set("Content-Type", "application/json")
+	usersList, err := json.Marshal(oAdmin.clients)
+	if err != nil {
+		log.Errorf("userListHandler: marshal: %v", err)
+		fmt.Fprint(w, "[]")
+		return
+	}
 	fmt.Fprint(w, string(usersList))
 }
 
@@ -135,7 +147,8 @@ func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Reques
 	}
 	err, msg := oAdmin.userRotate(req.Username, req.Password)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Errorf("userRotate: %v", err)
+		http.Error(w, `{"error":"failed to rotate user"}`, http.StatusBadRequest)
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, msg)
@@ -159,7 +172,8 @@ func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Reques
 	}
 	err, msg := oAdmin.userDelete(req.Username)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Errorf("userDelete: %v", err)
+		http.Error(w, `{"error":"failed to delete user"}`, http.StatusBadRequest)
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, msg)
@@ -183,7 +197,8 @@ func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Reques
 	}
 	err, msg := oAdmin.userRevoke(req.Username)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Errorf("userRevoke: %v", err)
+		http.Error(w, `{"error":"failed to revoke user"}`, http.StatusBadRequest)
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, msg)
@@ -207,7 +222,8 @@ func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Requ
 	}
 	err, msg := oAdmin.userUnrevoke(req.Username)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Errorf("userUnrevoke: %v", err)
+		http.Error(w, `{"error":"failed to unrevoke user"}`, http.StatusBadRequest)
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, msg)
@@ -231,13 +247,20 @@ func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *htt
 	}
 	if *authByPassword {
 		err, msg := oAdmin.userChangePassword(req.Username, req.Password)
+		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
+			log.Errorf("userChangePassword: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, `{"status":"error", "message": "%s"}`, msg)
-
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":  "error",
+				"message": msg,
+			})
 		} else {
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, `{"status":"ok", "message": "%s"}`, msg)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":  "ok",
+				"message": msg,
+			})
 		}
 	} else {
 		http.Error(w, `{"status":"error"}`, http.StatusNotImplemented)
@@ -279,11 +302,17 @@ func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Re
 }
 
 func validateUsername(username string) error {
+	if username == "" || username == "." || username == ".." {
+		return errors.New("Имя пользователя не может быть пустым или состоять только из точек")
+	}
+	if strings.Contains(username, "/") || strings.Contains(username, "\\") {
+		return errors.New("Имя пользователя не может содержать слэши")
+	}
 	var validUsername = regexp.MustCompile(usernameRegexp)
 	if validUsername.MatchString(username) {
 		return nil
 	} else {
-		return errors.New("Имя пользователя может содержать только буквы, цифры и символы: _ . - @")
+		return errors.New("Имя пользователя должно начинаться с буквы/цифры/_/@, длиной до 63 символов, может содержать буквы, цифры и символы: _ . - @")
 	}
 }
 

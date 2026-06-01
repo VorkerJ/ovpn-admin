@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	usernameRegexp         = `^([a-zA-Z0-9_.\-@])+$`
+	usernameRegexp         = `^[a-zA-Z0-9_@][a-zA-Z0-9_.\-@]{0,62}$`
 	passwordMinLength      = 6
 	certsArchiveFileName   = "certs.tar.gz"
 	ccdArchiveFileName     = "ccd.tar.gz"
@@ -73,6 +73,7 @@ var (
 	clientCertExpirationDays = kingpin.Flag("client-cert.expiration-days", "Expiration period of OpenVPN client certificates in days, the period will shrink automatically to the CA expiration period").Default("3650").Envar("CLIENT_CERT_EXPIRATION_DAYS").String()
 	adminHtpasswdFile        = kingpin.Flag("admin.htpasswd-file", "path to htpasswd file with admin UI credentials; if empty, a random password is generated").Default("").Envar("ADMIN_HTPASSWD_FILE").String()
 	commonRoutesEnabled      = kingpin.Flag("common-routes", "enable common routes feature").Default("true").Envar("OVPN_COMMON_ROUTES").Bool()
+	insecureCookies          = kingpin.Flag("insecure-cookies", "disable Secure flag on session cookies (DEV ONLY — never use in production)").Default("false").Envar("OVPN_INSECURE_COOKIES").Bool()
 
 	serverConfigEnabled = kingpin.Flag("server-config",
 		"enable editable server config UI feature").
@@ -86,6 +87,10 @@ var (
 		Default("true").Envar("OVPN_MFA").Bool()
 	mfaDBPath = kingpin.Flag("mfa.db-path", "path to MFA secrets JSON file").
 		Default("").Envar("OVPN_MFA_DB_PATH").String()
+
+	trustedProxiesFlag = kingpin.Flag("trusted-proxies",
+		"comma-separated CIDRs or IPs of trusted reverse proxies (X-Forwarded-For honored)").
+		Default("").Envar("OVPN_TRUSTED_PROXIES").String()
 
 	firewallEnabled = kingpin.Flag("firewall",
 		"enable per-client iptables enforcement").
@@ -141,6 +146,15 @@ func main() {
 
 	initAuth()
 
+	if *insecureCookies {
+		log.Warn("SECURITY: --insecure-cookies enabled — session cookies will be transmitted over plain HTTP. Use ONLY for local development.")
+	}
+
+	setTrustedProxies(*trustedProxiesFlag)
+	if len(trustedProxies) > 0 {
+		log.Infof("Trusted proxies: %v (X-Forwarded-For will be honored for rate limiting)", trustedProxies)
+	}
+
 	if *indexTxtPath == "" {
 		*indexTxtPath = *easyrsaDirPath + "/pki/index.txt"
 	}
@@ -180,15 +194,25 @@ func main() {
 
 	if *mfaEnabled {
 		mfaPath := *mfaDBPath
+		fallbackToCwd := false
 		if mfaPath == "" {
 			if *adminHtpasswdFile != "" {
 				mfaPath = filepath.Join(filepath.Dir(*adminHtpasswdFile), "_mfa_secrets.json")
 			} else {
+				// CWD-relative is unpredictable: where ovpn-admin is started
+				// from may not be stable across restarts (systemd, docker,
+				// foreground), and a hijacked MFA store is catastrophic.
+				// We keep the legacy default to avoid breaking existing
+				// deployments, but warn loudly.
 				mfaPath = "./mfa_secrets.json"
+				fallbackToCwd = true
 			}
 		}
 		ovpnAdmin.mfaStore = newMfaStore(mfaPath)
 		log.Infof("MFA: enabled, secrets at %s", mfaPath)
+		if fallbackToCwd {
+			log.Warnf("MFA: using CWD-relative secrets path %s — set --mfa.db-path or --admin.htpasswd-file to pin a stable absolute path", mfaPath)
+		}
 	}
 
 	for _, mgmtInterface := range *mgmtAddress {
@@ -359,7 +383,8 @@ func main() {
 
 	// Public auth endpoints
 	http.HandleFunc(*listenBaseUrl+"api/login", ovpnAdmin.loginHandler)
-	http.HandleFunc(*listenBaseUrl+"api/logout", ovpnAdmin.requireAuth(ovpnAdmin.logoutHandler))
+	// Logout is public so a stale/invalid cookie can still be cleared.
+	http.HandleFunc(*listenBaseUrl+"api/logout", ovpnAdmin.logoutHandler)
 	http.HandleFunc(*listenBaseUrl+"api/auth/check", ovpnAdmin.requireAuth(ovpnAdmin.authCheckHandler))
 
 	// MFA endpoints

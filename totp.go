@@ -1,9 +1,13 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -19,11 +23,76 @@ import (
 
 // ── MFA Store ────────────────────────────────────────────────────────────────
 
+// mfaRecord represents a single user's MFA state on disk.
+//
+// Version semantics:
+//
+//	0 — legacy plaintext (base32) Secret. Migrated to v1 on first read.
+//	1 — Secret holds AES-GCM ciphertext, base64-RawURL-encoded.
+//
+// LastUsedCode / LastUsedAt implement TOTP replay protection: the same
+// 6-digit code submitted twice within 90s is rejected, even though
+// pquerna/otp would otherwise accept it during its validity window.
 type mfaRecord struct {
-	Secret      string   `json:"secret"`
-	Enabled     bool     `json:"enabled"`
-	BackupCodes []string `json:"backup_codes"`
-	CreatedAt   string   `json:"created_at"`
+	Secret       string   `json:"secret"`
+	Enabled      bool     `json:"enabled"`
+	BackupCodes  []string `json:"backup_codes"`
+	CreatedAt    string   `json:"created_at"`
+	Version      int      `json:"version,omitempty"`
+	LastUsedCode string   `json:"last_used_code,omitempty"`
+	LastUsedAt   int64    `json:"last_used_at,omitempty"`
+}
+
+// ── Secret encryption (AES-GCM) ──────────────────────────────────────────────
+
+// mfaEncKey derives a 256-bit AES key from the session signing key.
+// Domain-separated from session HMACs via the literal prefix so the same
+// underlying key material cannot be misused across contexts.
+func mfaEncKey() []byte {
+	s := sessionSecret()
+	h := sha256.Sum256([]byte("ovpn-admin-mfa-encryption-v1:" + s))
+	return h[:]
+}
+
+func encryptSecret(plaintext string) (string, error) {
+	block, err := aes.NewCipher(mfaEncKey())
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	ct := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.RawURLEncoding.EncodeToString(ct), nil
+}
+
+func decryptSecret(ciphertext string) (string, error) {
+	data, err := base64.RawURLEncoding.DecodeString(ciphertext)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(mfaEncKey())
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(data) < gcm.NonceSize() {
+		return "", fmt.Errorf("ciphertext too short")
+	}
+	nonce, ct := data[:gcm.NonceSize()], data[gcm.NonceSize():]
+	pt, err := gcm.Open(nil, nonce, ct, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(pt), nil
 }
 
 type mfaStore struct {
@@ -50,9 +119,33 @@ func (s *mfaStore) load() {
 		return // file doesn't exist yet — that's fine
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := json.Unmarshal(raw, &s.data); err != nil {
 		log.Warnf("mfaStore: failed to parse %s: %v", s.path, err)
+		s.mu.Unlock()
+		return
+	}
+
+	// One-shot migration: v0 records hold the base32 secret in plaintext.
+	// Re-encrypt under the current key and bump to v1 so future loads
+	// take the fast path.
+	migrated := false
+	for user, rec := range s.data {
+		if rec.Version == 0 && rec.Secret != "" {
+			enc, err := encryptSecret(rec.Secret)
+			if err != nil {
+				log.Warnf("mfaStore: failed to migrate secret for %s: %v", user, err)
+				continue
+			}
+			rec.Secret = enc
+			rec.Version = 1
+			s.data[user] = rec
+			migrated = true
+		}
+	}
+	s.mu.Unlock()
+	if migrated {
+		s.save()
+		log.Infof("mfaStore: migrated plaintext secrets to AES-GCM (v1)")
 	}
 }
 
@@ -77,14 +170,39 @@ func (s *mfaStore) save() {
 	}
 }
 
+// get returns a record with the Secret field DECRYPTED in memory. Callers
+// (verifyTOTPCode etc.) work with plaintext base32; the encrypted form
+// never leaves this file.
 func (s *mfaStore) get(username string) (mfaRecord, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	rec, ok := s.data[username]
-	return rec, ok
+	s.mu.RUnlock()
+	if !ok {
+		return mfaRecord{}, false
+	}
+	if rec.Version >= 1 && rec.Secret != "" {
+		pt, err := decryptSecret(rec.Secret)
+		if err != nil {
+			log.Errorf("mfaStore: decrypt failed for %s: %v", username, err)
+			return mfaRecord{}, false
+		}
+		rec.Secret = pt
+	}
+	return rec, true
 }
 
+// set accepts a record whose Secret field is plaintext base32. It encrypts
+// the secret before persisting; callers must never see ciphertext.
 func (s *mfaStore) set(username string, rec mfaRecord) {
+	if rec.Secret != "" {
+		enc, err := encryptSecret(rec.Secret)
+		if err != nil {
+			log.Errorf("mfaStore: encrypt failed for %s: %v", username, err)
+			return
+		}
+		rec.Secret = enc
+		rec.Version = 1
+	}
 	s.mu.Lock()
 	s.data[username] = rec
 	s.mu.Unlock()

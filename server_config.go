@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -301,6 +302,11 @@ func validateDirectiveLine(line string) error {
 	if strings.ContainsAny(line, "\n\r") {
 		return fmt.Errorf("directive must not contain newline characters")
 	}
+	// Double quotes would let an operator break out of any push "..." that
+	// downstream templates wrap around the line. Reject defensively.
+	if strings.Contains(line, `"`) {
+		return fmt.Errorf("directive must not contain double quotes")
+	}
 	for _, prefix := range allowedDirectivePrefixes {
 		if line == strings.TrimSpace(prefix) || strings.HasPrefix(line, prefix) {
 			return nil
@@ -533,7 +539,9 @@ func saveServerConfigToFile(path string, cfg ServerConfig) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// 0600 — server config JSON is ovpn-admin's internal state, not the
+	// rendered server.conf that openvpn consumes.
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -711,11 +719,33 @@ func (m *serverManager) persist(cfg ServerConfig) error {
 }
 
 func writeFileAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// Use a unique tmp name in the destination directory to avoid races between
+	// concurrent writers clobbering each other's `path + ".tmp"` and to ensure
+	// rename() is atomic (same filesystem). 0640 — rendered server.conf may
+	// include push-extra/custom directives that leak topology. Owner
+	// (ovpn-admin) writes; group (e.g. openvpn) reads; world has no access.
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, base+".tmp.*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	// Best-effort cleanup if anything below fails — Remove of an already-renamed
+	// file is harmless (ignored ENOENT).
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o640); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -736,7 +766,8 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 		}
 		var cfg ServerConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			log.Debugf("server-config: decode body: %v", err)
+			http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
 			return
 		}
 		// Любое успешное сохранение через UI помечает конфиг как
@@ -745,7 +776,8 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 		updatedBy := "admin"
 		kind, err := oAdmin.serverManager.apply(r.Context(), cfg, updatedBy)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			log.Errorf("server-config: apply: %v", err)
+			http.Error(w, `{"error":"failed to apply server config"}`, http.StatusBadRequest)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -765,7 +797,8 @@ func (oAdmin *OvpnAdmin) serverConfigTestHandler(w http.ResponseWriter, r *http.
 	}
 	var cfg ServerConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		log.Debugf("server-config-test: decode body: %v", err)
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
 		return
 	}
 	if err := validateServerConfig(cfg); err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/google/uuid"
@@ -10,6 +11,18 @@ import (
 
 	"ovpn-admin/internal/storage"
 )
+
+// runEasyrsa invokes the easyrsa binary directly via exec.Command, with the
+// working directory set to easyrsaDirPath. Arguments are passed as argv, so
+// shell metacharacters in commonName cannot lead to command injection — unlike
+// the legacy runBash path that interpolated into a `cd && easyrsa ...` shell
+// script.
+func runEasyrsa(workDir, easyrsaBin string, args ...string) (string, error) {
+	cmd := exec.Command(easyrsaBin, args...)
+	cmd.Dir = workDir
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
 
 // filesystemStore adapts the existing easyrsa CLI + flat-file operations to the
 // storage.Store interface.
@@ -24,16 +37,27 @@ type filesystemStore struct {
 var _ storage.Store = (*filesystemStore)(nil)
 
 func (s *filesystemStore) BuildClient(commonName string) error {
-	o := runBash(fmt.Sprintf("cd %s && %s --batch build-client-full %s nopass 1>/dev/null",
-		s.easyrsaDirPath, s.easyrsaBinPath, commonName))
-	log.Debug(o)
+	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "build-client-full", commonName, "nopass")
+	log.Debug(out)
+	if err != nil {
+		return fmt.Errorf("easyrsa build-client-full %s: %w: %s", commonName, err, out)
+	}
 	return nil
 }
 
 func (s *filesystemStore) RevokeClient(commonName string) error {
-	o := runBash(fmt.Sprintf("cd %[1]s && echo yes | %[2]s revoke %[3]s 1>/dev/null && %[2]s gen-crl 1>/dev/null",
-		s.easyrsaDirPath, s.easyrsaBinPath, commonName))
-	log.Debugln(o)
+	// --batch suppresses the interactive "Continue with revocation: yes/no?"
+	// prompt that previously required `echo yes |` shell piping.
+	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "revoke", commonName)
+	log.Debugln(out)
+	if err != nil {
+		return fmt.Errorf("easyrsa revoke %s: %w: %s", commonName, err, out)
+	}
+	out, err = runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl")
+	log.Debugln(out)
+	if err != nil {
+		return fmt.Errorf("easyrsa gen-crl: %w: %s", err, out)
+	}
 	return nil
 }
 
@@ -76,7 +100,9 @@ func (s *filesystemStore) UnrevokeClient(commonName string) error {
 					log.Error(err)
 				}
 
-				_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null", s.easyrsaDirPath, s.easyrsaBinPath))
+				if crlOut, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl"); err != nil {
+					log.Warnf("unrevoke: easyrsa gen-crl: %v: %s", err, crlOut)
+				}
 
 				break
 			}
@@ -122,9 +148,11 @@ func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 	}
 
 	// 3. Build a new certificate (PKI only — no openvpn-user password handling)
-	o := runBash(fmt.Sprintf("cd %s && %s --batch build-client-full %s nopass 1>/dev/null",
-		s.easyrsaDirPath, s.easyrsaBinPath, commonName))
-	log.Debug(o)
+	out, buildErr := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "build-client-full", commonName, "nopass")
+	log.Debug(out)
+	if buildErr != nil {
+		return fmt.Errorf("rotate: easyrsa build-client-full %s: %w: %s", commonName, buildErr, out)
+	}
 
 	// 4. Swap old and new entries so the new cert occupies the old position
 	usersFromIndexTxt = indexTxtParser(fRead(s.indexTxtPath))
@@ -143,7 +171,9 @@ func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 	}
 
 	// 5. Regenerate CRL
-	_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null", s.easyrsaDirPath, s.easyrsaBinPath))
+	if crlOut, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl"); err != nil {
+		log.Warnf("rotate: easyrsa gen-crl: %v: %s", err, crlOut)
+	}
 
 	return nil
 }
@@ -173,7 +203,9 @@ func (s *filesystemStore) DeleteClient(commonName string) error {
 		}
 	}
 
-	_ = runBash(fmt.Sprintf("cd %s && %s gen-crl 1>/dev/null ", s.easyrsaDirPath, s.easyrsaBinPath))
+	if crlOut, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl"); err != nil {
+		log.Warnf("delete: easyrsa gen-crl: %v: %s", err, crlOut)
+	}
 
 	return nil
 }

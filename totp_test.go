@@ -15,9 +15,17 @@ import (
 )
 
 func init() {
-	// Tests need htpasswdUsers initialized for sessionSecret() to work.
+	// Tests need htpasswdUsers initialized for validateCredentials() to work,
+	// and a sessionSigningKey for sessionSecret() / signSession() to work.
 	if htpasswdUsers == nil {
 		htpasswdUsers = map[string]string{"testuser": "$2a$10$dummy"}
+	}
+	if sessionSigningKey == nil {
+		sessionSigningKey = make([]byte, 64)
+		// Deterministic for tests — content doesn't matter, only that it's set.
+		for i := range sessionSigningKey {
+			sessionSigningKey[i] = byte(i)
+		}
 	}
 }
 

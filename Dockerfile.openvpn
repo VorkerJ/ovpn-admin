@@ -1,8 +1,26 @@
 FROM alpine:3.23
 ARG TARGETARCH
-RUN apk add --update bash openvpn easy-rsa iptables  && \
+
+# Pin openvpn-user version and verify SHA256 of the downloaded tarball.
+# When bumping OPENVPN_USER_VERSION, recompute the per-arch SHA256:
+#   curl -sL https://github.com/pashcovich/openvpn-user/releases/download/<ver>/openvpn-user-linux-<arch>.tar.gz | sha256sum
+ENV OPENVPN_USER_VERSION=v1.0.4
+ENV OPENVPN_USER_SHA256_AMD64=7abdd875142db72dcb985c1a7ec59b68a4bf40dea6aeb26ee37f582ee752e5d3
+ENV OPENVPN_USER_SHA256_ARM64=0bd080287c8e213b686a1db4d9981a648310914ab2e9e46309259b7b7d63561b
+ENV OPENVPN_USER_SHA256_ARM=38c61b3f5883af9796f74b8de3949968fb5e3084f2dc4e93bec82f79d9902642
+
+RUN apk add --update bash openvpn easy-rsa iptables && \
     ln -s /usr/share/easy-rsa/easyrsa /usr/local/bin && \
-    wget https://github.com/pashcovich/openvpn-user/releases/download/v1.0.4/openvpn-user-linux-${TARGETARCH}.tar.gz -O - | tar xz -C /usr/local/bin && \
+    case "${TARGETARCH}" in \
+      amd64) EXPECTED_SHA="${OPENVPN_USER_SHA256_AMD64}" ;; \
+      arm64) EXPECTED_SHA="${OPENVPN_USER_SHA256_ARM64}" ;; \
+      arm)   EXPECTED_SHA="${OPENVPN_USER_SHA256_ARM}"   ;; \
+      *)     echo "unsupported TARGETARCH=${TARGETARCH}" >&2 && exit 1 ;; \
+    esac && \
+    wget -q "https://github.com/pashcovich/openvpn-user/releases/download/${OPENVPN_USER_VERSION}/openvpn-user-linux-${TARGETARCH}.tar.gz" -O /tmp/ou.tgz && \
+    echo "${EXPECTED_SHA}  /tmp/ou.tgz" | sha256sum -c - && \
+    tar xz -C /usr/local/bin -f /tmp/ou.tgz && \
+    rm /tmp/ou.tgz && \
     rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 RUN if [ -f "/usr/local/bin/openvpn-user-${TARGETARCH}" ]; then ln -s /usr/local/bin/openvpn-user-${TARGETARCH} /usr/local/bin/openvpn-user; fi
 COPY setup/ /etc/openvpn/setup

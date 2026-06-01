@@ -32,6 +32,13 @@ ovpnAdmin:
   #         kubectl create secret generic ovpn-admin-ui-auth --from-file=htpasswd=/tmp/htpasswd
   adminHtpasswdSecret: ""
 
+  # OpenVPN Data Channel Offload (DCO) — kernel-module detection.
+  # When enabled, the pod mounts /lib/modules from the host (read-only).
+  # Leave disabled unless you actually need DCO; the hostPath is a known
+  # node-isolation weak point and is not required for normal operation.
+  dco:
+    enabled: false
+
   # Server-side per-client route enforcement via iptables.
   # When enabled, ovpn-admin installs FORWARD rules so that each connected client
   # can only reach destinations explicitly allowed via:

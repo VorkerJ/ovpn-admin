@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -185,10 +184,10 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Rate-limit by remote IP — disabling MFA is a high-value target for an
-	// attacker who has already hijacked a session cookie.
-	ip := strings.Split(r.RemoteAddr, ":")[0]
-	if !checkLoginRateLimit(ip) {
+	// Rate-limit by client IP and username — disabling MFA is a high-value
+	// target for an attacker who has already hijacked a session cookie.
+	ip := clientIP(r)
+	if !checkLoginRateLimit(ip, user) {
 		http.Error(w, `{"error":"too many attempts"}`, http.StatusTooManyRequests)
 		return
 	}
@@ -206,7 +205,7 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 
 	// Re-authenticate with the current password before tearing down MFA.
 	if !validateCredentials(user, req.Password) {
-		recordLoginFailure(ip)
+		recordLoginFailure(ip, user)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":"invalid credentials"}`)
@@ -224,7 +223,7 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 	// Accept TOTP code or backup code
 	codeValid := verifyTOTPCode(rec.Secret, req.Code) || verifyBackupCode(req.Code, rec.BackupCodes)
 	if !codeValid {
-		recordLoginFailure(ip)
+		recordLoginFailure(ip, user)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":"invalid code"}`)
@@ -245,7 +244,7 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	ip := strings.Split(r.RemoteAddr, ":")[0]
+	ip := clientIP(r)
 	if !checkLoginRateLimit(ip) {
 		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
 		return
@@ -271,10 +270,16 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Now that we know the username, apply the per-user rate limit too.
+	if !checkLoginRateLimit(ip, user) {
+		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	// Single-use: mark the jti as consumed so the same intermediate token
 	// cannot be replayed (e.g. after a leaked browser history entry).
 	if !consumeMfaJti(jti, time.Now().Add(mfaTokenTTL).Unix()) {
-		recordLoginFailure(ip)
+		recordLoginFailure(ip, user)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":"MFA token already used"}`)
@@ -282,7 +287,7 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	if oAdmin.mfaStore == nil {
-		recordLoginFailure(ip)
+		recordLoginFailure(ip, user)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":"MFA is not enabled on this server"}`)
@@ -291,10 +296,22 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 
 	rec, exists := oAdmin.mfaStore.get(user)
 	if !exists || !rec.Enabled {
-		recordLoginFailure(ip)
+		recordLoginFailure(ip, user)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":"MFA is not configured for this user"}`)
+		return
+	}
+
+	// Replay protection: reject any TOTP code we already accepted for this
+	// user within the validity window (~90s covers the standard ±1 step
+	// tolerance pquerna/otp uses). Backup codes are excluded because they
+	// are one-shot via consumeBackupCode already.
+	if rec.LastUsedCode != "" && rec.LastUsedCode == req.Code && time.Now().Unix()-rec.LastUsedAt < 90 {
+		recordLoginFailure(ip, user)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"code already used"}`)
 		return
 	}
 
@@ -309,7 +326,7 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	if !codeValid {
-		recordLoginFailure(ip)
+		recordLoginFailure(ip, user)
 		time.Sleep(500 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -317,14 +334,19 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Consume backup code if used
+	// Persist code usage state. For TOTP, remember the code for replay
+	// rejection; for backup codes, consume from the list so they can't be
+	// reused.
 	if backupUsed {
 		rec.BackupCodes = consumeBackupCode(req.Code, rec.BackupCodes)
-		oAdmin.mfaStore.set(user, rec)
 		log.Infof("MFA: user %s used a backup code (%d remaining)", user, len(rec.BackupCodes))
+	} else {
+		rec.LastUsedCode = req.Code
+		rec.LastUsedAt = time.Now().Unix()
 	}
+	oAdmin.mfaStore.set(user, rec)
 
-	recordLoginSuccess(ip)
+	recordLoginSuccess(ip, user)
 
 	token := signSession(user)
 	http.SetCookie(w, &http.Cookie{
@@ -332,10 +354,13 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   !*insecureCookies,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"ok":true,"user":"%s"}`, user)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":   true,
+		"user": user,
+	})
 }

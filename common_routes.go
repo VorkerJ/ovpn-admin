@@ -152,11 +152,11 @@ func saveCommonRoutesToFile(path string, cfg CommonRoutesConfig) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	// writeFileAtomic uses a unique tmp file in the same dir, cleans it up on
+	// any failure path, and applies tight permissions. Common-routes is
+	// internal state — slightly stricter perms than the rendered server.conf
+	// aren't required since both files live in the same trust boundary.
+	return writeFileAtomic(path, data)
 }
 
 const commonRoutesSecretName = "ovpn-admin-common-routes"
@@ -334,7 +334,8 @@ func (oAdmin *OvpnAdmin) commonRoutesRefreshHandler(w http.ResponseWriter, r *ht
 func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.Request) {
 	var in CommonRouteEntry
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		log.Debugf("common-routes: decode body: %v", err)
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
 		return
 	}
 	in.ID = uuid.New().String()
@@ -380,7 +381,8 @@ func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.
 func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.Request, id string) {
 	var in CommonRouteEntry
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		log.Debugf("common-routes: decode body: %v", err)
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
 		return
 	}
 	in.ID = id

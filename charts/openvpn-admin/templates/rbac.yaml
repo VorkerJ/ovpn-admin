@@ -16,9 +16,28 @@ metadata:
   labels:
     {{- include "openvpn-admin.labels" . | nindent 4 }}
 rules:
+  # Read/update/patch is scoped to the known, statically-named secrets that
+  # ovpn-admin owns. Per-client cert secrets are created with the dynamic
+  # name pattern openvpn-pki-<serial>; resourceNames does not support
+  # wildcards, so create/list/delete must remain unscoped within this
+  # namespace. We minimize the blast radius by keeping the role
+  # namespace-scoped (Role, not ClusterRole).
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
+    resourceNames:
+      - "openvpn-pki-ca"
+      - "openvpn-pki-server"
+      - "openvpn-pki-dh-and-ta"
+      - "openvpn-pki-crl"
+      - "openvpn-pki-index-txt"
+      - "ovpn-admin-common-routes"
+      - "ovpn-admin-server-config"
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    # No resourceNames possible: client cert secrets use the
+    # dynamic name pattern openvpn-pki-<serial>.
+    verbs: ["create", "list", "delete"]
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list"]

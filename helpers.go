@@ -42,13 +42,17 @@ func runBash(script string) string {
 	return string(stdout)
 }
 
+// fExist returns true only when path exists and is statable. Any other error
+// (permission denied, IO failure, …) is logged at warn level and treated as
+// "doesn't exist" — previously this called log.Fatalf and crashed the daemon
+// on a transient stat failure.
 func fExist(path string) bool {
 	var _, err = os.Stat(path)
 
 	if os.IsNotExist(err) {
 		return false
 	} else if err != nil {
-		log.Fatalf("fExist: %s", err)
+		log.Warnf("fExist(%s): %v", path, err)
 		return false
 	}
 
@@ -79,17 +83,17 @@ func fCreate(path string) error {
 }
 
 func fWrite(path, content string) error {
-	err := ioutil.WriteFile(path, []byte(content), 0644)
-	if err != nil {
-		log.Fatal(err)
+	if err := ioutil.WriteFile(path, []byte(content), 0600); err != nil {
+		log.Errorf("fWrite(%s): %v", path, err)
+		return err
 	}
 	return nil
 }
 
 func fDelete(path string) error {
-	err := os.Remove(path)
-	if err != nil {
-		log.Fatal(err)
+	if err := os.Remove(path); err != nil {
+		log.Errorf("fDelete(%s): %v", path, err)
+		return err
 	}
 	return nil
 }
@@ -275,18 +279,19 @@ func createArchiveFromDir(dir, path string) error {
 	return nil
 }
 
+// extractFromArchive untars a gzipped archive into path. All failure modes
+// return an error to the caller — previously each step called log.Fatal,
+// which crashed the daemon on a malformed sync payload from a master.
 func extractFromArchive(archive, path string) error {
-	// Open the file which will be written into the archive
 	file, err := os.Open(archive)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	// Write file header to the tar archive
 	uncompressedStream, err := gzip.NewReader(file)
 	if err != nil {
-		log.Fatal("extractFromArchive(): NewReader failed")
+		return fmt.Errorf("extractFromArchive: gzip NewReader: %w", err)
 	}
 
 	tarReader := tar.NewReader(uncompressedStream)
@@ -299,7 +304,7 @@ func extractFromArchive(archive, path string) error {
 		}
 
 		if err != nil {
-			log.Fatalf("extractFromArchive: Next() failed: %s", err.Error())
+			return fmt.Errorf("extractFromArchive: tar Next: %w", err)
 		}
 
 		target := filepath.Join(path, header.Name)
@@ -309,22 +314,22 @@ func extractFromArchive(archive, path string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.Mkdir(target, 0755); err != nil {
-				log.Fatalf("extractFromArchive: Mkdir() failed: %s", err.Error())
+			if err := os.Mkdir(target, 0755); err != nil && !os.IsExist(err) {
+				return fmt.Errorf("extractFromArchive: Mkdir(%s): %w", target, err)
 			}
 		case tar.TypeReg:
 			outFile, err := os.Create(target)
 			if err != nil {
-				log.Fatalf("extractFromArchive: Create() failed: %s", err.Error())
+				return fmt.Errorf("extractFromArchive: Create(%s): %w", target, err)
 			}
 			if _, err := io.Copy(outFile, tarReader); err != nil {
-				log.Fatalf("extractFromArchive: Copy() failed: %s", err.Error())
+				outFile.Close()
+				return fmt.Errorf("extractFromArchive: Copy(%s): %w", target, err)
 			}
 			outFile.Close()
 
 		default:
-			log.Fatalf(
-				"extractFromArchive: uknown type: %d in %s", header.Typeflag, header.Name)
+			return fmt.Errorf("extractFromArchive: unknown type %d in %s", header.Typeflag, header.Name)
 		}
 	}
 	return nil

@@ -9,10 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +34,17 @@ var revokedTokens = map[string]int64{}
 var revokedTokensMu sync.Mutex
 var revokedTokensFile string
 
+// sessionSigningKey is a 64-byte random key persisted to disk. It signs
+// session and MFA tokens, and is the input to the MFA-secret encryption key.
+// Decoupled from htpasswd so that a password change does not invalidate
+// every active session globally.
+var sessionSigningKey []byte
+var sessionSigningKeyFile string
+
+// trustedProxies holds CIDRs of reverse proxies whose X-Forwarded-For headers
+// we honor when extracting the real client IP for rate limiting.
+var trustedProxies []string
+
 // ── Login rate limiting ──────────────────────────────────────────────────────
 
 var (
@@ -48,8 +59,10 @@ type loginTracker struct {
 	lockedAt time.Time
 }
 
-func checkLoginRateLimit(ip string) bool {
-	val, _ := loginAttempts.LoadOrStore(ip, &loginTracker{})
+// checkLoginRateLimitKey returns false if the given key (IP or "user:<name>")
+// is currently locked out.
+func checkLoginRateLimitKey(key string) bool {
+	val, _ := loginAttempts.LoadOrStore(key, &loginTracker{})
 	tracker := val.(*loginTracker)
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
@@ -64,20 +77,127 @@ func checkLoginRateLimit(ip string) bool {
 	return true
 }
 
-func recordLoginFailure(ip string) {
-	val, _ := loginAttempts.LoadOrStore(ip, &loginTracker{})
+// checkLoginRateLimit checks both the per-IP and (optionally) per-username
+// trackers. Either one being locked out denies the request — this prevents a
+// single bad IP from locking out an entire user account, while still capping
+// brute force from any one source.
+func checkLoginRateLimit(ip string, usernames ...string) bool {
+	if !checkLoginRateLimitKey(ip) {
+		return false
+	}
+	for _, u := range usernames {
+		if u == "" {
+			continue
+		}
+		if !checkLoginRateLimitKey("user:" + u) {
+			return false
+		}
+	}
+	return true
+}
+
+func bumpFailures(key string) {
+	val, _ := loginAttempts.LoadOrStore(key, &loginTracker{})
 	tracker := val.(*loginTracker)
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	tracker.failures++
 	if tracker.failures >= maxLoginAttempts {
 		tracker.lockedAt = time.Now()
-		log.Warnf("Login rate limit: IP %s locked out for %v after %d failures", ip, loginLockoutDuration, tracker.failures)
+		log.Warnf("Login rate limit: key %s locked out for %v after %d failures", key, loginLockoutDuration, tracker.failures)
 	}
 }
 
-func recordLoginSuccess(ip string) {
+func recordLoginFailure(ip string, usernames ...string) {
+	bumpFailures(ip)
+	for _, u := range usernames {
+		if u != "" {
+			bumpFailures("user:" + u)
+		}
+	}
+}
+
+func recordLoginSuccess(ip string, usernames ...string) {
 	loginAttempts.Delete(ip)
+	for _, u := range usernames {
+		if u != "" {
+			loginAttempts.Delete("user:" + u)
+		}
+	}
+}
+
+// clientIP returns the originating client IP for r. If the connecting peer is
+// a trusted reverse proxy, the leftmost X-Forwarded-For entry is returned;
+// otherwise the direct peer address is used. Loopback is always trusted so
+// SSH-tunnel deployments keep working out of the box.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if isTrustedProxy(host) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			candidate := strings.TrimSpace(parts[0])
+			if candidate != "" {
+				return candidate
+			}
+		}
+	}
+	return host
+}
+
+func isTrustedProxy(ip string) bool {
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return false
+	}
+	if parsedIP.IsLoopback() {
+		return true
+	}
+	for _, entry := range trustedProxies {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if !strings.Contains(entry, "/") {
+			if parsedIP.Equal(net.ParseIP(entry)) {
+				return true
+			}
+			continue
+		}
+		_, network, err := net.ParseCIDR(entry)
+		if err != nil {
+			continue
+		}
+		if network.Contains(parsedIP) {
+			return true
+		}
+	}
+	return false
+}
+
+// setTrustedProxies parses a comma-separated list of CIDRs/IPs and stores
+// them for isTrustedProxy. Invalid entries are logged and skipped — a typo
+// should not bring the server down.
+func setTrustedProxies(spec string) {
+	trustedProxies = nil
+	for _, raw := range strings.Split(spec, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			if _, _, err := net.ParseCIDR(entry); err != nil {
+				log.Warnf("trusted-proxies: ignoring invalid CIDR %q: %v", entry, err)
+				continue
+			}
+		} else if net.ParseIP(entry) == nil {
+			log.Warnf("trusted-proxies: ignoring invalid IP %q", entry)
+			continue
+		}
+		trustedProxies = append(trustedProxies, entry)
+	}
 }
 
 // loadRevokedTokens reads the persisted blacklist from disk, discarding expired entries.
@@ -137,7 +257,32 @@ func initAuth() {
 		revokedTokensFile = "/tmp/.ovpn-admin-session-blacklist.json"
 	}
 
+	// Persistent session signing key — survives restarts and password changes,
+	// rotates only when the file is deleted by the operator.
+	sessionSigningKeyFile = filepath.Join(filepath.Dir(revokedTokensFile), ".session_signing_key")
+	if err := loadOrGenerateSigningKey(); err != nil {
+		log.Fatalf("Failed to init session signing key: %v", err)
+	}
+
 	loadRevokedTokens()
+}
+
+// loadOrGenerateSigningKey loads a 64-byte signing key from disk, or generates
+// and persists a fresh one on first start. Permissions are tightened to 0600
+// on a 0700 directory because the key is equivalent to all active sessions.
+func loadOrGenerateSigningKey() error {
+	if data, err := os.ReadFile(sessionSigningKeyFile); err == nil && len(data) == 64 {
+		sessionSigningKey = data
+		return nil
+	}
+	sessionSigningKey = make([]byte, 64)
+	if _, err := rand.Read(sessionSigningKey); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(sessionSigningKeyFile), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(sessionSigningKeyFile, sessionSigningKey, 0o600)
 }
 
 // loadHtpasswd читает файл формата Apache htpasswd (username:hash, по одной записи на строку).
@@ -257,21 +402,12 @@ func revokeToken(token string) {
 	saveRevokedTokens()
 }
 
-// sessionSecret возвращает секрет для HMAC — хэш всех htpasswd-хэшей.
-// Меняется при изменении паролей, автоматически инвалидируя сессии.
+// sessionSecret returns the HMAC signing key as a base64 string. The key is
+// loaded from disk on startup (or generated on first start), so it survives
+// restarts but is decoupled from htpasswd — changing a password no longer
+// invalidates every session. Rotation is done by deleting the key file.
 func sessionSecret() string {
-	keys := make([]string, 0, len(htpasswdUsers))
-	for u := range htpasswdUsers {
-		keys = append(keys, u)
-	}
-	sort.Strings(keys)
-	var sb strings.Builder
-	for _, u := range keys {
-		sb.WriteString(u)
-		sb.WriteString(htpasswdUsers[u])
-	}
-	sum := sha256.Sum256([]byte(sb.String()))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
+	return base64.RawURLEncoding.EncodeToString(sessionSigningKey)
 }
 
 func computeHMAC(data, secret string) string {
@@ -289,12 +425,7 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := strings.Split(r.RemoteAddr, ":")[0]
-	if !checkLoginRateLimit(ip) {
-		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
-		return
-	}
-
+	ip := clientIP(r)
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -306,8 +437,13 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 	user := req.Username
 	pass := req.Password
 
+	if !checkLoginRateLimit(ip, user) {
+		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	if !validateCredentials(user, pass) {
-		recordLoginFailure(ip)
+		recordLoginFailure(ip, user)
 		time.Sleep(500 * time.Millisecond) // замедление брутфорса
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -315,7 +451,7 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recordLoginSuccess(ip)
+	recordLoginSuccess(ip, user)
 
 	if oAdmin.mfaStore != nil && oAdmin.mfaStore.isEnabled(user) {
 		mfaToken := signMfaToken(user)
@@ -333,16 +469,27 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   !*insecureCookies,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"ok":true,"user":"%s"}`, user)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":   true,
+		"user": user,
+	})
 }
 
 // logoutHandler POST /api/logout
+//
+// Public route (no requireAuth wrapper). If a session cookie is present and
+// parseable we revoke it; the response always clears the cookie so a stale or
+// malformed session does not leave the browser stuck logged in.
 func (oAdmin *OvpnAdmin) logoutHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		revokeToken(cookie.Value)
 	}
@@ -351,6 +498,7 @@ func (oAdmin *OvpnAdmin) logoutHandler(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   !*insecureCookies,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
