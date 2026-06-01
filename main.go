@@ -143,8 +143,12 @@ func main() {
 	log.SetLevel(logLevels[*logLevel])
 	log.SetFormatter(logFormats[*logFormat])
 
-	if *serverRole == "master" && (*masterSyncToken == "" || *masterSyncToken == "VerySecureToken") {
-		log.Fatal("SECURITY: --master.sync-token must be set to a strong random value when role=master. The default 'VerySecureToken' is publicly known and would expose the entire PKI.")
+	// Both master and slave must reject the publicly-known default token.
+	// Master fails because anyone could call /api/data/certs/download with
+	// it; slave fails because it would happily pull a malicious PKI from any
+	// "master" that accepts the same default.
+	if *masterSyncToken == "" || *masterSyncToken == "VerySecureToken" {
+		log.Fatalf("SECURITY: --master.sync-token must be set to a strong random value (role=%s). The default 'VerySecureToken' is publicly known and would expose or poison the entire PKI.", *serverRole)
 	}
 
 	initAuth()

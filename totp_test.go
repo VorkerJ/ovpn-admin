@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -577,4 +578,72 @@ func TestMfaDisable(t *testing.T) {
 	if statusResp["enabled"] != false {
 		t.Errorf("expected enabled:false, got %v", statusResp["enabled"])
 	}
+}
+
+// TestMfaLogin_LockoutSurvivesPasswordReplay — regression for the second-factor
+// brute-force bypass: an attacker who has obtained the password used to be able
+// to keep re-logging in (each /api/login success cleared the rate-limit
+// counters), then guess MFA codes indefinitely without ever tripping lockout.
+//
+// Fix: do NOT call recordLoginSuccess in /api/login when MFA is still pending —
+// the counters must persist until the second factor succeeds.
+func TestMfaLogin_LockoutSurvivesPasswordReplay(t *testing.T) {
+	oAdmin, pass := newTestAdminWithMFA(t)
+
+	// Enable MFA for testadmin
+	key, err := generateTOTPKey("testadmin")
+	if err != nil {
+		t.Fatalf("generateTOTPKey: %v", err)
+	}
+	_, hashedBackup := generateBackupCodes(2)
+	oAdmin.mfaStore.set("testadmin", mfaRecord{
+		Secret:      key.Secret(),
+		Enabled:     true,
+		BackupCodes: hashedBackup,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+	})
+
+	loginAttempts = sync.Map{} // start with a clean rate-limit state
+	ip := "203.0.113.7:54321"
+
+	// Simulate the attack: password OK + wrong MFA code, repeated.
+	// After maxLoginAttempts the user must be locked out — even though every
+	// password step succeeds.
+	for i := 0; i < maxLoginAttempts+2; i++ {
+		// Step 1: password OK
+		body := `{"username":"testadmin","password":"` + pass + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(body))
+		req.RemoteAddr = ip
+		rec := httptest.NewRecorder()
+		oAdmin.loginHandler(rec, req)
+
+		// Once the lockout has triggered, /api/login itself starts returning 429.
+		if rec.Code == http.StatusTooManyRequests {
+			return // success — lockout reached, attacker is shut out
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("iter %d: expected 200 from /api/login, got %d: %s", i, rec.Code, rec.Body.String())
+		}
+		var step1 map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &step1); err != nil {
+			t.Fatalf("iter %d unmarshal: %v", i, err)
+		}
+		mfaToken, _ := step1["mfa_token"].(string)
+		if mfaToken == "" {
+			t.Fatalf("iter %d: expected mfa_token", i)
+		}
+
+		// Step 2: wrong MFA code
+		mfaBody := `{"mfa_token":"` + mfaToken + `","code":"000000"}`
+		req2 := httptest.NewRequest(http.MethodPost, "/api/login/mfa", strings.NewReader(mfaBody))
+		req2.RemoteAddr = ip
+		rec2 := httptest.NewRecorder()
+		oAdmin.mfaLoginHandler(rec2, req2)
+
+		// 401 (bad code) and 429 (locked) are both acceptable transitional states.
+		if rec2.Code != http.StatusUnauthorized && rec2.Code != http.StatusTooManyRequests {
+			t.Fatalf("iter %d: expected 401/429 from /api/login/mfa, got %d", i, rec2.Code)
+		}
+	}
+	t.Fatal("expected lockout to trigger before maxLoginAttempts+2 iterations, but attacker was never throttled — MFA brute-force is unprotected")
 }

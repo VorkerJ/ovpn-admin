@@ -358,6 +358,16 @@ func securityMiddleware(next http.Handler) http.Handler {
 				"form-action 'self'")
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		// Block legacy Flash/Acrobat cross-domain policy lookups (defense in
+		// depth — ovpn-admin never serves a crossdomain.xml, but an
+		// upstream proxy or sibling vhost might).
+		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+		// HSTS: only emit when we expect HTTPS. --insecure-cookies signals an
+		// HTTP-only dev setup, so omitting the header there avoids pinning a
+		// browser to an upstream we don't actually have.
+		if !*insecureCookies {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 			w.Header().Set("Pragma", "no-cache")

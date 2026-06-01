@@ -24,6 +24,13 @@ import (
 const (
 	sessionCookieName = "ovpn_admin_session"
 	sessionTTL        = 12 * time.Hour
+
+	// adminBcryptCost bumps above bcrypt.DefaultCost (10) to align with the
+	// OWASP Password Storage Cheat Sheet recommendation for newly deployed
+	// systems. ~250ms per op on a modern x86 core — acceptable for admin
+	// login frequency and meaningful against offline brute force if the
+	// htpasswd file ever leaks.
+	adminBcryptCost = 12
 )
 
 // htpasswdUsers хранит распарсенные записи: username -> bcrypt hash
@@ -228,7 +235,10 @@ func saveRevokedTokens() {
 	revokedTokensMu.Lock()
 	data, _ := json.Marshal(revokedTokens)
 	revokedTokensMu.Unlock()
-	if err := os.WriteFile(revokedTokensFile, data, 0600); err != nil {
+	// Atomic write — a torn write here corrupts the JSON blacklist; on next
+	// boot loadRevokedTokens would silently lose the entire list, letting
+	// previously-revoked sessions reactivate until their natural TTL expires.
+	if err := writeFileAtomicSecret(revokedTokensFile, data); err != nil {
 		log.Warnf("failed to persist revoked tokens: %v", err)
 	}
 }
@@ -247,7 +257,7 @@ func initAuth() {
 	} else {
 		// Файл не задан — генерируем временный пароль для admin
 		pass := generatePassword(16)
-		hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+		hash, err := bcrypt.GenerateFromPassword([]byte(pass), adminBcryptCost)
 		if err != nil {
 			log.Fatalf("Ошибка генерации пароля: %v", err)
 		}
@@ -296,10 +306,19 @@ func loadOrGenerateSigningKey() error {
 	if err := os.MkdirAll(filepath.Dir(sessionSigningKeyFile), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(sessionSigningKeyFile, sessionSigningKey, 0o600)
+	// Atomic write: a torn write would leave a short file behind, and the
+	// length check in loadOrGenerateSigningKey would refuse to start until
+	// the operator manually deletes the file.
+	return writeFileAtomicSecret(sessionSigningKeyFile, sessionSigningKey)
 }
 
 // loadHtpasswd читает файл формата Apache htpasswd (username:hash, по одной записи на строку).
+//
+// Hashes that are not bcrypt (`$2a/$2b/$2y$`) — i.e. legacy crypt, SHA, MD5,
+// plaintext — are rejected: htpasswd accepts them but they are unacceptably
+// weak for an admin UI. We also warn (but accept) bcrypt entries whose cost
+// is below the OWASP-recommended floor of 12, so the operator gets actionable
+// signal without forcing a re-issue.
 func loadHtpasswd(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -317,9 +336,25 @@ func loadHtpasswd(path string) error {
 		if len(parts) != 2 {
 			continue
 		}
-		htpasswdUsers[parts[0]] = parts[1]
+		user, hash := parts[0], parts[1]
+		if !isBcryptHash(hash) {
+			log.Warnf("htpasswd: skipping %q — only bcrypt hashes are accepted (use `htpasswd -B` to generate)", user)
+			continue
+		}
+		if cost, err := bcrypt.Cost([]byte(hash)); err == nil && cost < adminBcryptCost {
+			log.Warnf("htpasswd: user %q uses bcrypt cost %d — below recommended minimum %d. Rehash with `htpasswd -B -C %d`.",
+				user, cost, adminBcryptCost, adminBcryptCost)
+		}
+		htpasswdUsers[user] = hash
 	}
 	return scanner.Err()
+}
+
+// isBcryptHash reports whether s looks like a bcrypt modular crypt string.
+// Apache htpasswd uses the $2y$ prefix; Go's bcrypt library accepts $2a$/$2b$.
+// All three variants are interoperable in the bcrypt comparison routine.
+func isBcryptHash(s string) bool {
+	return strings.HasPrefix(s, "$2a$") || strings.HasPrefix(s, "$2b$") || strings.HasPrefix(s, "$2y$")
 }
 
 // dummyBcryptHash is computed once at process start so that validateCredentials
@@ -327,7 +362,7 @@ func loadHtpasswd(path string) error {
 // early `return false` on missing user leaks a ~100ms timing oracle that lets
 // an attacker enumerate valid accounts.
 var dummyBcryptHash = func() string {
-	h, err := bcrypt.GenerateFromPassword([]byte("dummy"), bcrypt.DefaultCost)
+	h, err := bcrypt.GenerateFromPassword([]byte("dummy"), adminBcryptCost)
 	if err != nil {
 		// bcrypt.GenerateFromPassword only errors on absurd cost values.
 		// Fall back to an empty string — the subsequent CompareHashAndPassword
@@ -480,8 +515,11 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recordLoginSuccess(ip, user)
-
+	// If MFA is required, we MUST NOT clear the rate-limit counters yet —
+	// otherwise an attacker who has already learned the password can repeatedly
+	// re-login (each call resets the counter) and brute-force the second factor
+	// without ever tripping the lockout. The success path is intentionally
+	// delayed until mfaLoginHandler verifies the TOTP/backup code.
 	if oAdmin.mfaStore != nil && oAdmin.mfaStore.isEnabled(user) {
 		mfaToken := signMfaToken(user)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -490,6 +528,9 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// No MFA: full authentication achieved, safe to clear the counters.
+	recordLoginSuccess(ip, user)
 
 	token := signSession(user)
 	http.SetCookie(w, &http.Cookie{

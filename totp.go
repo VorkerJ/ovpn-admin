@@ -166,7 +166,9 @@ func (s *mfaStore) save() {
 		log.Warnf("mfaStore: failed to create directory %s: %v", dir, err)
 		return
 	}
-	if err := os.WriteFile(s.path, raw, 0600); err != nil {
+	// Atomic write: a torn write would leave _mfa_secrets.json unparseable
+	// at next boot, locking every MFA-enabled admin out of the UI.
+	if err := writeFileAtomicSecret(s.path, raw); err != nil {
 		log.Warnf("mfaStore: failed to write %s: %v", s.path, err)
 	}
 }
@@ -248,7 +250,10 @@ func generateBackupCodes(count int) (plain []string, hashed []string) {
 	for i := 0; i < count; i++ {
 		code := randomBackupCode()
 		plain[i] = code
-		hash, _ := bcrypt.GenerateFromPassword([]byte(code), bcrypt.DefaultCost)
+		// Backup codes carry the same blast radius as a TOTP secret. Match the
+		// adminBcryptCost ceiling so a leaked _mfa_secrets.json file is not
+		// trivially crackable offline (8 codes × ~250ms is still <2s at setup).
+		hash, _ := bcrypt.GenerateFromPassword([]byte(code), adminBcryptCost)
 		hashed[i] = string(hash)
 	}
 	return

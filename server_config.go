@@ -661,11 +661,25 @@ func (m *serverManager) persist(cfg ServerConfig) error {
 }
 
 func writeFileAtomic(path string, data []byte) error {
-	// Use a unique tmp name in the destination directory to avoid races between
-	// concurrent writers clobbering each other's `path + ".tmp"` and to ensure
-	// rename() is atomic (same filesystem). 0640 — rendered server.conf may
-	// include push-extra/custom directives that leak topology. Owner
-	// (ovpn-admin) writes; group (e.g. openvpn) reads; world has no access.
+	// 0640 — rendered server.conf may include push-extra/custom directives
+	// that leak topology. Owner (ovpn-admin) writes; group (e.g. openvpn)
+	// reads; world has no access.
+	return writeFileAtomicMode(path, data, 0o640)
+}
+
+// writeFileAtomicSecret is writeFileAtomic with mode 0600. Use for files that
+// hold key material or session state (signing key, MFA secrets, revoked-token
+// blacklist).
+func writeFileAtomicSecret(path string, data []byte) error {
+	return writeFileAtomicMode(path, data, 0o600)
+}
+
+// writeFileAtomicMode writes data to path atomically with the given perm. It
+// uses a unique tmp name in the destination directory so concurrent writers
+// can't clobber one another's `path + ".tmp"`, then renames into place — the
+// rename is atomic on POSIX when src and dst are on the same filesystem.
+// fsync is performed before rename to harden against power loss.
+func writeFileAtomicMode(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 	tmp, err := os.CreateTemp(dir, base+".tmp.*")
@@ -680,7 +694,11 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o640); err != nil {
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}
