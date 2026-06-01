@@ -59,7 +59,7 @@ services:
       OVPN_AUTH: "${OVPN_PASSWD_AUTH:-false}"
       OVPN_AUTH_DB_PATH: "/mnt/easyrsa/pki/users.db"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
-      OVPN_FIREWALL: "${OVPN_FIREWALL:-true}"
+      OVPN_FIREWALL: "${OVPN_FIREWALL:-false}"
       OVPN_SERVER_CONFIG_PATH: "/etc/openvpn-dynamic/server.conf"
       # Pin admin password by mounting ./htpasswd → /mnt/auth/htpasswd (read-only)
       # When unset, ovpn-admin auto-generates a temporary password printed in logs.
