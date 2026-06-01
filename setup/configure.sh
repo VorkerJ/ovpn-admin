@@ -32,7 +32,7 @@ fi
 easyrsa gen-crl
 
 iptables -t nat -D POSTROUTING -s ${OVPN_SRV_NET}/${OVPN_SRV_MASK} ! -d ${OVPN_SRV_NET}/${OVPN_SRV_MASK} -j MASQUERADE || true
-iptables -t nat -A POSTROUTING -s ${OVPN_SRV_NET}/${OVPN_SRV_MASK} ! -d ${OVPN_SRV_NET}/${OVPN_SRV_MASK} -j MASQUERADE
+iptables -t nat -A POSTROUTING -s ${OVPN_SRV_NET}/${OVPN_SRV_MASK} ! -d ${OVPN_SRV_NET}/${OVPN_SRV_MASK} -j MASQUERADE || echo "WARN: iptables MASQUERADE failed (Docker Desktop?). VPN clients won't have internet access."
 
 mkdir -p /dev/net
 if [ ! -c /dev/net/tun ]; then
@@ -57,9 +57,17 @@ fi
 [ -d $EASY_RSA_LOC/pki ] && chmod 755 $EASY_RSA_LOC/pki
 [ -f $EASY_RSA_LOC/pki/crl.pem ] && chmod 644 $EASY_RSA_LOC/pki/crl.pem
 
+# The rendered server.conf references /etc/openvpn/pki — point it at easyrsa's pki
+[ ! -e /etc/openvpn/pki ] && ln -s $EASY_RSA_LOC/pki /etc/openvpn/pki
+
 mkdir -p /etc/openvpn/ccd
 
 # server.conf is now rendered by ovpn-admin into /etc/openvpn-dynamic/server.conf
+# Allow ovpn-admin (non-root, member of GID 2000) to write here.
+# 0770 = root + ovpnshared group only, no world access.
+addgroup -g 2000 ovpnshared 2>/dev/null || true
+chown root:2000 /etc/openvpn-dynamic 2>/dev/null || true
+chmod 0770 /etc/openvpn-dynamic 2>/dev/null || true
 echo "Waiting for ovpn-admin to render server.conf..."
 until [ -f /etc/openvpn-dynamic/server.conf ]; do
   sleep 1

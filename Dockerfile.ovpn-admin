@@ -22,7 +22,10 @@ RUN apk add --update bash easy-rsa openssl openvpn coreutils iptables iptables-l
     ln -s /usr/share/easy-rsa/easyrsa /usr/local/bin && \
     wget https://github.com/pashcovich/openvpn-user/releases/download/v1.0.4/openvpn-user-linux-amd64.tar.gz -O - | tar xz -C /usr/local/bin && \
     rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
-RUN addgroup -S ovpnadmin && adduser -S -G ovpnadmin ovpnadmin && \
+RUN addgroup -S ovpnadmin && \
+    addgroup -g 2000 ovpnshared && \
+    adduser -S -G ovpnadmin ovpnadmin && \
+    adduser ovpnadmin ovpnshared && \
     chown -R ovpnadmin:ovpnadmin /app && \
     setcap cap_net_admin+ep /usr/sbin/xtables-nft-multi 2>/dev/null || true
 USER ovpnadmin
