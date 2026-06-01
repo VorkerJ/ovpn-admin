@@ -6,7 +6,7 @@ import Dialog from '@/components/ui/Dialog.vue'
 import Input from '@/components/ui/Input.vue'
 import OtpInput from '@/components/ui/OtpInput.vue'
 import Button from '@/components/ui/Button.vue'
-import { ShieldCheck, ShieldOff, Copy, AlertTriangle } from 'lucide-vue-next'
+import { ShieldCheck, ShieldOff, Copy, AlertTriangle, Download } from 'lucide-vue-next'
 import { fetchMfaStatus, setupMfa, confirmMfa, disableMfa } from '@/api.js'
 
 const props = defineProps({
@@ -29,6 +29,7 @@ const confirmCode = ref('')
 // backup codes
 const backupCodes = ref([])
 const copied = ref(false)
+const savedConfirmed = ref(false)
 
 // disable state
 const disablePassword = ref('')
@@ -46,6 +47,7 @@ watch(() => props.open, async (val) => {
     qrDataUrl.value = ''
     backupCodes.value = []
     copied.value = false
+    savedConfirmed.value = false
     try {
       const status = await fetchMfaStatus()
       step.value = status.enabled ? 'on' : 'off'
@@ -123,6 +125,17 @@ function copyBackupCodes() {
   setTimeout(() => { copied.value = false }, 2000)
 }
 
+function downloadBackupCodes() {
+  const text = `ovpn-admin backup codes\n\nGenerated: ${new Date().toISOString()}\n\n${backupCodes.value.join('\n')}\n`
+  const blob = new Blob([text], { type: 'text/plain' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'ovpn-admin-backup-codes.txt'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 function onClose() {
   if (submitting.value) return
   emit('close')
@@ -187,14 +200,18 @@ function onClose() {
 
     <!-- Step: BACKUP — show backup codes -->
     <div v-else-if="step === 'backup'" class="space-y-4">
-      <div class="flex items-start gap-3">
-        <AlertTriangle :size="20" class="text-yellow-500 mt-0.5 shrink-0" />
-        <div>
-          <p class="text-sm font-medium">Сохраните резервные коды</p>
-          <p class="text-sm text-muted-foreground">
-            Эти коды можно использовать для входа, если вы потеряете доступ к приложению аутентификации.
-            Каждый код можно использовать только один раз.
-          </p>
+      <div class="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3">
+        <div class="flex items-start gap-3">
+          <AlertTriangle :size="20" class="text-yellow-500 mt-0.5 shrink-0" />
+          <div>
+            <p class="text-sm font-semibold text-yellow-600 dark:text-yellow-400">
+              Сохраните эти коды СЕЙЧАС — больше они не покажутся
+            </p>
+            <p class="text-sm text-muted-foreground mt-1">
+              Эти коды можно использовать для входа, если вы потеряете доступ к приложению аутентификации.
+              Каждый код можно использовать только один раз.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -202,16 +219,27 @@ function onClose() {
         <div
           v-for="code in backupCodes"
           :key="code"
-          class="rounded-md bg-muted px-3 py-2 text-sm font-mono text-center select-all"
+          class="rounded-md bg-muted px-3 py-3 text-base font-mono font-semibold text-center select-all tracking-wider"
         >
           {{ code }}
         </div>
       </div>
 
-      <Button variant="secondary" class="w-full" @click="copyBackupCodes">
-        <Copy :size="14" />
-        {{ copied ? 'Скопировано!' : 'Скопировать коды' }}
-      </Button>
+      <div class="grid grid-cols-2 gap-2">
+        <Button variant="secondary" @click="copyBackupCodes">
+          <Copy :size="14" />
+          {{ copied ? 'Скопировано!' : 'Скопировать' }}
+        </Button>
+        <Button variant="secondary" @click="downloadBackupCodes">
+          <Download :size="14" />
+          Скачать .txt
+        </Button>
+      </div>
+
+      <label class="flex items-center gap-2 text-sm cursor-pointer pt-2 border-t border-border">
+        <input type="checkbox" v-model="savedConfirmed" class="w-4 h-4" />
+        <span>Я сохранил коды в надёжном месте</span>
+      </label>
     </div>
 
     <!-- Step: ON — 2FA enabled -->
@@ -261,7 +289,7 @@ function onClose() {
         </Button>
       </template>
       <template v-else-if="step === 'backup'">
-        <Button @click="onClose">Готово</Button>
+        <Button :disabled="!savedConfirmed" @click="onClose">Готово</Button>
       </template>
       <template v-else>
         <Button variant="ghost" @click="onClose">Закрыть</Button>

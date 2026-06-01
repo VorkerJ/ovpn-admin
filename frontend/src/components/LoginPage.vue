@@ -16,6 +16,13 @@ const loading = ref(false)
 const mfaStep = ref(false)
 const mfaToken = ref('')
 const mfaCode = ref('')
+const useBackupCode = ref(false)
+
+function toggleBackupMode() {
+  useBackupCode.value = !useBackupCode.value
+  mfaCode.value = ''
+  error.value = ''
+}
 
 async function submit() {
   error.value = ''
@@ -56,7 +63,8 @@ async function submitMfa() {
   }
   loading.value = true
   try {
-    await loginMfa(mfaToken.value, mfaCode.value)
+    const code = useBackupCode.value ? mfaCode.value.toUpperCase().trim() : mfaCode.value
+    await loginMfa(mfaToken.value, code)
     emit('login')
   } catch (e) {
     error.value = e.response?.data?.error || 'Неверный код'
@@ -69,6 +77,7 @@ function backToPassword() {
   mfaStep.value = false
   mfaToken.value = ''
   mfaCode.value = ''
+  useBackupCode.value = false
   error.value = ''
 }
 </script>
@@ -106,8 +115,28 @@ function backToPassword() {
       <!-- MFA step -->
       <form v-else class="space-y-4" @submit.prevent="submitMfa">
         <div class="space-y-1.5">
-          <label class="text-sm font-medium">Код из приложения или резервный код</label>
-          <OtpInput v-model="mfaCode" />
+          <label class="text-sm font-medium">
+            {{ useBackupCode ? 'Резервный код' : 'Код из приложения' }}
+          </label>
+
+          <OtpInput v-if="!useBackupCode" v-model="mfaCode" />
+          <Input
+            v-else
+            v-model="mfaCode"
+            placeholder="XXXX-XXXX"
+            class="text-center text-lg font-mono tracking-widest uppercase"
+            maxlength="10"
+            autocomplete="off"
+            autofocus
+          />
+
+          <button
+            type="button"
+            class="text-xs text-muted-foreground hover:text-foreground transition-colors mt-2"
+            @click="toggleBackupMode"
+          >
+            {{ useBackupCode ? '← Использовать код из приложения' : 'Использовать резервный код →' }}
+          </button>
         </div>
 
         <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
