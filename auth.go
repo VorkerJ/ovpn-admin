@@ -452,35 +452,31 @@ func computeHMAC(data, secret string) string {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 // loginHandler POST /api/login  body: {"username":"…","password":"…"}
+//
+// Method check is enforced by the requireMethod middleware at route
+// registration time; do not re-check r.Method here.
 func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	ip := clientIP(r)
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 	user := req.Username
 	pass := req.Password
 
 	if !checkLoginRateLimit(ip, user) {
-		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
+		writeJSONError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
 		return
 	}
 
 	if !validateCredentials(user, pass) {
 		recordLoginFailure(ip, user)
 		time.Sleep(500 * time.Millisecond) // замедление брутфорса
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"неверный логин или пароль"}`)
+		writeJSONError(w, http.StatusUnauthorized, "неверный логин или пароль")
 		return
 	}
 
@@ -488,8 +484,7 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if oAdmin.mfaStore != nil && oAdmin.mfaStore.isEnabled(user) {
 		mfaToken := signMfaToken(user)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"mfa_required": true,
 			"mfa_token":    mfaToken,
 		})
@@ -506,8 +501,7 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":   true,
 		"user": user,
 	})
@@ -518,11 +512,9 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 // Public route (no requireAuth wrapper). If a session cookie is present and
 // parseable we revoke it; the response always clears the cookie so a stale or
 // malformed session does not leave the browser stuck logged in.
+//
+// Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) logoutHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		revokeToken(cookie.Value)
 	}
@@ -535,14 +527,12 @@ func (oAdmin *OvpnAdmin) logoutHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"ok":true}`)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 
 // authCheckHandler GET /api/auth/check — 200 if authenticated, 401 otherwise
 func (oAdmin *OvpnAdmin) authCheckHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"ok":true}`)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 
 // requireAuth middleware — проверяет сессионную cookie.
@@ -550,15 +540,11 @@ func (oAdmin *OvpnAdmin) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			fmt.Fprint(w, `{"error":"unauthorized"}`)
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		if _, ok := verifySession(cookie.Value); !ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			fmt.Fprint(w, `{"error":"unauthorized"}`)
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		next(w, r)

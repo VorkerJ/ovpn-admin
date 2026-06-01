@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/x509"
 	"embed"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io/fs"
@@ -53,7 +52,6 @@ type OvpnAdmin struct {
 	mgmtStatusTimeFormat string
 	createUserMutex      *sync.Mutex
 	commonRoutes         *commonRoutesStore
-	commonRoutesPath     string
 	firewall             *firewallController
 	serverConfigStore    *serverConfigStore
 	serverManager        *serverManager
@@ -383,11 +381,9 @@ type serverSettingsResponse struct {
 	ServerInitialized bool     `json:"serverInitialized"`
 }
 
+// serverSettingsHandler GET /api/server/settings.
+// Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) serverSettingsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 
 	// Если модуль server-config отключён — гейт неприменим, считаем
@@ -401,20 +397,12 @@ func (oAdmin *OvpnAdmin) serverSettingsHandler(w http.ResponseWriter, r *http.Re
 	if modules == nil {
 		modules = []string{}
 	}
-	resp := serverSettingsResponse{
+	writeJSON(w, http.StatusOK, serverSettingsResponse{
 		Status:            "ok",
 		ServerRole:        oAdmin.role,
 		Modules:           modules,
 		ServerInitialized: initialized,
-	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		log.Errorln(err)
-		http.Error(w, `{"status":"error"}`, http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(body)
+	})
 }
 
 func getOvpnCaCertExpireDate() time.Time {

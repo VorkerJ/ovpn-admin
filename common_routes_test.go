@@ -99,20 +99,28 @@ func TestValidateCommonRoute_DescriptionTooLong(t *testing.T) {
 func TestCommonRoutesFileStore_RoundTrip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "_common_routes.json")
+	store := testFilesystemStore(dir)
 
 	original := CommonRoutesConfig{Routes: []CommonRouteEntry{
 		{ID: "abc", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0", Description: "lan"},
 		{ID: "def", Kind: "domain", Domain: "x.io", ResolvedIPs: []string{"1.2.3.4"}},
 	}}
 
-	if err := saveCommonRoutesToFile(path, original); err != nil {
+	data, err := serializeCommonRoutes(original)
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if err := store.SaveCommonRoutes(data); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	loaded, err := loadCommonRoutesFromFile(path)
+	raw, err := store.LoadCommonRoutes()
 	if err != nil {
 		t.Fatalf("load: %v", err)
+	}
+	loaded, err := deserializeCommonRoutes(raw)
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
 	}
 	if len(loaded.Routes) != 2 {
 		t.Fatalf("expected 2 routes, got %d", len(loaded.Routes))
@@ -125,11 +133,15 @@ func TestCommonRoutesFileStore_RoundTrip(t *testing.T) {
 func TestCommonRoutesFileStore_LoadMissingReturnsEmpty(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "missing.json")
+	store := testFilesystemStore(dir)
 
-	cfg, err := loadCommonRoutesFromFile(path)
+	raw, err := store.LoadCommonRoutes()
 	if err != nil {
 		t.Fatalf("expected no error on missing, got: %v", err)
+	}
+	cfg, err := deserializeCommonRoutes(raw)
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
 	}
 	if len(cfg.Routes) != 0 {
 		t.Fatalf("expected empty routes, got: %+v", cfg.Routes)
@@ -139,16 +151,24 @@ func TestCommonRoutesFileStore_LoadMissingReturnsEmpty(t *testing.T) {
 func TestCommonRoutesFileStore_AtomicWrite(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	store := testFilesystemStore(dir)
 	path := filepath.Join(dir, "_common_routes.json")
 
+	mustSave := func(cfg CommonRoutesConfig) {
+		t.Helper()
+		data, err := serializeCommonRoutes(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveCommonRoutes(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// Первая запись
-	if err := saveCommonRoutesToFile(path, CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "1"}}}); err != nil {
-		t.Fatal(err)
-	}
+	mustSave(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "1"}}})
 	// Вторая запись
-	if err := saveCommonRoutesToFile(path, CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "2"}}}); err != nil {
-		t.Fatal(err)
-	}
+	mustSave(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "2"}}})
 	// .tmp файла быть не должно после успеха
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
 		t.Fatalf("temp file not cleaned: %v", err)
@@ -419,7 +439,6 @@ func newTestAdmin(t *testing.T) *OvpnAdmin {
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}},
 		store:        testFilesystemStore(dir),
 	}
-	app.commonRoutesPath = dir + "/_common_routes.json"
 	return app
 }
 

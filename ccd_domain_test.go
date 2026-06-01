@@ -363,7 +363,9 @@ func TestUserApplyCcdHandler_SlaveLocked(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/user/ccd/apply",
 		strings.NewReader(`{"User":"x","ClientAddress":"dynamic","CustomRoutes":[]}`))
 	rec := httptest.NewRecorder()
-	app.userApplyCcdHandler(rec, req)
+	// requireMaster middleware is what enforces this since the cleanup —
+	// exercise the actual route stack here.
+	app.requireMaster(app.userApplyCcdHandler)(rec, req)
 
 	if rec.Code != http.StatusLocked {
 		t.Errorf("expected 423 on slave, got %d", rec.Code)

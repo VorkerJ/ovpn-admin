@@ -86,9 +86,3 @@ func (s *kubernetesStore) LoadServerConfig() ([]byte, error) {
 func (s *kubernetesStore) SaveServerConfig(data []byte) error {
 	return s.pki.secretUpdateServerConfig(data)
 }
-
-func (s *kubernetesStore) Bootstrap() error {
-	// run() is already called during application startup before the store
-	// is constructed, so Bootstrap is a no-op here.
-	return nil
-}

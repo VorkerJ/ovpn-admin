@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -10,6 +9,11 @@ import (
 )
 
 // sessionUser extracts the authenticated username from the session cookie.
+//
+// Callers (the MFA handlers below) are all wrapped in requireAuth, so the
+// session has already been validated by middleware before reaching them.
+// We still call this to get the username; the returned value cannot be ""
+// in practice — if it ever were, requireAuth would have responded 401 first.
 func (oAdmin *OvpnAdmin) sessionUser(r *http.Request) string {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
@@ -23,68 +27,43 @@ func (oAdmin *OvpnAdmin) sessionUser(r *http.Request) string {
 }
 
 // mfaStatusHandler GET /api/mfa/status — returns whether MFA is enabled for the current user.
+//
+// Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) mfaStatusHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	user := oAdmin.sessionUser(r)
-	if user == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"unauthorized"}`)
-		return
-	}
 
 	enabled := false
 	if oAdmin.mfaStore != nil {
 		enabled = oAdmin.mfaStore.isEnabled(user)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled": enabled,
 	})
 }
 
 // mfaSetupHandler POST /api/mfa/setup — generates a new TOTP key for the user.
+//
+// Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) mfaSetupHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	user := oAdmin.sessionUser(r)
-	if user == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"unauthorized"}`)
-		return
-	}
 
 	if oAdmin.mfaStore == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"MFA is not enabled on this server"}`)
+		writeJSONError(w, http.StatusBadRequest, "MFA is not enabled on this server")
 		return
 	}
 
 	// Prevent rotating an active MFA secret without an explicit disable step —
 	// otherwise a hijacked session could swap the secret for the attacker's.
 	if existing, ok := oAdmin.mfaStore.get(user); ok && existing.Enabled {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		fmt.Fprint(w, `{"error":"MFA already enabled — disable first"}`)
+		writeJSONError(w, http.StatusConflict, "MFA already enabled — disable first")
 		return
 	}
 
 	key, err := generateTOTPKey(user)
 	if err != nil {
 		log.Errorf("mfaSetup: failed to generate TOTP key for %s: %v", user, err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, `{"error":"failed to generate TOTP key"}`)
+		writeJSONError(w, http.StatusInternalServerError, "failed to generate TOTP key")
 		return
 	}
 
@@ -94,32 +73,20 @@ func (oAdmin *OvpnAdmin) mfaSetupHandler(w http.ResponseWriter, r *http.Request)
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"secret": key.Secret(),
 		"qr_url": key.URL(),
 	})
 }
 
 // mfaConfirmHandler POST /api/mfa/confirm — verifies a TOTP code and enables MFA.
+//
+// Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) mfaConfirmHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	user := oAdmin.sessionUser(r)
-	if user == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"unauthorized"}`)
-		return
-	}
 
 	if oAdmin.mfaStore == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"MFA is not enabled on this server"}`)
+		writeJSONError(w, http.StatusBadRequest, "MFA is not enabled on this server")
 		return
 	}
 
@@ -127,24 +94,18 @@ func (oAdmin *OvpnAdmin) mfaConfirmHandler(w http.ResponseWriter, r *http.Reques
 		Code string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"invalid request"}`)
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 
 	rec, ok := oAdmin.mfaStore.get(user)
 	if !ok || rec.Secret == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"MFA setup not started, call POST /api/mfa/setup first"}`)
+		writeJSONError(w, http.StatusBadRequest, "MFA setup not started, call POST /api/mfa/setup first")
 		return
 	}
 
 	if !verifyTOTPCode(rec.Secret, req.Code) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"invalid TOTP code"}`)
+		writeJSONError(w, http.StatusUnauthorized, "invalid TOTP code")
 		return
 	}
 
@@ -156,31 +117,19 @@ func (oAdmin *OvpnAdmin) mfaConfirmHandler(w http.ResponseWriter, r *http.Reques
 
 	log.Infof("MFA: user %s confirmed TOTP setup", user)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"backup_codes": plainCodes,
 	})
 }
 
 // mfaDisableHandler DELETE /api/mfa — disables MFA for the current user.
+//
+// Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	user := oAdmin.sessionUser(r)
-	if user == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"unauthorized"}`)
-		return
-	}
 
 	if oAdmin.mfaStore == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"MFA is not enabled on this server"}`)
+		writeJSONError(w, http.StatusBadRequest, "MFA is not enabled on this server")
 		return
 	}
 
@@ -188,7 +137,7 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 	// target for an attacker who has already hijacked a session cookie.
 	ip := clientIP(r)
 	if !checkLoginRateLimit(ip, user) {
-		http.Error(w, `{"error":"too many attempts"}`, http.StatusTooManyRequests)
+		writeJSONError(w, http.StatusTooManyRequests, "too many attempts")
 		return
 	}
 
@@ -197,26 +146,20 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"invalid request"}`)
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 
 	// Re-authenticate with the current password before tearing down MFA.
 	if !validateCredentials(user, req.Password) {
 		recordLoginFailure(ip, user)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"invalid credentials"}`)
+		writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
 	rec, ok := oAdmin.mfaStore.get(user)
 	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"MFA is not configured for this user"}`)
+		writeJSONError(w, http.StatusBadRequest, "MFA is not configured for this user")
 		return
 	}
 
@@ -224,39 +167,31 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 	codeValid := verifyTOTPCode(rec.Secret, req.Code) || verifyBackupCode(req.Code, rec.BackupCodes)
 	if !codeValid {
 		recordLoginFailure(ip, user)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"invalid code"}`)
+		writeJSONError(w, http.StatusUnauthorized, "invalid code")
 		return
 	}
 
 	oAdmin.mfaStore.delete(user)
 	log.Infof("MFA: user %s disabled TOTP", user)
 
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"ok":true}`)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 
 // mfaLoginHandler POST /api/login/mfa — second step of two-factor login.
+//
+// Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Reject early if MFA is not configured server-side. Done BEFORE any state
 	// mutation (rate-limit counters, jti consumption) so a probe against a
 	// non-MFA server cannot poison either.
 	if oAdmin.mfaStore == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"MFA is not enabled on this server"}`)
+		writeJSONError(w, http.StatusUnauthorized, "MFA is not enabled on this server")
 		return
 	}
 
 	ip := clientIP(r)
 	if !checkLoginRateLimit(ip) {
-		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
+		writeJSONError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
 		return
 	}
 
@@ -265,24 +200,20 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"error":"invalid request"}`)
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 
 	user, jti, exp, ok := verifyMfaToken(req.MfaToken)
 	if !ok {
 		recordLoginFailure(ip)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"invalid or expired MFA token"}`)
+		writeJSONError(w, http.StatusUnauthorized, "invalid or expired MFA token")
 		return
 	}
 
 	// Now that we know the username, apply the per-user rate limit too.
 	if !checkLoginRateLimit(ip, user) {
-		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
+		writeJSONError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
 		return
 	}
 
@@ -293,18 +224,14 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 	// validity and prematurely garbage-collect older entries.
 	if !consumeMfaJti(jti, exp) {
 		recordLoginFailure(ip, user)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"MFA token already used"}`)
+		writeJSONError(w, http.StatusUnauthorized, "MFA token already used")
 		return
 	}
 
 	rec, exists := oAdmin.mfaStore.get(user)
 	if !exists || !rec.Enabled {
 		recordLoginFailure(ip, user)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"MFA is not configured for this user"}`)
+		writeJSONError(w, http.StatusUnauthorized, "MFA is not configured for this user")
 		return
 	}
 
@@ -314,9 +241,7 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 	// are one-shot via consumeBackupCode already.
 	if rec.LastUsedCode != "" && rec.LastUsedCode == req.Code && time.Now().Unix()-rec.LastUsedAt < 90 {
 		recordLoginFailure(ip, user)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"code already used"}`)
+		writeJSONError(w, http.StatusUnauthorized, "code already used")
 		return
 	}
 
@@ -333,9 +258,7 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 	if !codeValid {
 		recordLoginFailure(ip, user)
 		time.Sleep(500 * time.Millisecond)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"invalid TOTP or backup code"}`)
+		writeJSONError(w, http.StatusUnauthorized, "invalid TOTP or backup code")
 		return
 	}
 
@@ -363,8 +286,7 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":   true,
 		"user": user,
 	})

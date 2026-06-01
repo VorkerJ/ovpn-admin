@@ -37,7 +37,7 @@ type filesystemStore struct {
 var _ storage.Store = (*filesystemStore)(nil)
 
 func (s *filesystemStore) BuildClient(commonName string) error {
-	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "build-client-full", commonName, "nopass")
+	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "build-client-full", "--", commonName, "nopass")
 	log.Debug(out)
 	if err != nil {
 		return fmt.Errorf("easyrsa build-client-full %s: %w: %s", commonName, err, out)
@@ -48,7 +48,7 @@ func (s *filesystemStore) BuildClient(commonName string) error {
 func (s *filesystemStore) RevokeClient(commonName string) error {
 	// --batch suppresses the interactive "Continue with revocation: yes/no?"
 	// prompt that previously required `echo yes |` shell piping.
-	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "revoke", commonName)
+	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "revoke", "--", commonName)
 	log.Debugln(out)
 	if err != nil {
 		return fmt.Errorf("easyrsa revoke %s: %w: %s", commonName, err, out)
@@ -157,7 +157,7 @@ func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 	}
 
 	// 3. Build a new certificate (PKI only — no openvpn-user password handling)
-	out, buildErr := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "build-client-full", commonName, "nopass")
+	out, buildErr := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "build-client-full", "--", commonName, "nopass")
 	log.Debug(out)
 	if buildErr != nil {
 		return fmt.Errorf("rotate: easyrsa build-client-full %s: %w: %s", commonName, buildErr, out)
@@ -305,10 +305,4 @@ func (s *filesystemStore) LoadServerConfig() ([]byte, error) {
 func (s *filesystemStore) SaveServerConfig(data []byte) error {
 	path := s.ccdDir + "/_server_config.json"
 	return writeFileAtomic(path, data)
-}
-
-func (s *filesystemStore) Bootstrap() error {
-	// Filesystem backend requires no bootstrap — easyrsa and CCD dirs are
-	// managed externally.
-	return nil
 }

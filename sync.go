@@ -141,23 +141,18 @@ func (oAdmin *OvpnAdmin) syncWithMaster() {
 	}
 }
 
+// Method / slave-role checks are enforced by requireMethod / requireMaster
+// middleware at route registration time; do not re-check them inside handlers.
+
 func (oAdmin *OvpnAdmin) downloadCertsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
-		return
-	}
 	if _, isK8s := oAdmin.store.(*kubernetesStore); isK8s {
-		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "not supported with kubernetes storage backend")
 		return
 	}
 	token := r.Header.Get("X-Sync-Token")
 	if subtle.ConstantTimeCompare([]byte(token), []byte(oAdmin.masterSyncToken)) != 1 {
-		http.Error(w, `{"status":"error"}`, http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, "invalid sync token")
 		return
 	}
 
@@ -167,22 +162,14 @@ func (oAdmin *OvpnAdmin) downloadCertsHandler(w http.ResponseWriter, r *http.Req
 }
 
 func (oAdmin *OvpnAdmin) downloadCcdHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
-		return
-	}
 	if _, isK8s := oAdmin.store.(*kubernetesStore); isK8s {
-		http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "not supported with kubernetes storage backend")
 		return
 	}
 	token := r.Header.Get("X-Sync-Token")
 	if subtle.ConstantTimeCompare([]byte(token), []byte(oAdmin.masterSyncToken)) != 1 {
-		http.Error(w, `{"status":"error"}`, http.StatusForbidden)
+		writeJSONError(w, http.StatusForbidden, "invalid sync token")
 		return
 	}
 
@@ -192,19 +179,11 @@ func (oAdmin *OvpnAdmin) downloadCcdHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (oAdmin *OvpnAdmin) lastSyncTimeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Debug(r.RemoteAddr, " ", r.RequestURI)
 	fmt.Fprint(w, oAdmin.lastSyncTime)
 }
 
 func (oAdmin *OvpnAdmin) lastSuccessfulSyncTimeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Debug(r.RemoteAddr, " ", r.RequestURI)
 	fmt.Fprint(w, oAdmin.lastSuccessfulSyncTime)
 }

@@ -164,6 +164,15 @@ func cloneStringsNonNil(in []string) []string {
 func (s *serverConfigStore) replace(cfg ServerConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	normalizeServerConfig(&cfg)
+	s.cfg = cfg
+}
+
+// normalizeServerConfig replaces nil slices with empty ones in-place. JSON
+// (de)serialization round-trips would otherwise emit `null` for missing
+// fields, which the frontend and tests treat as a contract violation.
+// Centralizing here keeps serialize/deserialize/replace in sync.
+func normalizeServerConfig(cfg *ServerConfig) {
 	if cfg.DataCiphers == nil {
 		cfg.DataCiphers = []string{}
 	}
@@ -176,7 +185,6 @@ func (s *serverConfigStore) replace(cfg ServerConfig) {
 	if cfg.CustomDirectives == nil {
 		cfg.CustomDirectives = []string{}
 	}
-	s.cfg = cfg
 }
 
 var allowedDataCiphers = map[string]struct{}{
@@ -429,54 +437,36 @@ func detectDCOSupport() bool {
 
 // categorizeChanges возвращает "none" | "soft" | "hard".
 // Hard wins over soft.
+//
+// Direct if-chains (rather than slice-of-closures) so the comparison is
+// short-circuiting AND zero-allocation. The old closure list paid a slice
+// allocation on every call just to avoid a few `||` operators.
 func categorizeChanges(old, new ServerConfig) string {
-	hard := false
-	soft := false
-
-	hardCheckers := []func() bool{
-		func() bool { return old.Proto != new.Proto },
-		func() bool { return old.Port != new.Port },
-		func() bool { return old.TunMTU != new.TunMTU },
-		func() bool { return old.MssFix != new.MssFix },
-		func() bool { return !reflect.DeepEqual(old.DataCiphers, new.DataCiphers) },
-		func() bool { return old.TLSVersionMin != new.TLSVersionMin },
-		func() bool { return old.TLSAuthMode != new.TLSAuthMode },
-		func() bool { return old.DCOEnabled != new.DCOEnabled },
-		func() bool { return old.Compression != new.Compression },
-		func() bool { return old.ClientToClient != new.ClientToClient },
-		func() bool { return old.DuplicateCN != new.DuplicateCN },
-		func() bool { return old.Network != new.Network },
-		func() bool { return old.NetworkMask != new.NetworkMask },
-	}
-	for _, f := range hardCheckers {
-		if f() {
-			hard = true
-			break
-		}
-	}
-
-	if !hard {
-		softCheckers := []func() bool{
-			func() bool { return old.Verb != new.Verb },
-			func() bool { return !reflect.DeepEqual(old.DNSServers, new.DNSServers) },
-			func() bool { return old.RedirectGateway != new.RedirectGateway },
-			func() bool { return old.KeepaliveInterval != new.KeepaliveInterval },
-			func() bool { return old.KeepaliveTimeout != new.KeepaliveTimeout },
-			func() bool { return old.MaxClients != new.MaxClients },
-			func() bool { return !reflect.DeepEqual(old.PushExtra, new.PushExtra) },
-			func() bool { return !reflect.DeepEqual(old.CustomDirectives, new.CustomDirectives) },
-		}
-		for _, f := range softCheckers {
-			if f() {
-				soft = true
-				break
-			}
-		}
-	}
-
+	hard := old.Proto != new.Proto ||
+		old.Port != new.Port ||
+		old.TunMTU != new.TunMTU ||
+		old.MssFix != new.MssFix ||
+		!reflect.DeepEqual(old.DataCiphers, new.DataCiphers) ||
+		old.TLSVersionMin != new.TLSVersionMin ||
+		old.TLSAuthMode != new.TLSAuthMode ||
+		old.DCOEnabled != new.DCOEnabled ||
+		old.Compression != new.Compression ||
+		old.ClientToClient != new.ClientToClient ||
+		old.DuplicateCN != new.DuplicateCN ||
+		old.Network != new.Network ||
+		old.NetworkMask != new.NetworkMask
 	if hard {
 		return "hard"
 	}
+
+	soft := old.Verb != new.Verb ||
+		!reflect.DeepEqual(old.DNSServers, new.DNSServers) ||
+		old.RedirectGateway != new.RedirectGateway ||
+		old.KeepaliveInterval != new.KeepaliveInterval ||
+		old.KeepaliveTimeout != new.KeepaliveTimeout ||
+		old.MaxClients != new.MaxClients ||
+		!reflect.DeepEqual(old.PushExtra, new.PushExtra) ||
+		!reflect.DeepEqual(old.CustomDirectives, new.CustomDirectives)
 	if soft {
 		return "soft"
 	}
@@ -484,18 +474,7 @@ func categorizeChanges(old, new ServerConfig) string {
 }
 
 func serializeServerConfig(cfg ServerConfig) ([]byte, error) {
-	if cfg.DataCiphers == nil {
-		cfg.DataCiphers = []string{}
-	}
-	if cfg.DNSServers == nil {
-		cfg.DNSServers = []string{}
-	}
-	if cfg.PushExtra == nil {
-		cfg.PushExtra = []string{}
-	}
-	if cfg.CustomDirectives == nil {
-		cfg.CustomDirectives = []string{}
-	}
+	normalizeServerConfig(&cfg)
 	return json.MarshalIndent(cfg, "", "  ")
 }
 
@@ -507,44 +486,8 @@ func deserializeServerConfig(data []byte) (ServerConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return ServerConfig{}, err
 	}
-	if cfg.DataCiphers == nil {
-		cfg.DataCiphers = []string{}
-	}
-	if cfg.DNSServers == nil {
-		cfg.DNSServers = []string{}
-	}
-	if cfg.PushExtra == nil {
-		cfg.PushExtra = []string{}
-	}
-	if cfg.CustomDirectives == nil {
-		cfg.CustomDirectives = []string{}
-	}
+	normalizeServerConfig(&cfg)
 	return cfg, nil
-}
-
-func loadServerConfigFromFile(path string) (ServerConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return defaultServerConfig(), nil
-		}
-		return ServerConfig{}, err
-	}
-	return deserializeServerConfig(data)
-}
-
-func saveServerConfigToFile(path string, cfg ServerConfig) error {
-	data, err := serializeServerConfig(cfg)
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	// 0600 — server config JSON is ovpn-admin's internal state, not the
-	// rendered server.conf that openvpn consumes.
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }
 
 func renderServerConfig(cfg ServerConfig, dcoAvailable, ccdEnabled bool) (string, error) {
@@ -564,7 +507,6 @@ func renderServerConfig(cfg ServerConfig, dcoAvailable, ccdEnabled bool) (string
 type serverManager struct {
 	store          *serverConfigStore
 	persistBackend storage.Store
-	storagePath    string
 	mgmtAddr       string
 	confPath       string
 	dcoAvailable   bool
@@ -748,6 +690,9 @@ func writeFileAtomic(path string, data []byte) error {
 	return os.Rename(tmpName, path)
 }
 
+// serverConfigHandler dispatches GET / PUT on /api/server-config.
+// Multi-method route — the slave check stays inline; PUT is also wrapped in
+// requireMaster at route registration for defense-in-depth.
 func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	switch r.Method {
@@ -761,13 +706,13 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPut:
 		if oAdmin.role == "slave" {
-			http.Error(w, `{"status":"error","message":"slave is read-only"}`, http.StatusLocked)
+			writeJSONError(w, http.StatusLocked, "slave is read-only")
 			return
 		}
 		var cfg ServerConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 			log.Debugf("server-config: decode body: %v", err)
-			http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
 		// Любое успешное сохранение через UI помечает конфиг как
@@ -777,7 +722,7 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 		kind, err := oAdmin.serverManager.apply(r.Context(), cfg, updatedBy)
 		if err != nil {
 			log.Errorf("server-config: apply: %v", err)
-			http.Error(w, `{"error":"failed to apply server config"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "failed to apply server config")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -785,20 +730,18 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 			"reload_kind": kind,
 		})
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
+// serverConfigTestHandler POST /api/server-config/test — dry-run validation.
+// Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) serverConfigTestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	var cfg ServerConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		log.Debugf("server-config-test: decode body: %v", err)
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	if err := validateServerConfig(cfg); err != nil {
@@ -811,6 +754,9 @@ func (oAdmin *OvpnAdmin) serverConfigTestHandler(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]interface{}{"valid": true, "errors": []string{}})
 }
 
+// serverConfigDefaultsHandler GET /api/server-config/defaults — returns the
+// hard-coded defaults used at first startup. Method check is enforced by the
+// requireMethod middleware.
 func (oAdmin *OvpnAdmin) serverConfigDefaultsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	writeJSON(w, http.StatusOK, defaultServerConfig())

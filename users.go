@@ -62,11 +62,10 @@ type usernamePasswordRequest struct {
 	Password string `json:"password"`
 }
 
+// Method / slave-role checks are enforced by requireMethod / requireMaster
+// middleware at route registration time; do not re-check them inside handlers.
+
 func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 
 	// Storage refresh failures should not block the response — the cached
@@ -92,14 +91,10 @@ func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (oAdmin *OvpnAdmin) userStatisticHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	userStatistic, _ := json.Marshal(oAdmin.getUserStatistic(req.Username))
@@ -107,26 +102,18 @@ func (oAdmin *OvpnAdmin) userStatisticHandler(w http.ResponseWriter, r *http.Req
 }
 
 func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusLocked)
-		return
-	}
 	// Гейт: если модуль server-config включён и admin ещё не сохранял
 	// настройки через UI — блокируем создание (defaults на диске нужны
 	// только чтобы openvpn-сервер стартовал, это не означает что admin
 	// согласен с этими параметрами).
 	if oAdmin.serverConfigStore != nil && !oAdmin.serverConfigStore.snapshot().Initialized {
-		http.Error(w, `{"error":"server not initialized — configure server in UI first"}`, http.StatusPreconditionFailed)
+		writeJSONError(w, http.StatusPreconditionFailed, "server not initialized — configure server in UI first")
 		return
 	}
 	var req usernamePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	userCreated, userCreateStatus := oAdmin.userCreate(req.Username, req.Password)
@@ -141,30 +128,22 @@ func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Reques
 	}
 }
 func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusLocked)
-		return
-	}
 	// Ротация выпускает новый сертификат, поэтому блокируется тем же
 	// гейтом что и создание пользователя.
 	if oAdmin.serverConfigStore != nil && !oAdmin.serverConfigStore.snapshot().Initialized {
-		http.Error(w, `{"error":"server not initialized — configure server in UI first"}`, http.StatusPreconditionFailed)
+		writeJSONError(w, http.StatusPreconditionFailed, "server not initialized — configure server in UI first")
 		return
 	}
 	var req usernamePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	err, msg := oAdmin.userRotate(req.Username, req.Password)
 	if err != nil {
 		log.Errorf("userRotate: %v", err)
-		http.Error(w, `{"error":"failed to rotate user"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "failed to rotate user")
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, msg)
@@ -172,24 +151,16 @@ func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusLocked)
-		return
-	}
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	err, msg := oAdmin.userDelete(req.Username)
 	if err != nil {
 		log.Errorf("userDelete: %v", err)
-		http.Error(w, `{"error":"failed to delete user"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "failed to delete user")
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, msg)
@@ -197,24 +168,16 @@ func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusLocked)
-		return
-	}
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	err, msg := oAdmin.userRevoke(req.Username)
 	if err != nil {
 		log.Errorf("userRevoke: %v", err)
-		http.Error(w, `{"error":"failed to revoke user"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "failed to revoke user")
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, msg)
@@ -222,24 +185,16 @@ func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusLocked)
-		return
-	}
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	err, msg := oAdmin.userUnrevoke(req.Username)
 	if err != nil {
 		log.Errorf("userUnrevoke: %v", err)
-		http.Error(w, `{"error":"failed to unrevoke user"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "failed to unrevoke user")
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, msg)
@@ -247,88 +202,63 @@ func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusLocked)
-		return
-	}
 	var req usernamePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if *authByPassword {
-		err, msg := oAdmin.userChangePassword(req.Username, req.Password)
-		w.Header().Set("Content-Type", "application/json")
-		if err != nil {
-			log.Errorf("userChangePassword: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"status":  "error",
-				"message": msg,
-			})
-		} else {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"status":  "ok",
-				"message": msg,
-			})
-		}
-	} else {
-		http.Error(w, `{"status":"error"}`, http.StatusNotImplemented)
+	if !*authByPassword {
+		writeJSONError(w, http.StatusNotImplemented, "password auth disabled")
+		return
 	}
-
+	err, msg := oAdmin.userChangePassword(req.Username, req.Password)
+	if err != nil {
+		log.Errorf("userChangePassword: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"status":  "error",
+			"message": msg,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "ok",
+		"message": msg,
+	})
 }
 
 func (oAdmin *OvpnAdmin) userShowConfigHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	fmt.Fprintf(w, "%s", oAdmin.renderClientConfig(req.Username))
 }
 
 func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusLocked)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 
 	if err := validateUsername(req.Username); err != nil {
-		http.Error(w, `{"error":"invalid username"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid username")
 		return
 	}
 
 	if !checkUserExist(req.Username) {
-		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
 	connected, connections := isUserConnected(req.Username, oAdmin.activeClients)
 	if !connected {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"ok":true,"disconnected":0}`)
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "disconnected": 0})
 		return
 	}
 
@@ -336,8 +266,7 @@ func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Re
 		oAdmin.mgmtKillUserConnection(req.Username, conn)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"ok":true,"disconnected":%d}`, len(connections))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "disconnected": len(connections)})
 }
 
 func validateUsername(username string) error {

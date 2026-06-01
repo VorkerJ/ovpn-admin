@@ -293,18 +293,17 @@ type mfaTokenPayload struct {
 	Jti     string `json:"jti,omitempty"`
 }
 
+// signMfaToken mints an intermediate token issued after first-factor success
+// to authenticate the second-factor request. Single-use (jti tracked), short
+// TTL (mfaTokenTTL). NOT a session token — verifySession rejects this purpose.
 func signMfaToken(user string) string {
-	return signMfaTokenWithTTL(user, mfaTokenTTL)
-}
-
-func signMfaTokenWithTTL(user string, ttl time.Duration) string {
 	secret := sessionSecret()
 	jtiBytes := make([]byte, 16)
 	_, _ = rand.Read(jtiBytes)
 	p := mfaTokenPayload{
 		User:    user,
 		Purpose: "mfa",
-		Exp:     time.Now().Add(ttl).Unix(),
+		Exp:     time.Now().Add(mfaTokenTTL).Unix(),
 		Jti:     base64.RawURLEncoding.EncodeToString(jtiBytes),
 	}
 	data, _ := json.Marshal(p)

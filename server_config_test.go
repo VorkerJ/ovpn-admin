@@ -533,18 +533,26 @@ func TestCategorizeChanges_HardWinsOverSoft(t *testing.T) {
 func TestServerConfig_FilePersist_RoundTrip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "_server_config.json")
+	store := testFilesystemStore(dir)
 
 	cfg := defaultServerConfig()
 	cfg.Port = 8443
 	cfg.UpdatedBy = "admin"
 
-	if err := saveServerConfigToFile(path, cfg); err != nil {
+	data, err := serializeServerConfig(cfg)
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if err := store.SaveServerConfig(data); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	loaded, err := loadServerConfigFromFile(path)
+	raw, err := store.LoadServerConfig()
 	if err != nil {
 		t.Fatalf("load: %v", err)
+	}
+	loaded, err := deserializeServerConfig(raw)
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
 	}
 	if loaded.Port != 8443 || loaded.UpdatedBy != "admin" {
 		t.Errorf("roundtrip mismatch: %+v", loaded)
@@ -554,10 +562,14 @@ func TestServerConfig_FilePersist_RoundTrip(t *testing.T) {
 func TestServerConfig_FilePersist_LoadMissingReturnsDefaults(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "_missing.json")
-	cfg, err := loadServerConfigFromFile(path)
+	store := testFilesystemStore(dir)
+	raw, err := store.LoadServerConfig()
 	if err != nil {
 		t.Errorf("missing file must not error, got %v", err)
+	}
+	cfg, err := deserializeServerConfig(raw)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if cfg.Proto != "tcp" {
 		t.Errorf("missing file must return defaults, got Proto=%q", cfg.Proto)
@@ -567,13 +579,18 @@ func TestServerConfig_FilePersist_LoadMissingReturnsDefaults(t *testing.T) {
 func TestServerConfig_AtomicWrite(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	store := testFilesystemStore(dir)
 	path := filepath.Join(dir, "_server_config.json")
 	cfg := defaultServerConfig()
 
-	if err := saveServerConfigToFile(path, cfg); err != nil {
+	data, err := serializeServerConfig(cfg)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := saveServerConfigToFile(path, cfg); err != nil {
+	if err := store.SaveServerConfig(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveServerConfig(data); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
@@ -722,11 +739,10 @@ func TestServerManager_Apply_NoChange(t *testing.T) {
 	store := newServerConfigStore()
 
 	mgr := &serverManager{
-		store:       store,
-		storagePath: filepath.Join(dir, "store.json"),
-		mgmtAddr:    "127.0.0.1:0",
-		confPath:    confPath,
-		ccdEnabled:  true,
+		store:      store,
+		mgmtAddr:   "127.0.0.1:0",
+		confPath:   confPath,
+		ccdEnabled: true,
 	}
 
 	cfg := store.snapshot()
@@ -749,7 +765,6 @@ func TestServerManager_Apply_Soft(t *testing.T) {
 	mgr := &serverManager{
 		store:          store,
 		persistBackend: testFilesystemStore(dir),
-		storagePath:    filepath.Join(dir, "store.json"),
 		mgmtAddr:       mgmt.addr(),
 		confPath:       confPath,
 		ccdEnabled:     true,
@@ -786,10 +801,9 @@ func TestServerManager_Apply_RejectsInvalid(t *testing.T) {
 	store := newServerConfigStore()
 
 	mgr := &serverManager{
-		store:       store,
-		storagePath: filepath.Join(dir, "store.json"),
-		mgmtAddr:    "127.0.0.1:0",
-		confPath:    filepath.Join(dir, "server.conf"),
+		store:      store,
+		mgmtAddr:   "127.0.0.1:0",
+		confPath:   filepath.Join(dir, "server.conf"),
 		ccdEnabled:  true,
 	}
 
@@ -813,7 +827,6 @@ func newServerConfigTestAdmin(t *testing.T) (*OvpnAdmin, *fakeMgmtServer, string
 	app.serverManager = &serverManager{
 		store:          app.serverConfigStore,
 		persistBackend: fsStore,
-		storagePath:    filepath.Join(dir, "store.json"),
 		mgmtAddr:       mgmt.addr(),
 		confPath:       filepath.Join(dir, "server.conf"),
 		ccdEnabled:     true,

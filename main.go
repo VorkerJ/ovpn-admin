@@ -250,9 +250,6 @@ func main() {
 	if *commonRoutesEnabled {
 		ovpnAdmin.modules = append(ovpnAdmin.modules, "common-routes")
 
-		// Use ccdDir as the config location for filesystem backend (same dir as CCD files)
-		ovpnAdmin.commonRoutesPath = *ccdDir + "/_common_routes.json"
-
 		var initial CommonRoutesConfig
 		data, err := store.LoadCommonRoutes()
 		if err != nil {
@@ -272,8 +269,6 @@ func main() {
 
 	if *serverConfigEnabled {
 		ovpnAdmin.modules = append(ovpnAdmin.modules, "server-config")
-
-		storagePath := *ccdDir + "/_server_config.json"
 
 		ovpnAdmin.serverConfigStore = newServerConfigStore()
 		var initial ServerConfig
@@ -310,7 +305,6 @@ func main() {
 		ovpnAdmin.serverManager = &serverManager{
 			store:          ovpnAdmin.serverConfigStore,
 			persistBackend: store,
-			storagePath:    storagePath,
 			mgmtAddr:       mgmtAddr,
 			confPath:       *serverConfigPath,
 			dcoAvailable:   dcoAvailable,
@@ -381,44 +375,64 @@ func main() {
 
 	http.Handle(*listenBaseUrl, http.StripPrefix(strings.TrimRight(*listenBaseUrl, "/"), static))
 
+	// Route registration uses two small middlewares to remove ~40 duplicated
+	// `if r.Method != …` and `if oAdmin.role == "slave"` guards from handlers:
+	//   requireMethod(http.MethodX, …)  — returns 405 on mismatch
+	//   requireMaster(…)                — returns 423 on slave nodes (write ops)
+	// Order matters: requireAuth (outermost) → requireMaster → requireMethod →
+	// handler. Auth runs first so an anonymous request gets 401 rather than
+	// leaking that the endpoint exists.
+	post := func(h http.HandlerFunc) http.HandlerFunc { return requireMethod(http.MethodPost, h) }
+	get := func(h http.HandlerFunc) http.HandlerFunc { return requireMethod(http.MethodGet, h) }
+	del := func(h http.HandlerFunc) http.HandlerFunc { return requireMethod(http.MethodDelete, h) }
+	master := ovpnAdmin.requireMaster
+	auth := ovpnAdmin.requireAuth
+
 	// Public auth endpoints
-	http.HandleFunc(*listenBaseUrl+"api/login", ovpnAdmin.loginHandler)
+	http.HandleFunc(*listenBaseUrl+"api/login", post(ovpnAdmin.loginHandler))
 	// Logout is public so a stale/invalid cookie can still be cleared.
-	http.HandleFunc(*listenBaseUrl+"api/logout", ovpnAdmin.logoutHandler)
-	http.HandleFunc(*listenBaseUrl+"api/auth/check", ovpnAdmin.requireAuth(ovpnAdmin.authCheckHandler))
+	http.HandleFunc(*listenBaseUrl+"api/logout", post(ovpnAdmin.logoutHandler))
+	http.HandleFunc(*listenBaseUrl+"api/auth/check", auth(get(ovpnAdmin.authCheckHandler)))
 
 	// MFA endpoints
-	http.HandleFunc(*listenBaseUrl+"api/login/mfa", ovpnAdmin.mfaLoginHandler)
-	http.HandleFunc(*listenBaseUrl+"api/mfa/status", ovpnAdmin.requireAuth(ovpnAdmin.mfaStatusHandler))
-	http.HandleFunc(*listenBaseUrl+"api/mfa/setup", ovpnAdmin.requireAuth(ovpnAdmin.mfaSetupHandler))
-	http.HandleFunc(*listenBaseUrl+"api/mfa/confirm", ovpnAdmin.requireAuth(ovpnAdmin.mfaConfirmHandler))
-	http.HandleFunc(*listenBaseUrl+"api/mfa", ovpnAdmin.requireAuth(ovpnAdmin.mfaDisableHandler))
+	http.HandleFunc(*listenBaseUrl+"api/login/mfa", post(ovpnAdmin.mfaLoginHandler))
+	http.HandleFunc(*listenBaseUrl+"api/mfa/status", auth(get(ovpnAdmin.mfaStatusHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/mfa/setup", auth(post(ovpnAdmin.mfaSetupHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/mfa/confirm", auth(post(ovpnAdmin.mfaConfirmHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/mfa", auth(del(ovpnAdmin.mfaDisableHandler)))
 
-	// Protected API endpoints
-	http.HandleFunc(*listenBaseUrl+"api/server/settings", ovpnAdmin.requireAuth(ovpnAdmin.serverSettingsHandler))
-	http.HandleFunc(*listenBaseUrl+"api/users/list", ovpnAdmin.requireAuth(ovpnAdmin.userListHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/create", ovpnAdmin.requireAuth(ovpnAdmin.userCreateHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/change-password", ovpnAdmin.requireAuth(ovpnAdmin.userChangePasswordHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/rotate", ovpnAdmin.requireAuth(ovpnAdmin.userRotateHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/delete", ovpnAdmin.requireAuth(ovpnAdmin.userDeleteHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/revoke", ovpnAdmin.requireAuth(ovpnAdmin.userRevokeHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", ovpnAdmin.requireAuth(ovpnAdmin.userUnrevokeHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/config/show", ovpnAdmin.requireAuth(ovpnAdmin.userShowConfigHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", ovpnAdmin.requireAuth(ovpnAdmin.userDisconnectHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/statistic", ovpnAdmin.requireAuth(ovpnAdmin.userStatisticHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/ccd", ovpnAdmin.requireAuth(ovpnAdmin.userShowCcdHandler))
-	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", ovpnAdmin.requireAuth(ovpnAdmin.userApplyCcdHandler))
-	http.HandleFunc(*listenBaseUrl+"api/common-routes", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesHandler))
-	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesRefreshHandler))
-	http.HandleFunc(*listenBaseUrl+"api/common-routes/", ovpnAdmin.requireAuth(ovpnAdmin.commonRoutesItemHandler))
-	http.HandleFunc(*listenBaseUrl+"api/server-config", ovpnAdmin.requireAuth(ovpnAdmin.serverConfigHandler))
-	http.HandleFunc(*listenBaseUrl+"api/server-config/test", ovpnAdmin.requireAuth(ovpnAdmin.serverConfigTestHandler))
-	http.HandleFunc(*listenBaseUrl+"api/server-config/defaults", ovpnAdmin.requireAuth(ovpnAdmin.serverConfigDefaultsHandler))
+	// Protected API endpoints — read-only (no requireMaster)
+	http.HandleFunc(*listenBaseUrl+"api/server/settings", auth(get(ovpnAdmin.serverSettingsHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/users/list", auth(get(ovpnAdmin.userListHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/user/config/show", auth(post(ovpnAdmin.userShowConfigHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/user/statistic", auth(post(ovpnAdmin.userStatisticHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd", auth(post(ovpnAdmin.userShowCcdHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/server-config/test", auth(post(ovpnAdmin.serverConfigTestHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/server-config/defaults", auth(get(ovpnAdmin.serverConfigDefaultsHandler)))
 
-	http.HandleFunc(*listenBaseUrl+"api/sync/last/try", ovpnAdmin.requireAuth(ovpnAdmin.lastSyncTimeHandler))
-	http.HandleFunc(*listenBaseUrl+"api/sync/last/successful", ovpnAdmin.requireAuth(ovpnAdmin.lastSuccessfulSyncTimeHandler))
-	http.HandleFunc(*listenBaseUrl+downloadCertsApiUrl, ovpnAdmin.requireAuth(ovpnAdmin.downloadCertsHandler))
-	http.HandleFunc(*listenBaseUrl+downloadCcdApiUrl, ovpnAdmin.requireAuth(ovpnAdmin.downloadCcdHandler))
+	// Protected API endpoints — write-side (requireMaster)
+	http.HandleFunc(*listenBaseUrl+"api/user/create", auth(master(post(ovpnAdmin.userCreateHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/change-password", auth(master(post(ovpnAdmin.userChangePasswordHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/rotate", auth(master(post(ovpnAdmin.userRotateHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/delete", auth(master(post(ovpnAdmin.userDeleteHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/revoke", auth(master(post(ovpnAdmin.userRevokeHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", auth(master(post(ovpnAdmin.userUnrevokeHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", auth(master(post(ovpnAdmin.userDisconnectHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", auth(master(post(ovpnAdmin.userApplyCcdHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", auth(master(post(ovpnAdmin.commonRoutesRefreshHandler))))
+
+	// Multi-method routes — method dispatch + slave check stay inside the
+	// handler (it routes GET to a read path and POST/PUT/DELETE to a write path
+	// that itself returns 423 on slave).
+	http.HandleFunc(*listenBaseUrl+"api/common-routes", auth(ovpnAdmin.commonRoutesHandler))
+	http.HandleFunc(*listenBaseUrl+"api/common-routes/", auth(ovpnAdmin.commonRoutesItemHandler))
+	http.HandleFunc(*listenBaseUrl+"api/server-config", auth(ovpnAdmin.serverConfigHandler))
+
+	http.HandleFunc(*listenBaseUrl+"api/sync/last/try", auth(get(ovpnAdmin.lastSyncTimeHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/sync/last/successful", auth(get(ovpnAdmin.lastSuccessfulSyncTimeHandler)))
+	// downloadCerts/Ccd are master-only sync endpoints called by slaves via X-Sync-Token.
+	http.HandleFunc(*listenBaseUrl+downloadCertsApiUrl, auth(master(get(ovpnAdmin.downloadCertsHandler))))
+	http.HandleFunc(*listenBaseUrl+downloadCcdApiUrl, auth(master(get(ovpnAdmin.downloadCcdHandler))))
 
 	http.HandleFunc(*metricsPath, ovpnAdmin.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		promhttp.HandlerFor(ovpnAdmin.promRegistry, promhttp.HandlerOpts{}).ServeHTTP(w, r)

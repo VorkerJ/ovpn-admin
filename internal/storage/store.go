@@ -24,10 +24,6 @@ type Store interface {
 	SaveCommonRoutes(data []byte) error
 	LoadServerConfig() ([]byte, error)
 	SaveServerConfig(data []byte) error
-
-	// Bootstrap is called once at startup. For k8s: initializes PKI,
-	// syncs secrets to disk. For filesystem: no-op.
-	Bootstrap() error
 }
 
 // CcdSecret holds per-client CCD content, used by checkStaticAddressIsFree

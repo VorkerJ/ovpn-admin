@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,25 @@ import (
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// mintMfaTokenForTest mints an MFA token with an arbitrary TTL — used only by
+// tests that need to construct already-expired tokens. Production code calls
+// signMfaToken which always uses mfaTokenTTL.
+func mintMfaTokenForTest(user string, ttl time.Duration) string {
+	secret := sessionSecret()
+	jtiBytes := make([]byte, 16)
+	_, _ = rand.Read(jtiBytes)
+	p := mfaTokenPayload{
+		User:    user,
+		Purpose: "mfa",
+		Exp:     time.Now().Add(ttl).Unix(),
+		Jti:     base64.RawURLEncoding.EncodeToString(jtiBytes),
+	}
+	data, _ := json.Marshal(p)
+	enc := base64.RawURLEncoding.EncodeToString(data)
+	mac := computeHMAC(enc, secret)
+	return enc + "." + mac
+}
 
 func init() {
 	// Tests need htpasswdUsers initialized for validateCredentials() to work,
@@ -193,7 +214,7 @@ func TestMfaToken_Expired(t *testing.T) {
 	t.Parallel()
 
 	// Sign with a negative TTL so the token is already expired
-	token := signMfaTokenWithTTL("alice", -1*time.Minute)
+	token := mintMfaTokenForTest("alice", -1*time.Minute)
 	_, _, _, ok := verifyMfaToken(token)
 	if ok {
 		t.Error("expected expired token to be rejected")

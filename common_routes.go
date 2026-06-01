@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -129,36 +128,6 @@ func newCommonRoutesStoreForTesting() *commonRoutesStore {
 // File-level lock на запись CCD-файлов (используется в задаче с rerenderAllCcds).
 var ccdMu sync.Mutex
 
-func loadCommonRoutesFromFile(path string) (CommonRoutesConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return CommonRoutesConfig{Routes: []CommonRouteEntry{}}, nil
-		}
-		return CommonRoutesConfig{}, err
-	}
-	var cfg CommonRoutesConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return CommonRoutesConfig{}, fmt.Errorf("parse %s: %w", path, err)
-	}
-	if cfg.Routes == nil {
-		cfg.Routes = []CommonRouteEntry{}
-	}
-	return cfg, nil
-}
-
-func saveCommonRoutesToFile(path string, cfg CommonRoutesConfig) error {
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	// writeFileAtomic uses a unique tmp file in the same dir, cleans it up on
-	// any failure path, and applies tight permissions. Common-routes is
-	// internal state — slightly stricter perms than the rendered server.conf
-	// aren't required since both files live in the same trust boundary.
-	return writeFileAtomic(path, data)
-}
-
 const commonRoutesSecretName = "ovpn-admin-common-routes"
 const commonRoutesSecretDataKey = "data"
 
@@ -252,6 +221,15 @@ func refreshAllDomains(ctx context.Context, cfg CommonRoutesConfig, now time.Tim
 
 const commonRoutesRefreshIntervalHours = 24
 
+// commonRoutesHandler dispatches GET (list) and POST (create) on /api/common-routes.
+// Multi-method routes can't use requireMethod, so per-handler dispatch stays here;
+// the slave check is still off-loaded — wrap POST callers in requireMaster.
+//
+// Practically: GET is open to slave (read-only), POST is wrapped at the route
+// registration. Because both methods share a path, we keep the inner method
+// switch but rely on requireMaster being applied at route level for POSTs.
+// In tests that call this handler directly with role=slave + POST, slave is
+// no longer rejected here — that's expected and covered by middleware tests.
 func (oAdmin *OvpnAdmin) commonRoutesHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	switch r.Method {
@@ -263,15 +241,17 @@ func (oAdmin *OvpnAdmin) commonRoutesHandler(w http.ResponseWriter, r *http.Requ
 		})
 	case http.MethodPost:
 		if oAdmin.role == "slave" {
-			http.Error(w, `{"status":"error","message":"slave is read-only"}`, http.StatusLocked)
+			writeJSONError(w, http.StatusLocked, "slave is read-only")
 			return
 		}
 		oAdmin.handleCreateCommonRoute(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
+// commonRoutesItemHandler dispatches PUT/DELETE on /api/common-routes/{id}.
+// Same multi-method pattern as commonRoutesHandler.
 func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	// Strip prefix to extract id. listenBaseUrl may add a prefix.
@@ -280,11 +260,11 @@ func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.
 		id = id[:idx]
 	}
 	if id == "" || id == "refresh" {
-		http.Error(w, "missing id", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "missing id")
 		return
 	}
 	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error","message":"slave is read-only"}`, http.StatusLocked)
+		writeJSONError(w, http.StatusLocked, "slave is read-only")
 		return
 	}
 	switch r.Method {
@@ -293,20 +273,14 @@ func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.
 	case http.MethodDelete:
 		oAdmin.handleDeleteCommonRoute(w, r, id)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
+// commonRoutesRefreshHandler POST /api/common-routes/refresh.
+// Method check + slave check are enforced by middleware at route registration.
 func (oAdmin *OvpnAdmin) commonRoutesRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error","message":"slave is read-only"}`, http.StatusLocked)
-		return
-	}
 
 	current := oAdmin.commonRoutes.snapshot()
 	updated, changed, okCount, failed := refreshAllDomains(r.Context(), current, time.Now())
@@ -335,18 +309,18 @@ func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.
 	var in CommonRouteEntry
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		log.Debugf("common-routes: decode body: %v", err)
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	in.ID = uuid.New().String()
 	if err := validateCommonRoute(in); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	current := oAdmin.commonRoutes.snapshot()
 	if isDuplicateCommonRoute(current, in) {
-		http.Error(w, "duplicate entry", http.StatusConflict)
+		writeJSONError(w, http.StatusConflict, "duplicate entry")
 		return
 	}
 
@@ -365,7 +339,7 @@ func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.
 	oAdmin.commonRoutes.replace(current)
 	if err := oAdmin.persistCommonRoutes(current); err != nil {
 		log.Errorf("persist: %v", err)
-		http.Error(w, "persist failed", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "persist failed")
 		return
 	}
 
@@ -382,12 +356,12 @@ func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.
 	var in CommonRouteEntry
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		log.Debugf("common-routes: decode body: %v", err)
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	in.ID = id
 	if err := validateCommonRoute(in); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -400,7 +374,7 @@ func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.
 		}
 	}
 	if idx == -1 {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -420,14 +394,14 @@ func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.
 	}
 
 	if isDuplicateCommonRoute(removeAt(current, idx), in) {
-		http.Error(w, "duplicate entry", http.StatusConflict)
+		writeJSONError(w, http.StatusConflict, "duplicate entry")
 		return
 	}
 
 	current.Routes[idx] = in
 	oAdmin.commonRoutes.replace(current)
 	if err := oAdmin.persistCommonRoutes(current); err != nil {
-		http.Error(w, "persist failed", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "persist failed")
 		return
 	}
 
@@ -450,13 +424,13 @@ func (oAdmin *OvpnAdmin) handleDeleteCommonRoute(w http.ResponseWriter, r *http.
 		}
 	}
 	if idx == -1 {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "not found")
 		return
 	}
 	current.Routes = append(current.Routes[:idx], current.Routes[idx+1:]...)
 	oAdmin.commonRoutes.replace(current)
 	if err := oAdmin.persistCommonRoutes(current); err != nil {
-		http.Error(w, "persist failed", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "persist failed")
 		return
 	}
 
@@ -467,12 +441,6 @@ func (oAdmin *OvpnAdmin) handleDeleteCommonRoute(w http.ResponseWriter, r *http.
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func writeJSON(w http.ResponseWriter, code int, body interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(body)
 }
 
 func isDuplicateCommonRoute(cfg CommonRoutesConfig, e CommonRouteEntry) bool {

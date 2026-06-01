@@ -67,6 +67,10 @@ func TestUserCreate_GateSkippedWhenServerConfigStoreNil(t *testing.T) {
 // TestUserCreate_SlaveCheckBeforeGate — порядок проверок: slave-роль должна
 // проверяться раньше гейта, чтобы slave-нода не сбивала пользователя
 // сообщением про "не настроено" вместо "read-only".
+//
+// After the middleware extraction the slave check lives in requireMaster,
+// not the handler. We exercise the exact route stack (requireMaster wrapping
+// the handler) so the test still pins the contract end-to-end.
 func TestUserCreate_SlaveCheckBeforeGate(t *testing.T) {
 	t.Parallel()
 	app := &OvpnAdmin{role: "slave"}
@@ -75,7 +79,7 @@ func TestUserCreate_SlaveCheckBeforeGate(t *testing.T) {
 	body := []byte(`{"username":"alice","password":"hunter22"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/user/create", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	app.userCreateHandler(rec, req)
+	app.requireMaster(app.userCreateHandler)(rec, req)
 
 	if rec.Code != http.StatusLocked {
 		t.Errorf("expected 423 (slave locked) before gate, got %d", rec.Code)

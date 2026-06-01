@@ -300,32 +300,27 @@ func (oAdmin *OvpnAdmin) commonRoutesSnapshot() CommonRoutesConfig {
 	return oAdmin.commonRoutes.snapshot()
 }
 
+// getCcd is a thin wrapper around parseCcd kept for call-site readability
+// (most callers want "give me this user's CCD" not "parse this user's CCD"
+// — the distinction matters when we one day cache parsed results).
 func (oAdmin *OvpnAdmin) getCcd(username string) Ccd {
-	ccd := Ccd{}
-	ccd.User = username
-	ccd.ClientAddress = "dynamic"
-	ccd.CustomRoutes = []ccdRoute{}
-
-	ccd = oAdmin.parseCcd(username)
-
-	return ccd
+	return oAdmin.parseCcd(username)
 }
 
+// Method / slave-role checks are enforced by requireMethod / requireMaster
+// middleware at route registration time; do not re-check them inside handlers.
+
 func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	var req struct {
 		Username string `json:"username"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := validateUsername(req.Username); err != nil {
-		http.Error(w, `{"error":"invalid username"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid username")
 		return
 	}
 	ccd, _ := json.Marshal(oAdmin.getCcd(req.Username))
@@ -333,18 +328,10 @@ func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	if oAdmin.role == "slave" {
-		http.Error(w, `{"status":"error"}`, http.StatusLocked)
-		return
-	}
 	var ccd Ccd
 	if r.Body == nil {
-		http.Error(w, "Please send a request body", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Please send a request body")
 		return
 	}
 
@@ -353,7 +340,7 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 		log.Errorln(err)
 	}
 	if err := validateUsername(ccd.User); err != nil {
-		http.Error(w, `{"error":"invalid username"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid username")
 		return
 	}
 
