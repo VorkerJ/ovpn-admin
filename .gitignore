@@ -32,3 +32,7 @@ packrd/
 # Playwright E2E test artifacts
 frontend/test-results/
 frontend/playwright-report/
+
+# Local dev overrides
+.env
+docker-compose.override.yml
