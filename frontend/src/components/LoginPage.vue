@@ -2,6 +2,7 @@
 <script setup>
 import { ref } from 'vue'
 import Input from '@/components/ui/Input.vue'
+import OtpInput from '@/components/ui/OtpInput.vue'
 import Button from '@/components/ui/Button.vue'
 import { loginMfa } from '@/api.js'
 
@@ -106,14 +107,7 @@ function backToPassword() {
       <form v-else class="space-y-4" @submit.prevent="submitMfa">
         <div class="space-y-1.5">
           <label class="text-sm font-medium">Код из приложения или резервный код</label>
-          <Input
-            v-model="mfaCode"
-            placeholder="000000"
-            class="text-center text-lg font-mono tracking-widest"
-            maxlength="10"
-            autocomplete="one-time-code"
-            autofocus
-          />
+          <OtpInput v-model="mfaCode" />
         </div>
 
         <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">

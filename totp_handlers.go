@@ -105,7 +105,7 @@ func (oAdmin *OvpnAdmin) mfaConfirmHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !verifyTOTPCode(rec.Secret, req.Code) {
-		writeJSONError(w, http.StatusUnauthorized, "invalid TOTP code")
+		writeJSONError(w, http.StatusUnauthorized, "Неверный код подтверждения")
 		return
 	}
 
@@ -153,7 +153,7 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 	// Re-authenticate with the current password before tearing down MFA.
 	if !validateCredentials(user, req.Password) {
 		recordLoginFailure(ip, user)
-		writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
+		writeJSONError(w, http.StatusUnauthorized, "Неверный пароль")
 		return
 	}
 
@@ -167,7 +167,7 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 	codeValid := verifyTOTPCode(rec.Secret, req.Code) || verifyBackupCode(req.Code, rec.BackupCodes)
 	if !codeValid {
 		recordLoginFailure(ip, user)
-		writeJSONError(w, http.StatusUnauthorized, "invalid code")
+		writeJSONError(w, http.StatusUnauthorized, "Неверный код")
 		return
 	}
 

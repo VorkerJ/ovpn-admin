@@ -4,6 +4,7 @@ import { ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import Dialog from '@/components/ui/Dialog.vue'
 import Input from '@/components/ui/Input.vue'
+import OtpInput from '@/components/ui/OtpInput.vue'
 import Button from '@/components/ui/Button.vue'
 import { ShieldCheck, ShieldOff, Copy, AlertTriangle } from 'lucide-vue-next'
 import { fetchMfaStatus, setupMfa, confirmMfa, disableMfa } from '@/api.js'
@@ -174,22 +175,9 @@ function onClose() {
         />
       </div>
 
-      <div class="space-y-1">
-        <label class="text-xs font-medium text-muted-foreground">Или введите ключ вручную:</label>
-        <div class="rounded-md bg-muted px-3 py-2 text-sm font-mono break-all select-all">
-          {{ secret }}
-        </div>
-      </div>
-
       <div class="space-y-1.5">
         <label class="text-sm font-medium">Код подтверждения</label>
-        <Input
-          v-model="confirmCode"
-          placeholder="000000"
-          class="text-center text-lg font-mono tracking-widest"
-          maxlength="6"
-          autocomplete="one-time-code"
-        />
+        <OtpInput v-model="confirmCode" />
       </div>
 
       <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
@@ -251,13 +239,7 @@ function onClose() {
         </div>
         <div class="space-y-1.5">
           <label class="text-sm text-muted-foreground">Введите код из приложения для отключения</label>
-          <Input
-            v-model="disableCode"
-            placeholder="000000"
-            class="text-center text-lg font-mono tracking-widest"
-            maxlength="10"
-            autocomplete="one-time-code"
-          />
+          <OtpInput v-model="disableCode" />
         </div>
 
         <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
