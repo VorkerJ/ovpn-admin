@@ -151,6 +151,28 @@ onMounted(reload)
         </div>
       </SectionCard>
 
+      <SectionCard title="Публичный endpoint" description="Что попадает в .ovpn клиентам (по умолчанию — из --ovpn.server)" :default-open="false">
+        <div class="grid grid-cols-3 gap-3">
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Hostname / IP</span>
+            <Input v-model="cfg.public_hostname" :disabled="!isMaster" placeholder="vpn.example.com" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Port</span>
+            <Input v-model.number="cfg.public_port" type="number" :disabled="!isMaster" placeholder="1194" class="font-mono mt-1" />
+          </label>
+          <label class="block text-sm">
+            <span class="text-xs text-muted-foreground">Protocol</span>
+            <select v-model="cfg.public_proto" :disabled="!isMaster" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+              <option value="">(default)</option>
+              <option value="udp">UDP</option>
+              <option value="tcp">TCP</option>
+            </select>
+          </label>
+        </div>
+        <p class="text-xs text-muted-foreground mt-2">Оставьте пустым чтобы использовать значение из --ovpn.server CLI флага</p>
+      </SectionCard>
+
       <SectionCard title="Шифрование" description="Cipher, TLS, DCO">
         <div class="space-y-3">
           <div>

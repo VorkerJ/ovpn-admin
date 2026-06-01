@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"text/template"
@@ -74,6 +75,11 @@ type ServerConfig struct {
 
 	// Advanced
 	CustomDirectives []string `json:"custom_directives"`
+
+	// PublicEndpoint — override for .ovpn client config (defaults to --ovpn.server)
+	PublicHostname string `json:"public_hostname,omitempty"`
+	PublicPort     int    `json:"public_port,omitempty"`
+	PublicProto    string `json:"public_proto,omitempty"`
 
 	// Bookkeeping
 	UpdatedAt string `json:"updated_at"`
@@ -204,6 +210,19 @@ func validateServerConfig(cfg ServerConfig) error {
 	}
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return fmt.Errorf("port must be 1..65535, got %d", cfg.Port)
+	}
+	if cfg.PublicPort != 0 && (cfg.PublicPort < 1 || cfg.PublicPort > 65535) {
+		return fmt.Errorf("public_port must be 1..65535, got %d", cfg.PublicPort)
+	}
+	if cfg.PublicProto != "" && cfg.PublicProto != "udp" && cfg.PublicProto != "tcp" {
+		return fmt.Errorf("public_proto must be udp or tcp, got %q", cfg.PublicProto)
+	}
+	if cfg.PublicHostname != "" {
+		// Accept hostname (RFC1035) or IPv4
+		hostnameRE := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$`)
+		if net.ParseIP(cfg.PublicHostname) == nil && !hostnameRE.MatchString(cfg.PublicHostname) {
+			return fmt.Errorf("public_hostname must be a valid hostname or IP, got %q", cfg.PublicHostname)
+		}
 	}
 	if net.ParseIP(cfg.Network) == nil {
 		return fmt.Errorf("network %q is not a valid IP", cfg.Network)

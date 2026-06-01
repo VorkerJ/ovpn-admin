@@ -252,6 +252,69 @@ func TestValidateServerConfig_KeepaliveRelation(t *testing.T) {
 	}
 }
 
+func TestValidate_PublicHostname_Valid(t *testing.T) {
+	t.Parallel()
+	for _, h := range []string{"vpn.example.com", "1.2.3.4", "", "host1", "a.b.c.d.example.org"} {
+		cfg := defaultServerConfig()
+		cfg.PublicHostname = h
+		if err := validateServerConfig(cfg); err != nil {
+			t.Errorf("public_hostname %q must be accepted, got: %v", h, err)
+		}
+	}
+}
+
+func TestValidate_PublicHostname_Invalid(t *testing.T) {
+	t.Parallel()
+	for _, h := range []string{"not a host!", "http://x.com", "-bad.com", "bad-.com", "has space.com", "x/y"} {
+		cfg := defaultServerConfig()
+		cfg.PublicHostname = h
+		if err := validateServerConfig(cfg); err == nil {
+			t.Errorf("public_hostname %q must be rejected", h)
+		}
+	}
+}
+
+func TestValidate_PublicPort_OutOfRange(t *testing.T) {
+	t.Parallel()
+	// 0 means unset and should be accepted
+	cfg := defaultServerConfig()
+	cfg.PublicPort = 0
+	if err := validateServerConfig(cfg); err != nil {
+		t.Errorf("public_port=0 must be accepted (unset), got: %v", err)
+	}
+	// Valid in-range
+	cfg.PublicPort = 1194
+	if err := validateServerConfig(cfg); err != nil {
+		t.Errorf("public_port=1194 must be accepted, got: %v", err)
+	}
+	// Invalid out-of-range values
+	for _, p := range []int{-1, 65536, 99999} {
+		cfg := defaultServerConfig()
+		cfg.PublicPort = p
+		if err := validateServerConfig(cfg); err == nil {
+			t.Errorf("public_port=%d must be rejected", p)
+		}
+	}
+}
+
+func TestValidate_PublicProto_Invalid(t *testing.T) {
+	t.Parallel()
+	for _, p := range []string{"", "udp", "tcp"} {
+		cfg := defaultServerConfig()
+		cfg.PublicProto = p
+		if err := validateServerConfig(cfg); err != nil {
+			t.Errorf("public_proto %q must be accepted, got: %v", p, err)
+		}
+	}
+	for _, p := range []string{"sctp", "UDP", "tls", "http"} {
+		cfg := defaultServerConfig()
+		cfg.PublicProto = p
+		if err := validateServerConfig(cfg); err == nil {
+			t.Errorf("public_proto %q must be rejected", p)
+		}
+	}
+}
+
 func TestRenderServerConfig_Defaults(t *testing.T) {
 	t.Parallel()
 	cfg := defaultServerConfig()

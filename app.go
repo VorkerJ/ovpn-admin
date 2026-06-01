@@ -217,6 +217,20 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 			hosts = append(hosts, OpenvpnServer{Host: parts[0], Port: parts[1], Protocol: parts[2]})
 		}
 
+		// If ServerConfig UI has overrides, apply them to the first host
+		if oAdmin.serverConfigStore != nil && len(hosts) > 0 {
+			sc := oAdmin.serverConfigStore.snapshot()
+			if sc.PublicHostname != "" {
+				hosts[0].Host = sc.PublicHostname
+			}
+			if sc.PublicPort != 0 {
+				hosts[0].Port = strconv.Itoa(sc.PublicPort)
+			}
+			if sc.PublicProto != "" {
+				hosts[0].Protocol = sc.PublicProto
+			}
+		}
+
 		if *openvpnServerBehindLB {
 			var err error
 			hosts, err = getOvpnServerHostsFromKubeApi()
