@@ -71,18 +71,27 @@ func (s *filesystemStore) UnrevokeClient(commonName string) error {
 
 				serial := usersFromIndexTxt[i].SerialNumber
 
-				if err := fMove(
-					fmt.Sprintf("%s/pki/revoked/certs_by_serial/%s.crt", s.easyrsaDirPath, serial),
-					fmt.Sprintf("%s/pki/issued/%s.crt", s.easyrsaDirPath, commonName),
-				); err != nil {
-					log.Error(err)
+				// The revoked cert lives at exactly one path
+				// (revoked/certs_by_serial/<serial>.crt) but must be restored to
+				// TWO destinations: pki/issued/<cn>.crt AND
+				// pki/certs_by_serial/<serial>.pem. Copy then delete — the
+				// previous code called fMove twice with the same source, so the
+				// second move silently failed because the source was already
+				// gone, leaving certs_by_serial/ inconsistent.
+				srcRevokedCert := fmt.Sprintf("%s/pki/revoked/certs_by_serial/%s.crt", s.easyrsaDirPath, serial)
+				dstIssued := fmt.Sprintf("%s/pki/issued/%s.crt", s.easyrsaDirPath, commonName)
+				dstBySerial := fmt.Sprintf("%s/pki/certs_by_serial/%s.pem", s.easyrsaDirPath, serial)
+
+				if err := fCopy(srcRevokedCert, dstIssued); err != nil {
+					log.Errorf("UnrevokeClient: copy to issued/: %v", err)
 				}
-				if err := fMove(
-					fmt.Sprintf("%s/pki/revoked/certs_by_serial/%s.crt", s.easyrsaDirPath, serial),
-					fmt.Sprintf("%s/pki/certs_by_serial/%s.pem", s.easyrsaDirPath, serial),
-				); err != nil {
-					log.Error(err)
+				if err := fCopy(srcRevokedCert, dstBySerial); err != nil {
+					log.Errorf("UnrevokeClient: copy to certs_by_serial/: %v", err)
 				}
+				if err := fDelete(srcRevokedCert); err != nil {
+					log.Errorf("UnrevokeClient: delete revoked cert: %v", err)
+				}
+
 				if err := fMove(
 					fmt.Sprintf("%s/pki/revoked/private_by_serial/%s.key", s.easyrsaDirPath, serial),
 					fmt.Sprintf("%s/pki/private/%s.key", s.easyrsaDirPath, commonName),

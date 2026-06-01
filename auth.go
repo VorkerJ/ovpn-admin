@@ -270,11 +270,25 @@ func initAuth() {
 // loadOrGenerateSigningKey loads a 64-byte signing key from disk, or generates
 // and persists a fresh one on first start. Permissions are tightened to 0600
 // on a 0700 directory because the key is equivalent to all active sessions.
+//
+// If the file exists but has the wrong length we FAIL LOUD rather than silently
+// regenerating. A corrupted (or truncated) key file would otherwise rotate the
+// session/MFA secret on every boot, invalidating all sessions AND breaking
+// decryption of stored MFA secrets (mfaEncKey derives from the signing key).
+// Operator must explicitly delete the file to opt into rotation.
 func loadOrGenerateSigningKey() error {
-	if data, err := os.ReadFile(sessionSigningKeyFile); err == nil && len(data) == 64 {
-		sessionSigningKey = data
-		return nil
+	data, err := os.ReadFile(sessionSigningKeyFile)
+	if err == nil {
+		if len(data) == 64 {
+			sessionSigningKey = data
+			return nil
+		}
+		return fmt.Errorf("signing key file %s has invalid length %d (expected 64); delete the file to rotate the key", sessionSigningKeyFile, len(data))
 	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("read signing key: %w", err)
+	}
+	// File doesn't exist — generate a fresh key.
 	sessionSigningKey = make([]byte, 64)
 	if _, err := rand.Read(sessionSigningKey); err != nil {
 		return err
@@ -308,9 +322,28 @@ func loadHtpasswd(path string) error {
 	return scanner.Err()
 }
 
+// dummyBcryptHash is computed once at process start so that validateCredentials
+// can run a bcrypt comparison even for unknown usernames. Without this, an
+// early `return false` on missing user leaks a ~100ms timing oracle that lets
+// an attacker enumerate valid accounts.
+var dummyBcryptHash = func() string {
+	h, err := bcrypt.GenerateFromPassword([]byte("dummy"), bcrypt.DefaultCost)
+	if err != nil {
+		// bcrypt.GenerateFromPassword only errors on absurd cost values.
+		// Fall back to an empty string — the subsequent CompareHashAndPassword
+		// will always fail-fast, which still costs ~constant time relative to
+		// a real hash mismatch (both are fast paths).
+		return ""
+	}
+	return string(h)
+}()
+
 func validateCredentials(username, password string) bool {
 	hash, ok := htpasswdUsers[username]
 	if !ok {
+		// Run bcrypt against a dummy hash so the timing of the "unknown user"
+		// path matches the "wrong password" path. Result discarded.
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(password))
 		return false
 	}
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil

@@ -126,7 +126,7 @@ func (oAdmin *OvpnAdmin) rerenderAllCcds(commonExpanded []ccdCommonRoute) {
 
 	start := time.Now()
 	count := 0
-	for _, u := range oAdmin.clients {
+	for _, u := range oAdmin.snapshotClients() {
 		if u.AccountStatus != "Active" {
 			continue
 		}
@@ -190,7 +190,7 @@ func (oAdmin *OvpnAdmin) refreshAllUserDomains(ctx context.Context) {
 		commonExpanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
 	}
 
-	for _, u := range oAdmin.clients {
+	for _, u := range oAdmin.snapshotClients() {
 		if u.AccountStatus != "Active" {
 			continue
 		}

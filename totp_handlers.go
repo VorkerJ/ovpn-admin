@@ -244,6 +244,16 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Reject early if MFA is not configured server-side. Done BEFORE any state
+	// mutation (rate-limit counters, jti consumption) so a probe against a
+	// non-MFA server cannot poison either.
+	if oAdmin.mfaStore == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"MFA is not enabled on this server"}`)
+		return
+	}
+
 	ip := clientIP(r)
 	if !checkLoginRateLimit(ip) {
 		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
@@ -261,7 +271,7 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	user, jti, ok := verifyMfaToken(req.MfaToken)
+	user, jti, exp, ok := verifyMfaToken(req.MfaToken)
 	if !ok {
 		recordLoginFailure(ip)
 		w.Header().Set("Content-Type", "application/json")
@@ -277,20 +287,15 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Single-use: mark the jti as consumed so the same intermediate token
-	// cannot be replayed (e.g. after a leaked browser history entry).
-	if !consumeMfaJti(jti, time.Now().Add(mfaTokenTTL).Unix()) {
+	// cannot be replayed (e.g. after a leaked browser history entry). The
+	// expiry tracked here MUST come from the token itself — using
+	// time.Now()+TTL would keep the entry alive past the token's own
+	// validity and prematurely garbage-collect older entries.
+	if !consumeMfaJti(jti, exp) {
 		recordLoginFailure(ip, user)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":"MFA token already used"}`)
-		return
-	}
-
-	if oAdmin.mfaStore == nil {
-		recordLoginFailure(ip, user)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"MFA is not enabled on this server"}`)
 		return
 	}
 

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -312,31 +313,31 @@ func signMfaTokenWithTTL(user string, ttl time.Duration) string {
 	return enc + "." + mac
 }
 
-func verifyMfaToken(token string) (user string, jti string, ok bool) {
+func verifyMfaToken(token string) (user string, jti string, exp int64, ok bool) {
 	secret := sessionSecret()
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
-		return "", "", false
+		return "", "", 0, false
 	}
 	enc, mac := parts[0], parts[1]
-	if computeHMAC(enc, secret) != mac {
-		return "", "", false
+	if !hmac.Equal([]byte(computeHMAC(enc, secret)), []byte(mac)) {
+		return "", "", 0, false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(enc)
 	if err != nil {
-		return "", "", false
+		return "", "", 0, false
 	}
 	var p mfaTokenPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return "", "", false
+		return "", "", 0, false
 	}
 	if p.Purpose != "mfa" {
-		return "", "", false
+		return "", "", 0, false
 	}
 	if time.Now().Unix() > p.Exp {
-		return "", "", false
+		return "", "", 0, false
 	}
-	return p.User, p.Jti, true
+	return p.User, p.Jti, p.Exp, true
 }
 
 // usedMfaJtis tracks consumed mfa_token jti values to enforce single-use.

@@ -13,6 +13,21 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// mustJSONMsg encodes a "msg" envelope safely. Inline string concatenation in
+// the old code (`{"msg":"User \"%s\" not found"}`) produced invalid JSON when
+// username contained quotes or interpolation broke the quoting. encoding/json
+// handles escaping for us.
+func mustJSONMsg(msg string) string {
+	data, err := json.Marshal(map[string]string{"msg": msg})
+	if err != nil {
+		// Fallback: defensively produce a static valid JSON string. Marshal of
+		// map[string]string{} cannot fail in practice but the fallback keeps
+		// the API contract intact.
+		return `{"msg":"internal error"}`
+	}
+	return string(data)
+}
+
 func runOpenvpnUser(args ...string) string {
 	cmd := exec.Command("openvpn-user", args...)
 	out, err := cmd.CombinedOutput()
@@ -60,13 +75,14 @@ func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request)
 	if err := oAdmin.store.UpdateIndexTxtOnDisk(); err != nil {
 		log.Errorf("userListHandler: UpdateIndexTxtOnDisk: %v", err)
 	}
-	oAdmin.clients = oAdmin.usersList()
-	if oAdmin.clients == nil {
-		oAdmin.clients = []OpenvpnClient{}
+	oAdmin.updateClients()
+	clients := oAdmin.snapshotClients()
+	if clients == nil {
+		clients = []OpenvpnClient{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	usersList, err := json.Marshal(oAdmin.clients)
+	usersList, err := json.Marshal(clients)
 	if err != nil {
 		log.Errorf("userListHandler: marshal: %v", err)
 		fmt.Fprint(w, "[]")
@@ -116,7 +132,7 @@ func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Reques
 	userCreated, userCreateStatus := oAdmin.userCreate(req.Username, req.Password)
 
 	if userCreated {
-		oAdmin.clients = oAdmin.usersList()
+		oAdmin.updateClients()
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, userCreateStatus)
 		return
@@ -287,18 +303,41 @@ func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Re
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	if oAdmin.role == "slave" {
 		http.Error(w, `{"status":"error"}`, http.StatusLocked)
 		return
 	}
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
-	// 	fmt.Fprintf(w, "%s", userDisconnect(req.Username))
-	fmt.Fprintf(w, "%s", req.Username)
+
+	if err := validateUsername(req.Username); err != nil {
+		http.Error(w, `{"error":"invalid username"}`, http.StatusBadRequest)
+		return
+	}
+
+	if !checkUserExist(req.Username) {
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
+
+	connected, connections := isUserConnected(req.Username, oAdmin.activeClients)
+	if !connected {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true,"disconnected":0}`)
+		return
+	}
+
+	for _, conn := range connections {
+		oAdmin.mgmtKillUserConnection(req.Username, conn)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true,"disconnected":%d}`, len(connections))
 }
 
 func validateUsername(username string) error {
@@ -307,6 +346,13 @@ func validateUsername(username string) error {
 	}
 	if strings.Contains(username, "/") || strings.Contains(username, "\\") {
 		return errors.New("Имя пользователя не может содержать слэши")
+	}
+	// Reject leading dashes and `--` sequences. easyrsa does not support a
+	// `--` end-of-options marker, so a username like "--whatever" would be
+	// parsed as a flag by the easyrsa CLI. Belt-and-suspenders alongside the
+	// regex — the regex already requires the first char to be alnum/_/@.
+	if strings.HasPrefix(username, "-") || strings.Contains(username, "--") {
+		return errors.New("Имя пользователя не может начинаться с дефиса или содержать `--`")
 	}
 	var validUsername = regexp.MustCompile(usernameRegexp)
 	if validUsername.MatchString(username) {
@@ -397,7 +443,7 @@ func (oAdmin *OvpnAdmin) userChangePassword(username, password string) (error, s
 		return nil, "Password changed"
 	}
 
-	return fmt.Errorf("User \"%s\" not found}", username), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
+	return fmt.Errorf("user %q not found", username), mustJSONMsg(fmt.Sprintf("User %s not found", username))
 }
 
 func (oAdmin *OvpnAdmin) getUserStatistic(username string) []clientStatus {
@@ -437,7 +483,7 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 		return nil, fmt.Sprintf("user \"%s\" revoked", username)
 	}
 	log.Infof("user \"%s\" not found", username)
-	return fmt.Errorf("User \"%s\" not found}", username), fmt.Sprintf("User \"%s\" not found", username)
+	return fmt.Errorf("user %q not found", username), fmt.Sprintf("User %s not found", username)
 }
 
 func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
@@ -452,10 +498,10 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 		}
 
 		crlFix()
-		oAdmin.clients = oAdmin.usersList()
-		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully unrevoked\"}", username)
+		oAdmin.updateClients()
+		return nil, mustJSONMsg(fmt.Sprintf("User %s successfully unrevoked", username))
 	}
-	return fmt.Errorf("user \"%s\" not found", username), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
+	return fmt.Errorf("user %q not found", username), mustJSONMsg(fmt.Sprintf("User %s not found", username))
 }
 
 func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string) {
@@ -476,10 +522,10 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 		}
 
 		crlFix()
-		oAdmin.clients = oAdmin.usersList()
-		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully rotated\"}", username)
+		oAdmin.updateClients()
+		return nil, mustJSONMsg(fmt.Sprintf("User %s successfully rotated", username))
 	}
-	return fmt.Errorf("user \"%s\" not found", username), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
+	return fmt.Errorf("user %q not found", username), mustJSONMsg(fmt.Sprintf("User %s not found", username))
 }
 
 func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
@@ -493,10 +539,10 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 		}
 
 		crlFix()
-		oAdmin.clients = oAdmin.usersList()
-		return nil, fmt.Sprintf("{\"msg\":\"User %s successfully deleted\"}", username)
+		oAdmin.updateClients()
+		return nil, mustJSONMsg(fmt.Sprintf("User %s successfully deleted", username))
 	}
-	return fmt.Errorf("User \"%s\" not found}", username), fmt.Sprintf("{\"msg\":\"User \"%s\" not found\"}", username)
+	return fmt.Errorf("user %q not found", username), mustJSONMsg(fmt.Sprintf("User %s not found", username))
 }
 
 func (oAdmin *OvpnAdmin) checkStaticAddressIsFree(staticAddress string, username string) bool {

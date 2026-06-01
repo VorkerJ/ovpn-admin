@@ -40,21 +40,47 @@ type OvpnAdmin struct {
 	lastSuccessfulSyncTime string
 	masterHostBasicAuth    bool
 	masterSyncToken        string
-	clients                []OpenvpnClient
-	activeClients          []clientStatus
-	promRegistry           *prometheus.Registry
-	mgmtInterfaces         map[string]string
-	templates              fs.FS
-	modules                []string
-	mgmtStatusTimeFormat   string
-	createUserMutex        *sync.Mutex
-	commonRoutes           *commonRoutesStore
-	commonRoutesPath       string
-	firewall               *firewallController
-	serverConfigStore      *serverConfigStore
-	serverManager          *serverManager
-	store                  storage.Store
-	mfaStore               *mfaStore
+	// clients is read by handlers and written by setState()/userListHandler.
+	// All access MUST go through updateClients / snapshotClients to honor
+	// clientsMu; direct access is a race that go test -race will flag.
+	clients              []OpenvpnClient
+	clientsMu            sync.RWMutex
+	activeClients        []clientStatus
+	promRegistry         *prometheus.Registry
+	mgmtInterfaces       map[string]string
+	templates            fs.FS
+	modules              []string
+	mgmtStatusTimeFormat string
+	createUserMutex      *sync.Mutex
+	commonRoutes         *commonRoutesStore
+	commonRoutesPath     string
+	firewall             *firewallController
+	serverConfigStore    *serverConfigStore
+	serverManager        *serverManager
+	store                storage.Store
+	mfaStore             *mfaStore
+}
+
+// updateClients refreshes the cached clients slice under clientsMu.
+// Always prefer this over direct `oAdmin.clients = …` assignment so concurrent
+// snapshotClients readers see a consistent slice header.
+func (oAdmin *OvpnAdmin) updateClients() {
+	list := oAdmin.usersList()
+	oAdmin.clientsMu.Lock()
+	oAdmin.clients = list
+	oAdmin.clientsMu.Unlock()
+}
+
+// snapshotClients returns a defensive copy of the cached client list.
+// Returning a copy (rather than a borrowed slice under RLock) lets the caller
+// iterate without holding the read lock — important because callers like
+// rerenderAllCcds do expensive per-item work.
+func (oAdmin *OvpnAdmin) snapshotClients() []OpenvpnClient {
+	oAdmin.clientsMu.RLock()
+	defer oAdmin.clientsMu.RUnlock()
+	out := make([]OpenvpnClient, len(oAdmin.clients))
+	copy(out, oAdmin.clients)
+	return out
 }
 
 type OpenvpnServer struct {
@@ -124,7 +150,7 @@ type clientStatus struct {
 
 func (oAdmin *OvpnAdmin) setState() {
 	oAdmin.activeClients = oAdmin.mgmtGetActiveClients()
-	oAdmin.clients = oAdmin.usersList()
+	oAdmin.updateClients()
 
 	ovpnServerCaCertExpire.Set(float64((getOvpnCaCertExpireDate().Unix() - time.Now().Unix()) / 3600 / 24))
 }

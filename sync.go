@@ -82,10 +82,19 @@ func unArchiveCcd() {
 }
 
 func ovpnUserInitDb() {
-	if fi, err := os.Stat(*authDatabase); errors.Is(err, os.ErrNotExist) || fi.Size() == 0 {
-		i := runBash(fmt.Sprintf("openvpn-user --db.path %[1]s db-init && openvpn-user --db.path %[1]s db-migrate", *authDatabase))
-		log.Debug(i)
+	// Only initialize if the DB file is missing or empty. Stat error checks
+	// both ENOENT and zero-byte placeholder files (Docker bind mounts often
+	// pre-create the path as empty).
+	fi, err := os.Stat(*authDatabase)
+	if !(errors.Is(err, os.ErrNotExist) || (err == nil && fi.Size() == 0)) {
+		return
 	}
+	// Execute via runOpenvpnUser (argv-based exec.Command) rather than
+	// runBash(fmt.Sprintf(...)). Shell interpolation of *authDatabase was a
+	// command-injection vector if the operator pointed --auth-database at a
+	// path containing shell metacharacters.
+	log.Debug(runOpenvpnUser("--db.path", *authDatabase, "db-init"))
+	log.Debug(runOpenvpnUser("--db.path", *authDatabase, "db-migrate"))
 }
 
 func (oAdmin *OvpnAdmin) syncDataFromMaster() {

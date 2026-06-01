@@ -180,7 +180,7 @@ func TestMfaToken_SignAndVerify(t *testing.T) {
 	t.Parallel()
 
 	token := signMfaToken("alice")
-	user, _, ok := verifyMfaToken(token)
+	user, _, _, ok := verifyMfaToken(token)
 	if !ok {
 		t.Fatal("expected token to be valid")
 	}
@@ -194,7 +194,7 @@ func TestMfaToken_Expired(t *testing.T) {
 
 	// Sign with a negative TTL so the token is already expired
 	token := signMfaTokenWithTTL("alice", -1*time.Minute)
-	_, _, ok := verifyMfaToken(token)
+	_, _, _, ok := verifyMfaToken(token)
 	if ok {
 		t.Error("expected expired token to be rejected")
 	}
