@@ -17,7 +17,7 @@ const props = defineProps({
 
 // saved — успешное сохранение конфига; App.vue использует это чтобы
 // перечитать /api/server/settings и убрать баннер "сервер не настроен".
-const emit = defineEmits(['saved'])
+const emit = defineEmits(['saved', 'mfa-required'])
 
 const cfg = ref(null)
 const dcoAvailable = ref(false)
@@ -67,7 +67,13 @@ async function save() {
       notify('Настройки сохранены.', 'success')
     }
   } catch (e) {
-    notify(`Ошибка: ${e.response?.data || e.message}`, 'destructive')
+    const msg = e.response?.data?.error || e.response?.data?.message || e.message || 'Неизвестная ошибка'
+    if (e.response?.status === 412 && msg.includes('MFA')) {
+      notify('Сначала включите 2FA в правом верхнем углу', 'destructive')
+      emit('mfa-required')
+    } else {
+      notify(`Ошибка: ${msg}`, 'destructive')
+    }
   } finally { submitting.value = false }
 }
 
@@ -97,10 +103,10 @@ onMounted(reload)
         </p>
       </div>
       <div class="flex gap-2">
-        <Button v-if="isMaster" variant="secondary" size="sm" @click="resetToDefaults">
+        <Button v-if="isMaster" variant="secondary" size="sm" data-testid="server-config-reset" @click="resetToDefaults">
           <RotateCcw :size="14" /> Сбросить
         </Button>
-        <Button v-if="isMaster" :loading="submitting" :disabled="!cfg" @click="save">
+        <Button v-if="isMaster" size="sm" :loading="submitting" :disabled="!cfg" data-testid="server-config-save" @click="save">
           <Save :size="14" /> Сохранить
         </Button>
       </div>

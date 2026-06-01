@@ -40,7 +40,7 @@ test.describe('MFA / TOTP', () => {
     ).toBeVisible()
   })
 
-  test('MFA setup generates QR code and shows secret', async ({ page }) => {
+  test('MFA setup generates QR code (no manual secret leak)', async ({ page }) => {
     await page.click('button[title="Двухфакторная аутентификация"]')
 
     // Wait for modal to load MFA status
@@ -56,14 +56,11 @@ test.describe('MFA / TOTP', () => {
       page.locator('img[alt="QR code"]'),
     ).toBeVisible({ timeout: 10_000 })
 
-    // Should show the manual secret key
-    await expect(
-      page.locator('text=Или введите ключ вручную'),
-    ).toBeVisible()
+    // Manual secret entry was removed — the secret string MUST NOT be shown
+    // in the UI (it's only embedded in the QR data URL, rendered client-side).
+    await expect(page.locator('text=Или введите ключ вручную')).toHaveCount(0)
 
-    // Confirmation code input should be visible
-    await expect(
-      page.locator('input[placeholder="000000"]'),
-    ).toBeVisible()
+    // OTP confirmation input (6 cells) should be visible
+    await expect(page.getByTestId('otp-input')).toBeVisible()
   })
 })

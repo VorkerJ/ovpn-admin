@@ -168,6 +168,14 @@ function handleMfa412(e) {
   return false
 }
 
+// Триггерится дочерними view (ServerConfigView, CommonRoutesView) когда они
+// поймали 412 и обработали ошибку у себя — нам нужно только обновить флаг и
+// открыть модалку.
+function onMfaRequired() {
+  adminMfaEnabled.value = false
+  mfaModalOpen.value = true
+}
+
 onMounted(() => {
   checkAuth()
 })
@@ -398,10 +406,10 @@ async function safeUnrevoke(username) {
         </div>
       </template>
       <template v-else-if="activeTab === 'common-routes'">
-        <CommonRoutesView :server-role="serverRole" />
+        <CommonRoutesView :server-role="serverRole" @mfa-required="onMfaRequired" />
       </template>
       <template v-else-if="activeTab === 'server-config'">
-        <ServerConfigView :server-role="serverRole" @saved="loadSettings" />
+        <ServerConfigView :server-role="serverRole" @saved="loadSettings" @mfa-required="onMfaRequired" />
       </template>
     </main>
 

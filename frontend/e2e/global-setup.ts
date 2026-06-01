@@ -46,14 +46,24 @@ export default async function globalSetup() {
   //
   // Boolean flags (--firewall, --server-config, --common-routes, --ccd) use
   // kingpin Bool() and cannot be set to false via CLI args. We use env vars instead.
+  //
+  // server-config IS enabled so the server-init-gate and server-config e2e tests
+  // can exercise the real flow. We override OVPN_SERVER_CONFIG_PATH so the
+  // initial render writes into the temp dir, not /etc/openvpn.
   const server = spawn(join(tmp, 'ovpn-admin'), [
     '--listen.host=127.0.0.1',
-    '--listen.port=8080',
+    '--listen.port=8089',
     '--easyrsa.path=' + join(tmp, 'easyrsa'),
     '--ccd.path=' + join(tmp, 'ccd'),
     '--admin.htpasswd-file=' + join(tmp, 'htpasswd'),
     '--mfa',
     '--mfa.db-path=' + join(tmp, 'mfa.json'),
+    // MFA gate is OFF (set via OVPN_MFA_REQUIRED env, since kingpin Bool can't
+    // accept --flag=false on the CLI) — backend lets write ops through
+    // without MFA. UI-level enforcement assertions (banner, pulse dot,
+    // disabled add-user) use Playwright route interception to inject the
+    // gating flags.
+    '--master.sync-token=e2e-test-sync-token-please-replace-in-prod',
     '--ovpn.server=127.0.0.1:1194:udp',
     '--mgmt=main=127.0.0.1:19999',
     '--log.level=warn',
@@ -63,9 +73,15 @@ export default async function globalSetup() {
     env: {
       ...process.env,
       OVPN_FIREWALL: 'false',
-      OVPN_SERVER_CONFIG: 'false',
+      OVPN_SERVER_CONFIG: 'true',
+      OVPN_SERVER_CONFIG_PATH: join(tmp, 'server.conf'),
       OVPN_COMMON_ROUTES: 'false',
       OVPN_CCD: 'false',
+      // Disable MFA enforcement at the gate level — see comment above.
+      OVPN_MFA_REQUIRED: 'false',
+      // Tests run over plain http://127.0.0.1 — Secure-flagged cookies would
+      // be dropped by the browser. Mark cookies insecure for the test server.
+      OVPN_INSECURE_COOKIES: 'true',
     },
   })
 
@@ -85,7 +101,7 @@ export default async function globalSetup() {
   const deadline = Date.now() + 90_000 // 90 seconds
   while (Date.now() < deadline) {
     try {
-      const res = await fetch('http://127.0.0.1:8080/ping')
+      const res = await fetch('http://127.0.0.1:8089/ping')
       if (res.ok) {
         console.log('[e2e] Server ready!')
         return

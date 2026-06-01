@@ -63,6 +63,7 @@ const { isDark, toggle } = useTheme()
         <Button
           v-if="serverRole === 'master'"
           size="sm"
+          data-testid="add-user-button"
           :disabled="!serverInitialized || !adminMfaEnabled"
           :title="!adminMfaEnabled
             ? 'Включите 2FA в правом верхнем углу'

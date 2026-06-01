@@ -18,6 +18,7 @@ import {
 const props = defineProps({
   serverRole: { type: String, default: 'master' },
 })
+const emit = defineEmits(['mfa-required'])
 
 const routes = ref([])
 const refreshIntervalHours = ref(24)
@@ -84,7 +85,14 @@ async function addRoute() {
     }
     resetForm()
   } catch (e) {
-    formError.value = e.response?.data || e.message
+    const msg = e.response?.data?.error || e.response?.data?.message || e.message || 'Неизвестная ошибка'
+    if (e.response?.status === 412 && msg.includes('MFA')) {
+      notify('Сначала включите 2FA в правом верхнем углу', 'destructive')
+      emit('mfa-required')
+      resetForm()
+    } else {
+      formError.value = msg
+    }
   } finally {
     submitting.value = false
   }
@@ -96,7 +104,13 @@ async function removeRoute(id) {
     routes.value = routes.value.filter(r => r.id !== id)
     notify('Маршрут удалён')
   } catch (e) {
-    notify(`Ошибка удаления: ${e.message}`, 'destructive')
+    const msg = e.response?.data?.error || e.response?.data?.message || e.message || 'Неизвестная ошибка'
+    if (e.response?.status === 412 && msg.includes('MFA')) {
+      notify('Сначала включите 2FA в правом верхнем углу', 'destructive')
+      emit('mfa-required')
+    } else {
+      notify(`Ошибка удаления: ${msg}`, 'destructive')
+    }
   }
 }
 
@@ -107,7 +121,13 @@ async function refreshDns() {
     notify(`DNS обновлён: резолвлено ${r.resolved}, ошибок ${r.failed}`, r.failed > 0 ? 'destructive' : 'success')
     await reload()
   } catch (e) {
-    notify(`Ошибка обновления DNS: ${e.message}`, 'destructive')
+    const msg = e.response?.data?.error || e.response?.data?.message || e.message || 'Неизвестная ошибка'
+    if (e.response?.status === 412 && msg.includes('MFA')) {
+      notify('Сначала включите 2FA в правом верхнем углу', 'destructive')
+      emit('mfa-required')
+    } else {
+      notify(`Ошибка обновления DNS: ${msg}`, 'destructive')
+    }
   } finally {
     refreshing.value = false
   }
@@ -127,7 +147,14 @@ async function submitEdit(payload) {
     notify('Маршрут обновлён', 'success')
     editing.value = null
   } catch (e) {
-    notify(`Ошибка: ${e.response?.data || e.message}`, 'destructive')
+    const msg = e.response?.data?.error || e.response?.data?.message || e.message || 'Неизвестная ошибка'
+    if (e.response?.status === 412 && msg.includes('MFA')) {
+      notify('Сначала включите 2FA в правом верхнем углу', 'destructive')
+      emit('mfa-required')
+      editing.value = null
+    } else {
+      notify(`Ошибка: ${msg}`, 'destructive')
+    }
   } finally {
     editSubmitting.value = false
   }

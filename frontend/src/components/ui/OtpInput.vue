@@ -29,6 +29,12 @@ function onInput(i, e) {
     onPaste(i, v)
     return
   }
+  // If the user typed a non-digit, digits[i] stays '' — but the DOM input
+  // would visually keep the offending character (one-way :value bind doesn't
+  // diff '' → ''). Force the DOM value to match the model.
+  if (e.target.value !== v) {
+    e.target.value = v
+  }
   digits.value[i] = v
   emitValue()
   if (v && i < props.length - 1) {
@@ -70,11 +76,12 @@ function onFocus(i, e) {
 </script>
 
 <template>
-  <div class="flex gap-2 justify-center" @paste.prevent="onPaste(0, $event)">
+  <div class="flex gap-2 justify-center" data-testid="otp-input" @paste.prevent="onPaste(0, $event)">
     <input
       v-for="(d, i) in digits"
       :key="i"
       :ref="el => (refs[i] = el)"
+      :data-testid="`otp-cell-${i}`"
       type="text"
       inputmode="numeric"
       autocomplete="one-time-code"
