@@ -55,3 +55,20 @@ func requireMethod(method string, next http.HandlerFunc) http.HandlerFunc {
 		next(w, r)
 	}
 }
+
+// requireAdminMfa rejects requests from admins who have not enabled MFA.
+// Place AFTER requireAuth so the username is extractable from the session.
+// Returns 412 Precondition Failed when MFA is required but not enabled.
+//
+// Pass-through when MFA is server-side disabled (--mfa=false) or when
+// --mfa.required=false, so dev environments and opt-out deployments are
+// not broken.
+func (oAdmin *OvpnAdmin) requireAdminMfa(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !oAdmin.adminHasMfa(r) {
+			writeJSONError(w, http.StatusPreconditionFailed, "MFA must be enabled to perform this action")
+			return
+		}
+		next(w, r)
+	}
+}

@@ -87,6 +87,9 @@ var (
 		Default("true").Envar("OVPN_MFA").Bool()
 	mfaDBPath = kingpin.Flag("mfa.db-path", "path to MFA secrets JSON file").
 		Default("").Envar("OVPN_MFA_DB_PATH").String()
+	mfaRequired = kingpin.Flag("mfa.required",
+		"require admins to enable MFA before performing write operations").
+		Default("true").Envar("OVPN_MFA_REQUIRED").Bool()
 
 	trustedProxiesFlag = kingpin.Flag("trusted-proxies",
 		"comma-separated CIDRs or IPs of trusted reverse proxies (X-Forwarded-For honored)").
@@ -387,6 +390,7 @@ func main() {
 	del := func(h http.HandlerFunc) http.HandlerFunc { return requireMethod(http.MethodDelete, h) }
 	master := ovpnAdmin.requireMaster
 	auth := ovpnAdmin.requireAuth
+	mfa := ovpnAdmin.requireAdminMfa
 
 	// Public auth endpoints
 	http.HandleFunc(*listenBaseUrl+"api/login", post(ovpnAdmin.loginHandler))
@@ -410,16 +414,19 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/server-config/test", auth(post(ovpnAdmin.serverConfigTestHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/server-config/defaults", auth(get(ovpnAdmin.serverConfigDefaultsHandler)))
 
-	// Protected API endpoints — write-side (requireMaster)
-	http.HandleFunc(*listenBaseUrl+"api/user/create", auth(master(post(ovpnAdmin.userCreateHandler))))
-	http.HandleFunc(*listenBaseUrl+"api/user/change-password", auth(master(post(ovpnAdmin.userChangePasswordHandler))))
-	http.HandleFunc(*listenBaseUrl+"api/user/rotate", auth(master(post(ovpnAdmin.userRotateHandler))))
-	http.HandleFunc(*listenBaseUrl+"api/user/delete", auth(master(post(ovpnAdmin.userDeleteHandler))))
-	http.HandleFunc(*listenBaseUrl+"api/user/revoke", auth(master(post(ovpnAdmin.userRevokeHandler))))
-	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", auth(master(post(ovpnAdmin.userUnrevokeHandler))))
-	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", auth(master(post(ovpnAdmin.userDisconnectHandler))))
-	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", auth(master(post(ovpnAdmin.userApplyCcdHandler))))
-	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", auth(master(post(ovpnAdmin.commonRoutesRefreshHandler))))
+	// Protected API endpoints — write-side (requireMaster + requireAdminMfa).
+	// Order: auth → master → mfa → method → handler. MFA gate is placed AFTER
+	// auth so we can extract the username, and BEFORE method so a wrong method
+	// from a non-MFA admin still returns 412 (cheaper than 405 + retry).
+	http.HandleFunc(*listenBaseUrl+"api/user/create", auth(master(mfa(post(ovpnAdmin.userCreateHandler)))))
+	http.HandleFunc(*listenBaseUrl+"api/user/change-password", auth(master(mfa(post(ovpnAdmin.userChangePasswordHandler)))))
+	http.HandleFunc(*listenBaseUrl+"api/user/rotate", auth(master(mfa(post(ovpnAdmin.userRotateHandler)))))
+	http.HandleFunc(*listenBaseUrl+"api/user/delete", auth(master(mfa(post(ovpnAdmin.userDeleteHandler)))))
+	http.HandleFunc(*listenBaseUrl+"api/user/revoke", auth(master(mfa(post(ovpnAdmin.userRevokeHandler)))))
+	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", auth(master(mfa(post(ovpnAdmin.userUnrevokeHandler)))))
+	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", auth(master(mfa(post(ovpnAdmin.userDisconnectHandler)))))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", auth(master(mfa(post(ovpnAdmin.userApplyCcdHandler)))))
+	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", auth(master(mfa(post(ovpnAdmin.commonRoutesRefreshHandler)))))
 
 	// Multi-method routes — method dispatch + slave check stay inside the
 	// handler (it routes GET to a read path and POST/PUT/DELETE to a write path

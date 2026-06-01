@@ -244,6 +244,12 @@ func (oAdmin *OvpnAdmin) commonRoutesHandler(w http.ResponseWriter, r *http.Requ
 			writeJSONError(w, http.StatusLocked, "slave is read-only")
 			return
 		}
+		// Multi-method route — MFA gate cannot be applied at the route level
+		// (GET reads must remain accessible without MFA). Inline-check here.
+		if !oAdmin.adminHasMfa(r) {
+			writeJSONError(w, http.StatusPreconditionFailed, "MFA must be enabled to perform this action")
+			return
+		}
 		oAdmin.handleCreateCommonRoute(w, r)
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -265,6 +271,11 @@ func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.
 	}
 	if oAdmin.role == "slave" {
 		writeJSONError(w, http.StatusLocked, "slave is read-only")
+		return
+	}
+	// All branches here are writes (PUT/DELETE) — gate MFA before dispatch.
+	if !oAdmin.adminHasMfa(r) {
+		writeJSONError(w, http.StatusPreconditionFailed, "MFA must be enabled to perform this action")
 		return
 	}
 	switch r.Method {

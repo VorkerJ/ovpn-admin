@@ -379,6 +379,26 @@ type serverSettingsResponse struct {
 	ServerRole        string   `json:"serverRole"`
 	Modules           []string `json:"modules"`
 	ServerInitialized bool     `json:"serverInitialized"`
+	AdminMfaEnabled   bool     `json:"adminMfaEnabled"`
+	AdminMfaRequired  bool     `json:"adminMfaRequired"`
+}
+
+// adminHasMfa returns true if the current admin has MFA enabled.
+// Returns true (= allowed) when MFA is server-side disabled (--mfa=false)
+// or when --mfa.required=false, so we don't break dev environments where
+// MFA is off entirely.
+func (oAdmin *OvpnAdmin) adminHasMfa(r *http.Request) bool {
+	if oAdmin.mfaStore == nil {
+		return true // MFA disabled server-side
+	}
+	if mfaRequired != nil && !*mfaRequired {
+		return true // explicit opt-out
+	}
+	user := oAdmin.sessionUser(r)
+	if user == "" {
+		return false
+	}
+	return oAdmin.mfaStore.isEnabled(user)
 }
 
 // serverSettingsHandler GET /api/server/settings.
@@ -397,11 +417,20 @@ func (oAdmin *OvpnAdmin) serverSettingsHandler(w http.ResponseWriter, r *http.Re
 	if modules == nil {
 		modules = []string{}
 	}
+
+	// adminMfaRequired is true only when MFA is enabled server-side AND
+	// --mfa.required=true. Frontend uses this to decide whether to show
+	// the enforcement banner.
+	adminMfaRequired := oAdmin.mfaStore != nil && (mfaRequired == nil || *mfaRequired)
+	adminMfaEnabled := oAdmin.adminHasMfa(r)
+
 	writeJSON(w, http.StatusOK, serverSettingsResponse{
 		Status:            "ok",
 		ServerRole:        oAdmin.role,
 		Modules:           modules,
 		ServerInitialized: initialized,
+		AdminMfaEnabled:   adminMfaEnabled,
+		AdminMfaRequired:  adminMfaRequired,
 	})
 }
 

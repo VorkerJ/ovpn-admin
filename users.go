@@ -333,7 +333,8 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 	}
 
 	if err := oAdmin.store.BuildClient(username); err != nil {
-		log.Error(err)
+		log.Errorf("userCreate: BuildClient failed for %s: %v", username, err)
+		return false, fmt.Sprintf("Не удалось создать сертификат: %v", err)
 	}
 
 	if *authByPassword {
@@ -342,8 +343,7 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 	}
 
 	log.Infof("Certificate for user %s issued", username)
-
-	//oAdmin.clients = oAdmin.usersList()
+	oAdmin.updateClients()
 
 	return true, ucErr
 }

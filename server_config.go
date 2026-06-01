@@ -709,6 +709,11 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 			writeJSONError(w, http.StatusLocked, "slave is read-only")
 			return
 		}
+		// Multi-method route — MFA gate inline since GET reads remain open.
+		if !oAdmin.adminHasMfa(r) {
+			writeJSONError(w, http.StatusPreconditionFailed, "MFA must be enabled to perform this action")
+			return
+		}
 		var cfg ServerConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 			log.Debugf("server-config: decode body: %v", err)

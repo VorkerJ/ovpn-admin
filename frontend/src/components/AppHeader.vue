@@ -10,6 +10,9 @@ defineProps({
   // serverInitialized=false блокирует кнопку «Добавить пользователя» (бэкенд
   // вернёт 412 — лучше не давать кликнуть и показать tooltip).
   serverInitialized: { type: Boolean, default: true },
+  // adminMfaEnabled=false блокирует все write-операции на бэкенде.
+  // Default true: старые билды без MFA-фичи не должны ломаться.
+  adminMfaEnabled: { type: Boolean, default: true },
 })
 
 defineEmits(['add-user', 'logout', 'open-mfa'])
@@ -41,15 +44,29 @@ const { isDark, toggle } = useTheme()
           <Moon v-else :size="16" />
         </Button>
 
-        <Button variant="ghost" size="icon-sm" title="Двухфакторная аутентификация" @click="$emit('open-mfa')">
-          <ShieldCheck :size="16" />
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :title="adminMfaEnabled ? 'Двухфакторная аутентификация' : 'Включите 2FA — без неё write-операции запрещены'"
+          class="relative"
+          @click="$emit('open-mfa')"
+        >
+          <ShieldCheck :size="16" :class="adminMfaEnabled ? '' : 'text-orange-500'" />
+          <!-- Orange pulsing dot draws the eye when MFA is off and write ops are blocked. -->
+          <span
+            v-if="!adminMfaEnabled"
+            class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-orange-500 ring-2 ring-background animate-pulse"
+            data-testid="admin-mfa-dot"
+          />
         </Button>
 
         <Button
           v-if="serverRole === 'master'"
           size="sm"
-          :disabled="!serverInitialized"
-          :title="serverInitialized ? '' : 'Сначала настройте сервер во вкладке «Сервер»'"
+          :disabled="!serverInitialized || !adminMfaEnabled"
+          :title="!adminMfaEnabled
+            ? 'Включите 2FA в правом верхнем углу'
+            : (!serverInitialized ? 'Сначала настройте сервер во вкладке «Сервер»' : 'Создать пользователя')"
           @click="$emit('add-user')"
         >
           <Plus :size="14" />

@@ -5,7 +5,8 @@ import { useToast } from '@/composables/useToast'
 import AppHeader from '@/components/AppHeader.vue'
 import StatCards from '@/components/StatCards.vue'
 import UsersTable from '@/components/UsersTable.vue'
-import { AlertTriangle } from 'lucide-vue-next'
+import { AlertTriangle, ShieldAlert } from 'lucide-vue-next'
+import Button from '@/components/ui/Button.vue'
 import Toast from '@/components/ui/Toast.vue'
 import AddUserModal from '@/components/modals/AddUserModal.vue'
 import DeleteUserModal from '@/components/modals/DeleteUserModal.vue'
@@ -60,6 +61,11 @@ const modulesEnabled = ref([])
 // serverInitialized — admin сохранял настройки сервера через UI хотя бы раз.
 // До этого создание/ротация пользователей заблокировано на бэкенде (412).
 const serverInitialized = ref(true)
+// adminMfaEnabled / adminMfaRequired — гейт обязательной 2FA.
+// Когда required && !enabled — все write-операции бэкенд отвергает с 412,
+// а UI показывает баннер и блокирует кнопку «Добавить пользователя».
+const adminMfaEnabled = ref(true)
+const adminMfaRequired = ref(false)
 const lastSync = ref('')
 
 const activeTab = ref('users')
@@ -132,9 +138,34 @@ async function loadSettings() {
   // Если бэкенд не вернул поле (старый билд) — считаем инициализированным,
   // чтобы не блокировать пользователя на ровном месте.
   serverInitialized.value = settings.serverInitialized !== false
+  // MFA fields are new — old backends omit them; treat undefined as
+  // "MFA not required" (= no banner, no enforcement) to keep UX sane
+  // during a partial rollout.
+  adminMfaEnabled.value = settings.adminMfaEnabled !== false
+  adminMfaRequired.value = !!settings.adminMfaRequired
   if (settings.serverRole === 'slave') {
     lastSync.value = await fetchLastSync()
   }
+}
+
+// Called after the MFA modal emits status-change (enable/disable). Refetch
+// server settings so the banner, header dot and Add-User button refresh.
+async function onMfaStatusChange() {
+  await loadSettings()
+}
+
+// Centralized 412 handler — backend returns Precondition Failed when admin
+// MFA is required but not enabled. Surface a toast and pop the modal so the
+// admin can fix it in one click instead of hunting for the shield button.
+function handleMfa412(e) {
+  const msg = e?.response?.data?.error || ''
+  if (e?.response?.status === 412 && msg.includes('MFA')) {
+    notify('Включите 2FA в правом верхнем углу для этого действия', 'destructive')
+    adminMfaEnabled.value = false
+    mfaModalOpen.value = true
+    return true
+  }
+  return false
 }
 
 onMounted(() => {
@@ -142,16 +173,15 @@ onMounted(() => {
 })
 
 // ── Actions ────────────────────────────────────────────────────────
-async function handleRevoke(username) {
-  await revokeUser(username)
-  notify(`Пользователь ${username} отозван`, 'default')
-  loadUsers()
+// handleRevoke/handleUnrevoke delegate to the safe* wrappers below so that
+// 412 MFA-gate errors surface as a toast + auto-open MFA modal instead of an
+// unhandled rejection (which silently swallows the failure).
+function handleRevoke(username) {
+  return safeRevoke(username)
 }
 
-async function handleUnrevoke(username) {
-  await unrevokeUser(username)
-  notify(`Пользователь ${username} восстановлен`, 'success')
-  loadUsers()
+function handleUnrevoke(username) {
+  return safeUnrevoke(username)
 }
 
 async function handleDownloadConfig(username) {
@@ -178,7 +208,9 @@ async function submitAddUser({ username, password }) {
     closeModal('addUser')
     loadUsers()
   } catch (e) {
-    if (e.response?.status === 412) {
+    if (handleMfa412(e)) {
+      closeModal('addUser')
+    } else if (e.response?.status === 412) {
       // Backend гейт — обновим локальный флаг и покажем понятное сообщение.
       serverInitialized.value = false
       modalErrors.value.addUser = 'Сервер ещё не настроен. Откройте вкладку «Сервер» и сохраните конфигурацию.'
@@ -198,7 +230,11 @@ async function submitDeleteUser(username) {
     closeModal('deleteUser')
     loadUsers()
   } catch (e) {
-    modalErrors.value.deleteUser = e.response?.data?.message || 'Ошибка удаления'
+    if (handleMfa412(e)) {
+      closeModal('deleteUser')
+    } else {
+      modalErrors.value.deleteUser = e.response?.data?.message || 'Ошибка удаления'
+    }
   } finally {
     modalSubmitting.value.deleteUser = false
   }
@@ -212,7 +248,9 @@ async function submitRotateUser({ username, password }) {
     closeModal('rotateUser')
     loadUsers()
   } catch (e) {
-    if (e.response?.status === 412) {
+    if (handleMfa412(e)) {
+      closeModal('rotateUser')
+    } else if (e.response?.status === 412) {
       serverInitialized.value = false
       modalErrors.value.rotateUser = 'Сервер ещё не настроен. Откройте вкладку «Сервер» и сохраните конфигурацию.'
     } else {
@@ -231,7 +269,11 @@ async function submitChangePassword({ username, password }) {
     closeModal('changePassword')
     loadUsers()
   } catch (e) {
-    modalErrors.value.changePassword = e.response?.data?.message || 'Ошибка смены пароля'
+    if (handleMfa412(e)) {
+      closeModal('changePassword')
+    } else {
+      modalErrors.value.changePassword = e.response?.data?.message || 'Ошибка смены пароля'
+    }
   } finally {
     modalSubmitting.value.changePassword = false
   }
@@ -244,9 +286,38 @@ async function submitCcd(ccd) {
     notify(`Маршруты для ${activeUser.value} сохранены`, 'success')
     closeModal('ccd')
   } catch (e) {
-    modalErrors.value.ccd = e.response?.data || 'Ошибка сохранения маршрутов'
+    if (handleMfa412(e)) {
+      closeModal('ccd')
+    } else {
+      modalErrors.value.ccd = e.response?.data || 'Ошибка сохранения маршрутов'
+    }
   } finally {
     modalSubmitting.value.ccd = false
+  }
+}
+
+// Revoke/unrevoke have no modal — surface MFA errors as toasts.
+async function safeRevoke(username) {
+  try {
+    await revokeUser(username)
+    notify(`Пользователь ${username} отозван`, 'default')
+    loadUsers()
+  } catch (e) {
+    if (!handleMfa412(e)) {
+      notify(`Не удалось отозвать ${username}`, 'destructive')
+    }
+  }
+}
+
+async function safeUnrevoke(username) {
+  try {
+    await unrevokeUser(username)
+    notify(`Пользователь ${username} восстановлен`, 'success')
+    loadUsers()
+  } catch (e) {
+    if (!handleMfa412(e)) {
+      notify(`Не удалось восстановить ${username}`, 'destructive')
+    }
   }
 }
 </script>
@@ -260,12 +331,33 @@ async function submitCcd(ccd) {
       :server-role="serverRole"
       :last-sync="lastSync"
       :server-initialized="serverInitialized"
+      :admin-mfa-enabled="adminMfaEnabled"
       @add-user="openModal('addUser')"
       @open-mfa="mfaModalOpen = true"
       @logout="handleLogout"
     />
 
     <TabBar v-model="activeTab" :tabs="visibleTabs" />
+
+    <!-- MFA enforcement banner — shown on EVERY tab, above the tab content,
+         because the gate applies to all write endpoints (users, routes, server-config). -->
+    <main class="max-w-7xl mx-auto px-6 pt-4 -mb-2" v-if="adminMfaRequired && !adminMfaEnabled">
+      <div
+        class="rounded-md bg-orange-500/10 border-2 border-orange-500/50 px-4 py-3 flex items-start gap-3"
+        data-testid="admin-mfa-banner"
+      >
+        <ShieldAlert :size="20" class="text-orange-500 mt-0.5 shrink-0" />
+        <div class="flex-1">
+          <p class="font-semibold text-orange-900 dark:text-orange-200">Включите двухфакторную аутентификацию</p>
+          <p class="text-sm text-muted-foreground mt-0.5">
+            Без 2FA вы не сможете создавать пользователей, редактировать маршруты или менять настройки сервера.
+          </p>
+        </div>
+        <Button size="sm" class="bg-orange-500 hover:bg-orange-600 text-white" @click="mfaModalOpen = true">
+          Включить
+        </Button>
+      </div>
+    </main>
 
     <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
       <template v-if="activeTab === 'users'">
@@ -361,6 +453,7 @@ async function submitCcd(ccd) {
     <MfaSetupModal
       :open="mfaModalOpen"
       @close="mfaModalOpen = false"
+      @status-change="onMfaStatusChange"
     />
 
     <!-- Toast notifications -->
