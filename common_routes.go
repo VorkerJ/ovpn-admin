@@ -46,6 +46,12 @@ func validateCommonRoute(e CommonRouteEntry) error {
 	if len(e.Description) > 200 {
 		return fmt.Errorf("description too long (max 200)")
 	}
+	if strings.ContainsAny(e.Description, "\n\r") {
+		return fmt.Errorf("description must not contain newline characters")
+	}
+	if strings.Contains(e.Description, `"`) {
+		return fmt.Errorf("description must not contain double-quote characters")
+	}
 	switch e.Kind {
 	case "ip":
 		if e.Domain != "" {

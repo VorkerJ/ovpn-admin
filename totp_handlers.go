@@ -71,6 +71,15 @@ func (oAdmin *OvpnAdmin) mfaSetupHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Prevent rotating an active MFA secret without an explicit disable step —
+	// otherwise a hijacked session could swap the secret for the attacker's.
+	if existing, ok := oAdmin.mfaStore.get(user); ok && existing.Enabled {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprint(w, `{"error":"MFA already enabled — disable first"}`)
+		return
+	}
+
 	key, err := generateTOTPKey(user)
 	if err != nil {
 		log.Errorf("mfaSetup: failed to generate TOTP key for %s: %v", user, err)
@@ -176,13 +185,31 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Rate-limit by remote IP — disabling MFA is a high-value target for an
+	// attacker who has already hijacked a session cookie.
+	ip := strings.Split(r.RemoteAddr, ":")[0]
+	if !checkLoginRateLimit(ip) {
+		http.Error(w, `{"error":"too many attempts"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	var req struct {
-		Code string `json:"code"`
+		Password string `json:"password"`
+		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, `{"error":"invalid request"}`)
+		return
+	}
+
+	// Re-authenticate with the current password before tearing down MFA.
+	if !validateCredentials(user, req.Password) {
+		recordLoginFailure(ip)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"invalid credentials"}`)
 		return
 	}
 
@@ -197,6 +224,7 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 	// Accept TOTP code or backup code
 	codeValid := verifyTOTPCode(rec.Secret, req.Code) || verifyBackupCode(req.Code, rec.BackupCodes)
 	if !codeValid {
+		recordLoginFailure(ip)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":"invalid code"}`)
@@ -234,12 +262,22 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	user, ok := verifyMfaToken(req.MfaToken)
+	user, jti, ok := verifyMfaToken(req.MfaToken)
 	if !ok {
 		recordLoginFailure(ip)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":"invalid or expired MFA token"}`)
+		return
+	}
+
+	// Single-use: mark the jti as consumed so the same intermediate token
+	// cannot be replayed (e.g. after a leaked browser history entry).
+	if !consumeMfaJti(jti, time.Now().Add(mfaTokenTTL).Unix()) {
+		recordLoginFailure(ip)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"MFA token already used"}`)
 		return
 	}
 

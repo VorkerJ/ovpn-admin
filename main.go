@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -134,8 +135,8 @@ func main() {
 	log.SetLevel(logLevels[*logLevel])
 	log.SetFormatter(logFormats[*logFormat])
 
-	if *masterSyncToken == "VerySecureToken" {
-		log.Warn("SECURITY: --master.sync-token uses the insecure default. Set OVPN_MASTER_TOKEN to a strong random value!")
+	if *serverRole == "master" && (*masterSyncToken == "" || *masterSyncToken == "VerySecureToken") {
+		log.Fatal("SECURITY: --master.sync-token must be set to a strong random value when role=master. The default 'VerySecureToken' is publicly known and would expose the entire PKI.")
 	}
 
 	initAuth()
@@ -402,5 +403,14 @@ func main() {
 	})
 
 	log.Printf("Bind: http://%s:%s%s", *listenHost, *listenPort, *listenBaseUrl)
-	log.Fatal(http.ListenAndServe(*listenHost+":"+*listenPort, securityMiddleware(http.DefaultServeMux)))
+	srv := &http.Server{
+		Addr:              *listenHost + ":" + *listenPort,
+		Handler:           securityMiddleware(http.DefaultServeMux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// WriteTimeout 5m to accommodate cert-archive downloads via /api/data/*/download.
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
+	}
+	log.Fatal(srv.ListenAndServe())
 }

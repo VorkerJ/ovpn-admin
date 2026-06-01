@@ -172,7 +172,7 @@ func TestMfaToken_SignAndVerify(t *testing.T) {
 	t.Parallel()
 
 	token := signMfaToken("alice")
-	user, ok := verifyMfaToken(token)
+	user, _, ok := verifyMfaToken(token)
 	if !ok {
 		t.Fatal("expected token to be valid")
 	}
@@ -186,7 +186,7 @@ func TestMfaToken_Expired(t *testing.T) {
 
 	// Sign with a negative TTL so the token is already expired
 	token := signMfaTokenWithTTL("alice", -1*time.Minute)
-	_, ok := verifyMfaToken(token)
+	_, _, ok := verifyMfaToken(token)
 	if ok {
 		t.Error("expected expired token to be rejected")
 	}
@@ -488,7 +488,7 @@ func TestMfaLogin_BackupCode(t *testing.T) {
 }
 
 func TestMfaDisable(t *testing.T) {
-	oAdmin, _ := newTestAdminWithMFA(t)
+	oAdmin, pass := newTestAdminWithMFA(t)
 	cookie := sessionCookie("testadmin")
 
 	// Enable MFA for testadmin
@@ -504,15 +504,16 @@ func TestMfaDisable(t *testing.T) {
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
 
-	// Step 1: DELETE /api/mfa with valid TOTP code
+	// Step 1: DELETE /api/mfa with valid TOTP code + password re-auth
 	code, err := totp.GenerateCode(key.Secret(), time.Now())
 	if err != nil {
 		t.Fatalf("GenerateCode: %v", err)
 	}
 
-	disableBody := `{"code":"` + code + `"}`
+	disableBody := `{"password":"` + pass + `","code":"` + code + `"}`
 	req := httptest.NewRequest(http.MethodDelete, "/api/mfa", strings.NewReader(disableBody))
 	req.AddCookie(cookie)
+	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 
 	oAdmin.mfaDisableHandler(rec, req)

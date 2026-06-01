@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -146,12 +147,7 @@ func (oAdmin *OvpnAdmin) downloadCertsHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	token := r.Header.Get("X-Sync-Token")
-	if token == "" {
-		_ = r.ParseForm()
-		token = r.Form.Get("token")
-	}
-
-	if token != oAdmin.masterSyncToken {
+	if subtle.ConstantTimeCompare([]byte(token), []byte(oAdmin.masterSyncToken)) != 1 {
 		http.Error(w, `{"status":"error"}`, http.StatusForbidden)
 		return
 	}
@@ -176,12 +172,7 @@ func (oAdmin *OvpnAdmin) downloadCcdHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	token := r.Header.Get("X-Sync-Token")
-	if token == "" {
-		_ = r.ParseForm()
-		token = r.Form.Get("token")
-	}
-
-	if token != oAdmin.masterSyncToken {
+	if subtle.ConstantTimeCompare([]byte(token), []byte(oAdmin.masterSyncToken)) != 1 {
 		http.Error(w, `{"status":"error"}`, http.StatusForbidden)
 		return
 	}

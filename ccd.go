@@ -312,6 +312,10 @@ func (oAdmin *OvpnAdmin) getCcd(username string) Ccd {
 }
 
 func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	var req struct {
 		Username string `json:"username"`

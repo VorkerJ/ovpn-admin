@@ -171,6 +171,7 @@ type mfaTokenPayload struct {
 	User    string `json:"u"`
 	Purpose string `json:"purpose"`
 	Exp     int64  `json:"exp"`
+	Jti     string `json:"jti,omitempty"`
 }
 
 func signMfaToken(user string) string {
@@ -179,10 +180,13 @@ func signMfaToken(user string) string {
 
 func signMfaTokenWithTTL(user string, ttl time.Duration) string {
 	secret := sessionSecret()
+	jtiBytes := make([]byte, 16)
+	_, _ = rand.Read(jtiBytes)
 	p := mfaTokenPayload{
 		User:    user,
 		Purpose: "mfa",
 		Exp:     time.Now().Add(ttl).Unix(),
+		Jti:     base64.RawURLEncoding.EncodeToString(jtiBytes),
 	}
 	data, _ := json.Marshal(p)
 	enc := base64.RawURLEncoding.EncodeToString(data)
@@ -190,29 +194,59 @@ func signMfaTokenWithTTL(user string, ttl time.Duration) string {
 	return enc + "." + mac
 }
 
-func verifyMfaToken(token string) (string, bool) {
+func verifyMfaToken(token string) (user string, jti string, ok bool) {
 	secret := sessionSecret()
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
-		return "", false
+		return "", "", false
 	}
 	enc, mac := parts[0], parts[1]
 	if computeHMAC(enc, secret) != mac {
-		return "", false
+		return "", "", false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(enc)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	var p mfaTokenPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return "", false
+		return "", "", false
 	}
 	if p.Purpose != "mfa" {
-		return "", false
+		return "", "", false
 	}
 	if time.Now().Unix() > p.Exp {
-		return "", false
+		return "", "", false
 	}
-	return p.User, true
+	return p.User, p.Jti, true
+}
+
+// usedMfaJtis tracks consumed mfa_token jti values to enforce single-use.
+// Entries are kept until their token's exp passes, then garbage-collected
+// opportunistically when a new jti is consumed.
+var usedMfaJtis = struct {
+	sync.Mutex
+	m map[string]int64
+}{m: map[string]int64{}}
+
+// consumeMfaJti records the given jti as used and returns false if it was
+// already seen. Empty jti is treated as "no replay protection available" and
+// is allowed through (for backwards compatibility with old tokens).
+func consumeMfaJti(jti string, exp int64) bool {
+	if jti == "" {
+		return true
+	}
+	usedMfaJtis.Lock()
+	defer usedMfaJtis.Unlock()
+	if _, used := usedMfaJtis.m[jti]; used {
+		return false
+	}
+	usedMfaJtis.m[jti] = exp
+	now := time.Now().Unix()
+	for k, e := range usedMfaJtis.m {
+		if e < now {
+			delete(usedMfaJtis.m, k)
+		}
+	}
+	return true
 }

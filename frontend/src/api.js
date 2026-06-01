@@ -154,9 +154,9 @@ export async function confirmMfa(code) {
   return data
 }
 
-export async function disableMfa(code) {
+export async function disableMfa(password, code) {
   const { data } = await axios.delete('api/mfa', {
-    data: JSON.stringify({ code }),
+    data: JSON.stringify({ password, code }),
     headers: { 'Content-Type': 'application/json' },
   })
   return data

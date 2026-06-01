@@ -17,7 +17,23 @@ func runOpenvpnUser(args ...string) string {
 	cmd := exec.Command("openvpn-user", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Warnf("openvpn-user %v: %v: %s", args[:2], err, string(out))
+		// Redact --password values from logged args.
+		// NOTE: this only protects log streams; the password is still visible in
+		// `ps aux` while the subprocess runs because openvpn-user takes the
+		// password as an argv flag. Migrating to stdin/env requires upstream
+		// support that we cannot verify here.
+		safeArgs := make([]string, len(args))
+		copy(safeArgs, args)
+		for i, a := range safeArgs {
+			if a == "--password" && i+1 < len(safeArgs) {
+				safeArgs[i+1] = "[REDACTED]"
+			}
+		}
+		head := safeArgs
+		if len(head) > 2 {
+			head = safeArgs[:2]
+		}
+		log.Warnf("openvpn-user %v: %v: %s", head, err, string(out))
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -32,6 +48,10 @@ type usernamePasswordRequest struct {
 }
 
 func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 
 	if err := oAdmin.store.UpdateIndexTxtOnDisk(); err != nil {
@@ -44,6 +64,10 @@ func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (oAdmin *OvpnAdmin) userStatisticHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -222,6 +246,10 @@ func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *htt
 }
 
 func (oAdmin *OvpnAdmin) userShowConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

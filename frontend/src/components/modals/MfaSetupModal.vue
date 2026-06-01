@@ -1,6 +1,7 @@
 <!-- frontend/src/components/modals/MfaSetupModal.vue -->
 <script setup>
 import { ref, watch } from 'vue'
+import QRCode from 'qrcode'
 import Dialog from '@/components/ui/Dialog.vue'
 import Input from '@/components/ui/Input.vue'
 import Button from '@/components/ui/Button.vue'
@@ -21,6 +22,7 @@ const submitting = ref(false)
 // setup state
 const secret = ref('')
 const qrUrl = ref('')
+const qrDataUrl = ref('')
 const confirmCode = ref('')
 
 // backup codes
@@ -28,6 +30,7 @@ const backupCodes = ref([])
 const copied = ref(false)
 
 // disable state
+const disablePassword = ref('')
 const disableCode = ref('')
 
 watch(() => props.open, async (val) => {
@@ -36,8 +39,10 @@ watch(() => props.open, async (val) => {
     error.value = ''
     confirmCode.value = ''
     disableCode.value = ''
+    disablePassword.value = ''
     secret.value = ''
     qrUrl.value = ''
+    qrDataUrl.value = ''
     backupCodes.value = []
     copied.value = false
     try {
@@ -57,6 +62,8 @@ async function startSetup() {
     const data = await setupMfa()
     secret.value = data.secret
     qrUrl.value = data.qr_url
+    // Render QR client-side to avoid leaking the TOTP secret to any third-party.
+    qrDataUrl.value = await QRCode.toDataURL(data.qr_url, { width: 200, margin: 1 })
     step.value = 'setup'
   } catch (e) {
     error.value = e.response?.data?.error || 'Ошибка настройки 2FA'
@@ -86,14 +93,19 @@ async function confirm() {
 
 async function disable() {
   error.value = ''
+  if (!disablePassword.value) {
+    error.value = 'Введите пароль для подтверждения'
+    return
+  }
   if (!disableCode.value) {
     error.value = 'Введите код для отключения'
     return
   }
   submitting.value = true
   try {
-    await disableMfa(disableCode.value)
+    await disableMfa(disablePassword.value, disableCode.value)
     step.value = 'off'
+    disablePassword.value = ''
     disableCode.value = ''
     emit('status-change', false)
   } catch (e) {
@@ -154,7 +166,7 @@ function onClose() {
 
       <div class="flex justify-center">
         <img
-          :src="`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}`"
+          :src="qrDataUrl"
           alt="QR code"
           width="200"
           height="200"
@@ -228,6 +240,15 @@ function onClose() {
 
       <div class="border-t border-border pt-4 space-y-3">
         <p class="text-sm font-medium text-destructive">Отключить 2FA</p>
+        <div class="space-y-1.5">
+          <label class="text-sm text-muted-foreground">Текущий пароль</label>
+          <Input
+            v-model="disablePassword"
+            type="password"
+            placeholder="••••••••"
+            autocomplete="current-password"
+          />
+        </div>
         <div class="space-y-1.5">
           <label class="text-sm text-muted-foreground">Введите код из приложения для отключения</label>
           <Input

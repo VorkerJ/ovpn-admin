@@ -174,13 +174,18 @@ func validateCredentials(username, password string) bool {
 // ── Session ───────────────────────────────────────────────────────────────────
 
 type sessionPayload struct {
-	User string `json:"u"`
-	Exp  int64  `json:"exp"`
+	User    string `json:"u"`
+	Exp     int64  `json:"exp"`
+	Purpose string `json:"p,omitempty"`
 }
 
 func signSession(user string) string {
 	secret := sessionSecret()
-	p := sessionPayload{User: user, Exp: time.Now().Add(sessionTTL).Unix()}
+	p := sessionPayload{
+		User:    user,
+		Exp:     time.Now().Add(sessionTTL).Unix(),
+		Purpose: "session",
+	}
 	data, _ := json.Marshal(p)
 	enc := base64.RawURLEncoding.EncodeToString(data)
 	mac := computeHMAC(enc, secret)
@@ -203,6 +208,11 @@ func verifySession(token string) (string, bool) {
 	}
 	var p sessionPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
+		return "", false
+	}
+	// Reject tokens with a non-session purpose (e.g. intermediate mfa tokens).
+	// Tokens minted before this field existed have Purpose == "" and remain valid.
+	if p.Purpose != "" && p.Purpose != "session" {
 		return "", false
 	}
 	if time.Now().Unix() > p.Exp {
