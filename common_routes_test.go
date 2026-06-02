@@ -435,7 +435,6 @@ func newTestAdmin(t *testing.T) *OvpnAdmin {
 	t.Helper()
 	dir := t.TempDir()
 	app := &OvpnAdmin{
-		role:         "master",
 		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}},
 		store:        testFilesystemStore(dir),
 	}
@@ -489,19 +488,6 @@ func TestCommonRoutesHandler_POST_RejectsDuplicate(t *testing.T) {
 		if i == 1 && rec.Code != http.StatusConflict {
 			t.Fatalf("expected 409 on duplicate, got %d", rec.Code)
 		}
-	}
-}
-
-func TestCommonRoutesHandler_Slave_Locked(t *testing.T) {
-	t.Parallel()
-	app := newTestAdmin(t)
-	app.role = "slave"
-	body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.0.0.0"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/common-routes", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	app.commonRoutesHandler(rec, req)
-	if rec.Code != http.StatusLocked {
-		t.Fatalf("expected 423, got %d", rec.Code)
 	}
 }
 

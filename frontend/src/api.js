@@ -7,12 +7,7 @@ export async function fetchUsers() {
 
 export async function fetchServerSettings() {
   const { data } = await axios.get('api/server/settings')
-  return data // { serverRole, modules }
-}
-
-export async function fetchLastSync() {
-  const { data } = await axios.get('api/sync/last/successful')
-  return data
+  return data // { modules, serverInitialized, adminMfaEnabled, adminMfaRequired }
 }
 
 export async function createUser(username, password) {

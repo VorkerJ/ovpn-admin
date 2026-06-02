@@ -9,8 +9,6 @@
 
 ## 1. Secrets & Configuration
 
-- [ ] `OVPN_MASTER_TOKEN` set to a strong random value: `openssl rand -hex 32`
-      (fail-fast in `app.go` rejects empty / default tokens — verify the container starts).
 - [ ] `ADMIN_HTPASSWD_FILE` points to a file with **real** admin accounts
       (no auto-generated `admin:admin` carry-over from dev).
 - [ ] Bcrypt cost factor for htpasswd entries is **≥ 12**.
@@ -220,58 +218,54 @@ Run these from the deployer's workstation (or the host) post-deploy.
 Each command's expected output is described in the comment.
 
 ```bash
-# 1. Verify master sync token is not the default sample
-docker compose exec ovpn-admin sh -c 'echo $OVPN_MASTER_TOKEN' | grep -v VerySecureToken
-#    -> prints the actual token (not VerySecureToken), or nothing if unset (BAD)
-
-# 2. Verify MFA is enforced (requires an authenticated request in real prod)
+# 1. Verify MFA is enforced (requires an authenticated request in real prod)
 curl -s http://127.0.0.1:8080/api/server/settings | jq '.adminMfaRequired'
 #    -> true
 
-# 3. Verify HSTS / HTTPS at the public edge
+# 2. Verify HSTS / HTTPS at the public edge
 curl -sI https://your-domain.example/ | grep -i "strict-transport-security"
 #    -> Strict-Transport-Security: max-age=...
 
-# 4. Verify the container does NOT run as root
+# 3. Verify the container does NOT run as root
 docker compose exec ovpn-admin id | grep -v "uid=0"
 #    -> uid=<non-zero>(ovpnadmin) gid=<non-zero>(ovpnadmin)
 
-# 5. Verify admin UI is not exposed publicly
+# 4. Verify admin UI is not exposed publicly
 nc -zv your-public-ip 8080 < /dev/null
 #    -> Connection refused / timeout (GOOD)
 
-# 6. Verify management interface is not exposed publicly
+# 5. Verify management interface is not exposed publicly
 nc -zv your-public-ip 8989 < /dev/null
 #    -> Connection refused / timeout (GOOD)
 
-# 7. Verify OpenVPN UDP port is reachable
+# 6. Verify OpenVPN UDP port is reachable
 nc -zvu your-public-ip 1194
 #    -> succeeded / open
 
-# 8. Verify image tag is pinned (not :latest)
+# 7. Verify image tag is pinned (not :latest)
 docker compose config | grep -E 'image:.*ovpn-admin' | grep -v ':latest'
 #    -> image: .../ovpn-admin:vX.Y.Z
 
-# 9. Verify firewall rules are present on the host
+# 8. Verify firewall rules are present on the host
 sudo iptables -S | grep -i ovpn || sudo nft list ruleset | grep -i ovpn
 #    -> rules for the VPN subnet exist
 
-# 10. Verify backups ran in the last 24h
+# 9. Verify backups ran in the last 24h
 ls -lh /backup/ovpn-admin/ | head
 #    -> a file dated today / yesterday
 
-# 11. Verify healthcheck
+# 10. Verify healthcheck
 curl -fsS http://127.0.0.1:8080/ping && echo OK
 #    -> OK
 
-# 12. Verify metrics endpoint requires auth
+# 11. Verify metrics endpoint requires auth
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/metrics
 #    -> 401 (unauthenticated)
 curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $METRICS_TOKEN" \
      http://127.0.0.1:8080/metrics
 #    -> 200
 
-# 13. Verify TLS cert expiry > 30 days
+# 12. Verify TLS cert expiry > 30 days
 echo | openssl s_client -servername your-domain.example -connect your-domain.example:443 2>/dev/null \
   | openssl x509 -noout -enddate
 #    -> notAfter=<date at least 30 days in the future>

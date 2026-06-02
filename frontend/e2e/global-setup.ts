@@ -63,7 +63,6 @@ export default async function globalSetup() {
     // without MFA. UI-level enforcement assertions (banner, pulse dot,
     // disabled add-user) use Playwright route interception to inject the
     // gating flags.
-    '--master.sync-token=e2e-test-sync-token-please-replace-in-prod',
     '--ovpn.server=127.0.0.1:1194:udp',
     '--mgmt=main=127.0.0.1:19999',
     '--log.level=warn',

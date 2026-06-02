@@ -20,7 +20,7 @@ import CommonRoutesView from '@/components/CommonRoutesView.vue'
 import ServerConfigView from '@/components/ServerConfigView.vue'
 
 import {
-  fetchUsers, fetchServerSettings, fetchLastSync,
+  fetchUsers, fetchServerSettings,
   createUser, revokeUser, unrevokeUser, rotateUser, deleteUser,
   changePassword, fetchUserConfig, fetchUserCcd, applyCcd
 } from '@/api.js'
@@ -56,7 +56,6 @@ function handleLogin() {
 
 // ── State ──────────────────────────────────────────────────────────
 const users = ref([])
-const serverRole = ref('master')
 const modulesEnabled = ref([])
 // serverInitialized — admin сохранял настройки сервера через UI хотя бы раз.
 // До этого создание/ротация пользователей заблокировано на бэкенде (412).
@@ -66,7 +65,6 @@ const serverInitialized = ref(true)
 // а UI показывает баннер и блокирует кнопку «Добавить пользователя».
 const adminMfaEnabled = ref(true)
 const adminMfaRequired = ref(false)
-const lastSync = ref('')
 
 const activeTab = ref('users')
 
@@ -133,7 +131,6 @@ async function loadUsers() {
 
 async function loadSettings() {
   const settings = await fetchServerSettings()
-  serverRole.value = settings.serverRole
   modulesEnabled.value = settings.modules
   // Если бэкенд не вернул поле (старый билд) — считаем инициализированным,
   // чтобы не блокировать пользователя на ровном месте.
@@ -143,9 +140,6 @@ async function loadSettings() {
   // during a partial rollout.
   adminMfaEnabled.value = settings.adminMfaEnabled !== false
   adminMfaRequired.value = !!settings.adminMfaRequired
-  if (settings.serverRole === 'slave') {
-    lastSync.value = await fetchLastSync()
-  }
 }
 
 // Called after the MFA modal emits status-change (enable/disable). Refetch
@@ -336,8 +330,6 @@ async function safeUnrevoke(username) {
 
     <template v-else-if="authenticated">
     <AppHeader
-      :server-role="serverRole"
-      :last-sync="lastSync"
       :server-initialized="serverInitialized"
       :admin-mfa-enabled="adminMfaEnabled"
       @add-user="openModal('addUser')"
@@ -392,7 +384,6 @@ async function safeUnrevoke(username) {
           <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Пользователи</p>
           <UsersTable
             :users="users"
-            :server-role="serverRole"
             :modules-enabled="modulesEnabled"
             :server-initialized="serverInitialized"
             @revoke="handleRevoke"
@@ -406,10 +397,10 @@ async function safeUnrevoke(username) {
         </div>
       </template>
       <template v-else-if="activeTab === 'common-routes'">
-        <CommonRoutesView :server-role="serverRole" @mfa-required="onMfaRequired" />
+        <CommonRoutesView @mfa-required="onMfaRequired" />
       </template>
       <template v-else-if="activeTab === 'server-config'">
-        <ServerConfigView :server-role="serverRole" @saved="loadSettings" @mfa-required="onMfaRequired" />
+        <ServerConfigView @saved="loadSettings" @mfa-required="onMfaRequired" />
       </template>
     </main>
 
@@ -450,7 +441,6 @@ async function safeUnrevoke(username) {
     <CcdModal
       :open="modals.ccd"
       :username="activeUser"
-      :server-role="serverRole"
       :submitting="modalSubmitting.ccd"
       :ccd="ccdData"
       :error="modalErrors.ccd"

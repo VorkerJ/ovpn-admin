@@ -12,7 +12,7 @@ import (
 // adminHasMfa должен вернуть true (= "allow"), иначе сломаем dev-окружения,
 // где 2FA отключена целиком.
 func TestAdminHasMfa_NoMfaStore(t *testing.T) {
-	app := &OvpnAdmin{role: "master"} // mfaStore = nil
+	app := &OvpnAdmin{} // mfaStore = nil
 	req := httptest.NewRequest(http.MethodPost, "/api/user/create", nil)
 	if !app.adminHasMfa(req) {
 		t.Fatal("expected true when mfaStore is nil (dev / --mfa=false)")
@@ -22,7 +22,7 @@ func TestAdminHasMfa_NoMfaStore(t *testing.T) {
 // TestAdminHasMfa_OptOutFlag — когда --mfa.required=false, гейт не действует
 // даже если у admin'а MFA не включена.
 func TestAdminHasMfa_OptOutFlag(t *testing.T) {
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
 
 	prev := mfaRequired
@@ -38,7 +38,7 @@ func TestAdminHasMfa_OptOutFlag(t *testing.T) {
 
 // TestAdminHasMfa_NoSession — без cookie возвращаем false (запрещено).
 func TestAdminHasMfa_NoSession(t *testing.T) {
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
 
 	prev := mfaRequired
@@ -55,7 +55,7 @@ func TestAdminHasMfa_NoSession(t *testing.T) {
 // TestAdminHasMfa_SessionWithoutMfa — есть валидная сессия, но MFA для юзера
 // не включена → false.
 func TestAdminHasMfa_SessionWithoutMfa(t *testing.T) {
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
 
 	prev := mfaRequired
@@ -74,7 +74,7 @@ func TestAdminHasMfa_SessionWithoutMfa(t *testing.T) {
 
 // TestAdminHasMfa_SessionWithMfa — валидная сессия + MFA enabled = true.
 func TestAdminHasMfa_SessionWithMfa(t *testing.T) {
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
 	app.mfaStore.set("testuser", mfaRecord{
 		Secret:  "JBSWY3DPEHPK3PXP",
@@ -98,7 +98,7 @@ func TestAdminHasMfa_SessionWithMfa(t *testing.T) {
 // TestRequireAdminMfa_Blocks412 — middleware возвращает 412, если у юзера
 // нет MFA, и не вызывает next.
 func TestRequireAdminMfa_Blocks412(t *testing.T) {
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
 
 	prev := mfaRequired
@@ -130,7 +130,7 @@ func TestRequireAdminMfa_Blocks412(t *testing.T) {
 // TestRequireAdminMfa_PassesThroughWhenEnabled — middleware вызывает next,
 // если MFA включена.
 func TestRequireAdminMfa_PassesThroughWhenEnabled(t *testing.T) {
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
 	app.mfaStore.set("testuser", mfaRecord{
 		Secret:  "JBSWY3DPEHPK3PXP",
@@ -165,7 +165,7 @@ func TestRequireAdminMfa_PassesThroughWhenEnabled(t *testing.T) {
 // TestRequireAdminMfa_PassesThroughWhenNoStore — middleware пропускает
 // запрос, если mfaStore=nil (dev / --mfa=false).
 func TestRequireAdminMfa_PassesThroughWhenNoStore(t *testing.T) {
-	app := &OvpnAdmin{role: "master"} // mfaStore = nil
+	app := &OvpnAdmin{} // mfaStore = nil
 
 	called := false
 	handler := app.requireAdminMfa(func(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +185,7 @@ func TestRequireAdminMfa_PassesThroughWhenNoStore(t *testing.T) {
 // TestServerSettings_ExposesMfaFields — endpoint должен возвращать
 // adminMfaEnabled / adminMfaRequired для фронта.
 func TestServerSettings_ExposesMfaFields(t *testing.T) {
-	app := &OvpnAdmin{role: "master", modules: []string{}}
+	app := &OvpnAdmin{modules: []string{}}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
 
 	prev := mfaRequired

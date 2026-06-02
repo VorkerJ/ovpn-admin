@@ -820,7 +820,7 @@ func newServerConfigTestAdmin(t *testing.T) (*OvpnAdmin, *fakeMgmtServer, string
 	t.Helper()
 	dir := t.TempDir()
 	mgmt := startFakeMgmt(t)
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.serverConfigStore = newServerConfigStore()
 	fsStore := testFilesystemStore(dir)
 	app.store = fsStore
@@ -895,21 +895,6 @@ func TestServerConfigHandler_PUT_RejectsInvalid(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", rec.Code)
-	}
-}
-
-func TestServerConfigHandler_PUT_SlaveLocked(t *testing.T) {
-	t.Parallel()
-	app, _, _ := newServerConfigTestAdmin(t)
-	app.role = "slave"
-
-	body, _ := json.Marshal(app.serverConfigStore.snapshot())
-	req := httptest.NewRequest(http.MethodPut, "/api/server-config", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	app.serverConfigHandler(rec, req)
-
-	if rec.Code != http.StatusLocked {
-		t.Errorf("expected 423, got %d", rec.Code)
 	}
 }
 

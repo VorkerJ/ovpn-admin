@@ -17,7 +17,6 @@ Simple web UI to manage OpenVPN users, their certificates & routes in Kubernetes
 * Generating ready-to-use `.ovpn` config files
 * Providing metrics for Prometheus, including certificate expiration dates, number of connected/total users, and per-user connection info
 * (optionally) Specifying CCD (`client-config-dir`) per user — static IP address and custom push routes with IP validation
-* (optionally) Operating in master/slave mode (syncing certs & CCD with another server)
 * (optionally) Specifying/changing password for additional OpenVPN auth
 * (optionally) Specifying a Kubernetes LoadBalancer in front of the OpenVPN server (auto-defined `remote` in `client.conf.tpl`)
 * (optionally) Storing certificates and other files in Kubernetes Secrets
@@ -208,24 +207,6 @@ Flags:
   --listen.base-url="/"        base URL for ovpn-admin web files
   (or OVPN_LISTEN_BASE_URL)
 
-  --role="master"              server role, master or slave
-  (or OVPN_ROLE)
-
-  --master.host="http://127.0.0.1"
-  (or OVPN_MASTER_HOST)        URL for the master server
-
-  --master.basic-auth.user=""
-  (or OVPN_MASTER_USER)        user for master server's Basic Auth
-
-  --master.basic-auth.password=""
-  (or OVPN_MASTER_PASSWORD)    password for master server's Basic Auth
-
-  --master.sync-frequency=600
-  (or OVPN_MASTER_SYNC_FREQUENCY)  master host data sync frequency in seconds
-
-  --master.sync-token=TOKEN
-  (or OVPN_MASTER_TOKEN)       master host data sync security token
-
   --ovpn.network="172.16.100.0/24"
   (or OVPN_NETWORK)            NETWORK/MASK_PREFIX for OpenVPN server
 
@@ -295,7 +276,7 @@ Flags:
 * This tool uses external calls to `bash`, `coreutils`, and `easy-rsa` — **Linux only**.
 * For per-user OpenVPN password auth, install [openvpn-user](https://github.com/pashcovich/openvpn-user/releases/latest) and pass `--auth.password`.
 * When using `--ccd`, set `--ovpn.network` to match your OpenVPN server network.
-* Master/slave sync and per-user password auth do not work with `--storage.backend=kubernetes.secrets`.
+* Per-user password auth does not work with `--storage.backend=kubernetes.secrets`.
 * Connected user status refreshes every 28 seconds.
 
 ## Server-side route enforcement (firewall)

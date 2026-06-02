@@ -709,8 +709,6 @@ func writeFileAtomicMode(path string, data []byte, perm os.FileMode) error {
 }
 
 // serverConfigHandler dispatches GET / PUT on /api/server-config.
-// Multi-method route — the slave check stays inline; PUT is also wrapped in
-// requireMaster at route registration for defense-in-depth.
 func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	switch r.Method {
@@ -723,10 +721,6 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 		}
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPut:
-		if oAdmin.role == "slave" {
-			writeJSONError(w, http.StatusLocked, "slave is read-only")
-			return
-		}
 		// Multi-method route — MFA gate inline since GET reads remain open.
 		if !oAdmin.adminHasMfa(r) {
 			writeJSONError(w, http.StatusPreconditionFailed, "MFA must be enabled to perform this action")

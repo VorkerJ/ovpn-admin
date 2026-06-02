@@ -265,6 +265,12 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 		if strings.ContainsAny(route.Description, "\n\r") {
 			return false, "route description must not contain newlines"
 		}
+		if strings.Contains(route.Description, `"`) {
+			return false, "route description must not contain double quotes"
+		}
+		if len(route.Description) > 200 {
+			return false, "route description too long (max 200 chars)"
+		}
 		switch route.Kind {
 		case "domain":
 			if route.Domain == "" {
@@ -307,8 +313,8 @@ func (oAdmin *OvpnAdmin) getCcd(username string) Ccd {
 	return oAdmin.parseCcd(username)
 }
 
-// Method / slave-role checks are enforced by requireMethod / requireMaster
-// middleware at route registration time; do not re-check them inside handlers.
+// HTTP method check is enforced by requireMethod middleware at route
+// registration time; do not re-check it inside handlers.
 
 func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)

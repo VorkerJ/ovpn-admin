@@ -13,7 +13,6 @@ import {
 const props = defineProps({
   open: Boolean,
   username: { type: String, default: '' },
-  serverRole: { type: String, default: 'master' },
   ccd: { type: Object, default: () => ({ Name: '', ClientAddress: '', CustomRoutes: [] }) },
   error: { type: String, default: '' },
   submitting: { type: Boolean, default: false },
@@ -35,8 +34,6 @@ watch(() => props.ccd, (val) => {
   localCcd.value = { ...val, CustomRoutes: withIds(val?.CustomRoutes) }
   validationError.value = ''
 }, { deep: true })
-
-const isMaster = () => props.serverRole === 'master'
 
 // VPN-IP режим: 'dynamic' = выдать из пула, 'static' = пин на конкретный адрес.
 // Когда переключают на static — очищаем поле (если там было "dynamic"), чтобы юзер ввёл IP.
@@ -146,10 +143,9 @@ function formatRelativeTime(iso) {
           <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
             <button
               type="button"
-              :disabled="!isMaster()"
               @click="ipMode = 'dynamic'"
               :class="[
-                'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors',
                 ipMode === 'dynamic'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-foreground hover:bg-accent'
@@ -159,10 +155,9 @@ function formatRelativeTime(iso) {
             </button>
             <button
               type="button"
-              :disabled="!isMaster()"
               @click="ipMode = 'static'"
               :class="[
-                'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors',
                 ipMode === 'static'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-foreground hover:bg-accent'
@@ -175,7 +170,7 @@ function formatRelativeTime(iso) {
             OpenVPN выдаст любой свободный адрес из своей подсети
           </span>
         </div>
-        <div v-if="ipMode === 'static' && isMaster()" class="flex items-center gap-2">
+        <div v-if="ipMode === 'static'" class="flex items-center gap-2">
           <Input
             v-model="localCcd.ClientAddress"
             placeholder="10.0.0.5"
@@ -188,7 +183,7 @@ function formatRelativeTime(iso) {
       </div>
 
       <!-- Add form -->
-      <div v-if="isMaster()" class="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
+      <div class="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
         <div class="flex items-center gap-3">
           <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Тип маршрута:</span>
           <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
@@ -239,7 +234,7 @@ function formatRelativeTime(iso) {
               <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-24">Тип</th>
               <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Значение</th>
               <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Описание</th>
-              <th v-if="isMaster()" class="px-3 py-2.5 w-12" />
+              <th class="px-3 py-2.5 w-12" />
             </tr>
           </thead>
           <tbody>
@@ -274,18 +269,15 @@ function formatRelativeTime(iso) {
                   </div>
                 </template>
                 <template v-else>
-                  <Input v-if="isMaster()" v-model="route.Address" placeholder="10.0.0.0" class="w-36 inline-block font-mono" />
-                  <span v-else class="font-mono">{{ route.Address }}</span>
+                  <Input v-model="route.Address" placeholder="10.0.0.0" class="w-36 inline-block font-mono" />
                   <span class="text-muted-foreground mx-1">/</span>
-                  <Input v-if="isMaster()" v-model="route.Mask" placeholder="255.255.255.0" class="w-36 inline-block font-mono" />
-                  <span v-else class="font-mono">{{ route.Mask }}</span>
+                  <Input v-model="route.Mask" placeholder="255.255.255.0" class="w-36 inline-block font-mono" />
                 </template>
               </td>
               <td class="px-3 py-2.5">
-                <Input v-if="isMaster()" v-model="route.Description" placeholder="Описание" class="text-sm" />
-                <span v-else>{{ route.Description }}</span>
+                <Input v-model="route.Description" placeholder="Описание" class="text-sm" />
               </td>
-              <td v-if="isMaster()" class="px-3 py-2.5">
+              <td class="px-3 py-2.5">
                 <button
                   type="button"
                   class="h-8 w-8 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
@@ -309,7 +301,7 @@ function formatRelativeTime(iso) {
     </div>
     <template #footer>
       <Button variant="ghost" :disabled="submitting" @click="onClose">Закрыть</Button>
-      <Button v-if="isMaster()" :loading="submitting" :disabled="submitting" @click="submitCcd">
+      <Button :loading="submitting" :disabled="submitting" @click="submitCcd">
         Сохранить
       </Button>
     </template>

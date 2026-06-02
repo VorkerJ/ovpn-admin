@@ -9,7 +9,6 @@ import {
 
 const props = defineProps({
   user: { type: Object, required: true },
-  serverRole: { type: String, default: 'master' },
   modulesEnabled: { type: Array, default: () => [] },
 })
 
@@ -18,7 +17,6 @@ const emit = defineEmits([
   'download-config', 'edit-ccd', 'change-password'
 ])
 
-const isMaster = () => props.serverRole === 'master'
 const hasModule = (m) => props.modulesEnabled.includes(m)
 
 const isActive  = () => props.user.AccountStatus === 'Active'
@@ -39,7 +37,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
       Конфиг
     </Button>
     <Button
-      v-else-if="isRevoked() && isMaster()"
+      v-else-if="isRevoked()"
       size="sm"
       variant="secondary"
       @click="emit('unrevoke', user.Identity)"
@@ -49,7 +47,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
     </Button>
 
     <!-- Menu -->
-    <DropdownMenu v-if="isMaster() || (isActive() && hasModule('ccd'))">
+    <DropdownMenu>
       <template #trigger>
         <button
           type="button"
@@ -63,7 +61,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
       <!-- Active -->
       <template v-if="isActive()">
         <button
-          v-if="isMaster() && hasModule('core')"
+          v-if="hasModule('core')"
           type="button"
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-yellow-600 dark:text-yellow-400 hover:bg-accent cursor-pointer"
           @click="emit('revoke', user.Identity)"
@@ -71,7 +69,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           <ShieldOff :size="14" /> Отозвать
         </button>
         <button
-          v-if="isMaster() && hasModule('core')"
+          v-if="hasModule('core')"
           type="button"
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-orange-600 dark:text-orange-400 hover:bg-accent cursor-pointer"
           @click="emit('rotate', user.Identity)"
@@ -84,19 +82,19 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-violet-600 dark:text-violet-400 hover:bg-accent cursor-pointer"
           @click="emit('edit-ccd', user.Identity)"
         >
-          <Route :size="14" /> {{ serverRole === 'master' ? 'Маршруты' : 'Показать маршруты' }}
+          <Route :size="14" /> Маршруты
         </button>
         <button
-          v-if="isMaster() && hasModule('passwdAuth')"
+          v-if="hasModule('passwdAuth')"
           type="button"
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-blue-600 dark:text-blue-400 hover:bg-accent cursor-pointer"
           @click="emit('change-password', user.Identity)"
         >
           <KeyRound :size="14" /> Сменить пароль
         </button>
-        <div v-if="isMaster()" class="h-px bg-border mx-2 my-1" />
+        <div class="h-px bg-border mx-2 my-1" />
         <button
-          v-if="isMaster() && hasModule('core')"
+          v-if="hasModule('core')"
           type="button"
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-accent cursor-pointer"
           @click="emit('delete', user.Identity)"

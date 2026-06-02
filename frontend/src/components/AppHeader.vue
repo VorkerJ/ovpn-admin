@@ -5,8 +5,6 @@ import Button from '@/components/ui/Button.vue'
 import { Sun, Moon, Plus, LogOut, ShieldCheck } from 'lucide-vue-next'
 
 defineProps({
-  serverRole: { type: String, default: 'master' },
-  lastSync: { type: String, default: '' },
   // serverInitialized=false блокирует кнопку «Добавить пользователя» (бэкенд
   // вернёт 412 — лучше не давать кликнуть и показать tooltip).
   serverInitialized: { type: Boolean, default: true },
@@ -29,12 +27,6 @@ const { isDark, toggle } = useTheme()
           <ShieldCheck :size="16" class="text-primary-foreground" />
         </div>
         <span class="font-semibold text-[15px] tracking-tight">OVPN Admin</span>
-        <span
-          v-if="serverRole === 'slave'"
-          class="ml-2 text-[11px] font-medium text-muted-foreground bg-muted px-2 py-0.5 rounded font-mono"
-        >
-          slave · sync {{ lastSync || '?' }}
-        </span>
       </div>
 
       <!-- Actions -->
@@ -61,7 +53,6 @@ const { isDark, toggle } = useTheme()
         </Button>
 
         <Button
-          v-if="serverRole === 'master'"
           size="sm"
           data-testid="add-user-button"
           :disabled="!serverInitialized || !adminMfaEnabled"

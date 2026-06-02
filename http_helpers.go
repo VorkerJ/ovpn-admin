@@ -29,19 +29,6 @@ func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-// requireMaster wraps a handler with a slave-role guard. Routes registered
-// with this middleware return 423 Locked on slave nodes so the per-handler
-// `if oAdmin.role == "slave"` boilerplate can be deleted.
-func (oAdmin *OvpnAdmin) requireMaster(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if oAdmin.role == "slave" {
-			writeJSONError(w, http.StatusLocked, "slave is read-only")
-			return
-		}
-		next(w, r)
-	}
-}
-
 // requireMethod wraps a handler with an HTTP-method guard. Routes registered
 // with this middleware return 405 Method Not Allowed for any method other
 // than the one specified, so per-handler `if r.Method != http.MethodX`

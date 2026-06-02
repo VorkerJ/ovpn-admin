@@ -13,7 +13,7 @@ import (
 // должен вернуть 412 без попытки вызвать easyrsa.
 func TestUserCreate_BlockedWhenServerNotInitialized(t *testing.T) {
 	t.Parallel()
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.serverConfigStore = newServerConfigStore()
 	// store по умолчанию Initialized=false
 
@@ -33,7 +33,7 @@ func TestUserCreate_BlockedWhenServerNotInitialized(t *testing.T) {
 // TestUserRotate_BlockedWhenServerNotInitialized — тот же гейт на ротации.
 func TestUserRotate_BlockedWhenServerNotInitialized(t *testing.T) {
 	t.Parallel()
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	app.serverConfigStore = newServerConfigStore()
 
 	body := []byte(`{"username":"alice","password":"hunter22"}`)
@@ -52,7 +52,7 @@ func TestUserRotate_BlockedWhenServerNotInitialized(t *testing.T) {
 // главное, что не получили 412.
 func TestUserCreate_GateSkippedWhenServerConfigStoreNil(t *testing.T) {
 	t.Parallel()
-	app := &OvpnAdmin{role: "master"}
+	app := &OvpnAdmin{}
 	// serverConfigStore намеренно nil
 
 	req := httptest.NewRequest(http.MethodPost, "/api/user/create", bytes.NewReader([]byte(`not json`)))
@@ -64,33 +64,11 @@ func TestUserCreate_GateSkippedWhenServerConfigStoreNil(t *testing.T) {
 	}
 }
 
-// TestUserCreate_SlaveCheckBeforeGate — порядок проверок: slave-роль должна
-// проверяться раньше гейта, чтобы slave-нода не сбивала пользователя
-// сообщением про "не настроено" вместо "read-only".
-//
-// After the middleware extraction the slave check lives in requireMaster,
-// not the handler. We exercise the exact route stack (requireMaster wrapping
-// the handler) so the test still pins the contract end-to-end.
-func TestUserCreate_SlaveCheckBeforeGate(t *testing.T) {
-	t.Parallel()
-	app := &OvpnAdmin{role: "slave"}
-	app.serverConfigStore = newServerConfigStore() // Initialized=false
-
-	body := []byte(`{"username":"alice","password":"hunter22"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/user/create", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	app.requireMaster(app.userCreateHandler)(rec, req)
-
-	if rec.Code != http.StatusLocked {
-		t.Errorf("expected 423 (slave locked) before gate, got %d", rec.Code)
-	}
-}
-
 // TestServerSettingsHandler_ExposesServerInitialized — endpoint /api/server/settings
 // должен возвращать поле serverInitialized для фронта.
 func TestServerSettingsHandler_ExposesServerInitialized(t *testing.T) {
 	t.Parallel()
-	app := &OvpnAdmin{role: "master", modules: []string{"server-config"}}
+	app := &OvpnAdmin{modules: []string{"server-config"}}
 	app.serverConfigStore = newServerConfigStore()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/server/settings", nil)
@@ -121,7 +99,7 @@ func TestServerSettingsHandler_ExposesServerInitialized(t *testing.T) {
 // не подключен (store==nil), гейт не действует и serverInitialized=true.
 func TestServerSettingsHandler_NilStoreMeansInitialized(t *testing.T) {
 	t.Parallel()
-	app := &OvpnAdmin{role: "master", modules: []string{}}
+	app := &OvpnAdmin{modules: []string{}}
 	// serverConfigStore намеренно nil
 
 	req := httptest.NewRequest(http.MethodGet, "/api/server/settings", nil)

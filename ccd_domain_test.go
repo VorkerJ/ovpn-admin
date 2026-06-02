@@ -265,7 +265,6 @@ func TestUserApplyCcdHandler_ResolvesNewDomainSynchronously(t *testing.T) {
 	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
-	app.role = "master"
 
 	resolverCleanup := withMockResolver(t, map[string][]string{
 		"youtube.com": {"1.2.3.4", "5.6.7.8"},
@@ -304,7 +303,6 @@ func TestUserApplyCcdHandler_PreservesIPsOnUnchangedDomain(t *testing.T) {
 	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
-	app.role = "master"
 
 	// Pre-seed CCD with a domain entry that already has resolved IPs.
 	existing := `push "route 9.9.9.9 255.255.255.255" # __user_domain__:example.com test
@@ -353,31 +351,11 @@ push "route 9.9.9.10 255.255.255.255" # __user_domain__:example.com test
 	}
 }
 
-func TestUserApplyCcdHandler_SlaveLocked(t *testing.T) {
-	t.Parallel()
-	dir := withTempCcdEnv(t)
-
-	app := newTestAdminCcd(t, dir)
-	app.role = "slave"
-
-	req := httptest.NewRequest(http.MethodPost, "/api/user/ccd/apply",
-		strings.NewReader(`{"User":"x","ClientAddress":"dynamic","CustomRoutes":[]}`))
-	rec := httptest.NewRecorder()
-	// requireMaster middleware is what enforces this since the cleanup —
-	// exercise the actual route stack here.
-	app.requireMaster(app.userApplyCcdHandler)(rec, req)
-
-	if rec.Code != http.StatusLocked {
-		t.Errorf("expected 423 on slave, got %d", rec.Code)
-	}
-}
-
 func TestUserApplyCcdHandler_MixedIPAndDomain(t *testing.T) {
 	// Cannot be parallel: mutates package-level domainResolver.
 	dir := withTempCcdEnv(t)
 
 	app := newTestAdminCcd(t, dir)
-	app.role = "master"
 
 	resolverCleanup := withMockResolver(t, map[string][]string{"d.com": {"1.1.1.1"}})
 	defer resolverCleanup()

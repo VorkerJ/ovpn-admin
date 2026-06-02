@@ -131,7 +131,6 @@ spec:
           args:
             - --listen.host=0.0.0.0
             - --listen.port={{ .Values.ovpnAdmin.port }}
-            - --role=master
             - --ovpn.network={{ .Values.openvpn.networkPrefix }}
             - --storage.backend={{ .Values.ovpnAdmin.storageBackend }}
             - --mgmt=main=127.0.0.1:8989

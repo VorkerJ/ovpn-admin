@@ -34,11 +34,6 @@ var templatesFS embed.FS
 var staticFS embed.FS
 
 type OvpnAdmin struct {
-	role                   string
-	lastSyncTime           string
-	lastSuccessfulSyncTime string
-	masterHostBasicAuth    bool
-	masterSyncToken        string
 	// clients is read by handlers and written by setState()/userListHandler.
 	// All access MUST go through updateClients / snapshotClients to honor
 	// clientsMu; direct access is a race that go test -race will flag.
@@ -386,7 +381,6 @@ func CacheControlWrapper(h http.Handler) http.Handler {
 
 type serverSettingsResponse struct {
 	Status            string   `json:"status"`
-	ServerRole        string   `json:"serverRole"`
 	Modules           []string `json:"modules"`
 	ServerInitialized bool     `json:"serverInitialized"`
 	AdminMfaEnabled   bool     `json:"adminMfaEnabled"`
@@ -436,7 +430,6 @@ func (oAdmin *OvpnAdmin) serverSettingsHandler(w http.ResponseWriter, r *http.Re
 
 	writeJSON(w, http.StatusOK, serverSettingsResponse{
 		Status:            "ok",
-		ServerRole:        oAdmin.role,
 		Modules:           modules,
 		ServerInitialized: initialized,
 		AdminMfaEnabled:   adminMfaEnabled,

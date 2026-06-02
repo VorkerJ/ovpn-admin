@@ -275,6 +275,42 @@ func initAuth() {
 	}
 
 	loadRevokedTokens()
+
+	// Bound memory growth of the loginAttempts map. Entries are created on
+	// every distinct IP and per-username key; without the janitor a constant
+	// trickle of failed logins from unique IPs leaks ~256 bytes forever.
+	go loginAttemptsJanitor()
+}
+
+// loginAttemptsJanitor periodically evicts stale or expired loginTracker
+// entries from loginAttempts so the map does not grow without bound.
+//
+// An entry is considered evictable when either:
+//   - no failures have been recorded and the tracker is not currently locked
+//     (a defensive race remnant — e.g. LoadOrStore landed but bumpFailures
+//     never followed), OR
+//   - the lockout window has elapsed and bumpFailures cleared the counters
+//     (rare since checkLoginRateLimitKey already does opportunistic reset on
+//     the read path, but this catches keys that are never read again).
+func loginAttemptsJanitor() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		loginAttempts.Range(func(k, v interface{}) bool {
+			tracker := v.(*loginTracker)
+			tracker.mu.Lock()
+			stale := tracker.failures == 0 && tracker.lockedAt.IsZero()
+			expired := !tracker.lockedAt.IsZero() &&
+				now.Sub(tracker.lockedAt) > loginLockoutDuration &&
+				tracker.failures == 0
+			tracker.mu.Unlock()
+			if stale || expired {
+				loginAttempts.Delete(k)
+			}
+			return true
+		})
+	}
 }
 
 // loadOrGenerateSigningKey loads a 64-byte signing key from disk, or generates

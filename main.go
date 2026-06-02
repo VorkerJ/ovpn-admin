@@ -24,12 +24,8 @@ import (
 const (
 	usernameRegexp         = `^[a-zA-Z0-9_@][a-zA-Z0-9_.\-@]{0,62}$`
 	passwordMinLength      = 6
-	certsArchiveFileName   = "certs.tar.gz"
-	ccdArchiveFileName     = "ccd.tar.gz"
 	indexTxtDateLayout     = "060102150405Z"
 	stringDateFormat       = "2006-01-02 15:04:05"
-	downloadCertsApiUrl    = "api/data/certs/download"
-	downloadCcdApiUrl      = "api/data/ccd/download"
 	labelKeyIndexTxt       = "index.txt"
 	labelKeyType           = "type"
 	labelKeyName           = "name"
@@ -45,12 +41,6 @@ var (
 	listenHost               = kingpin.Flag("listen.host", "host for ovpn-admin").Default("0.0.0.0").Envar("OVPN_LISTEN_HOST").String()
 	listenPort               = kingpin.Flag("listen.port", "port for ovpn-admin").Default("8080").Envar("OVPN_LISTEN_PORT").String()
 	listenBaseUrl            = kingpin.Flag("listen.base-url", "base url for ovpn-admin").Default("/").Envar("OVPN_LISTEN_BASE_URL").String()
-	serverRole               = kingpin.Flag("role", "server role, master or slave").Default("master").Envar("OVPN_ROLE").HintOptions("master", "slave").String()
-	masterHost               = kingpin.Flag("master.host", "URL for the master server").Default("http://127.0.0.1").Envar("OVPN_MASTER_HOST").String()
-	masterBasicAuthUser      = kingpin.Flag("master.basic-auth.user", "user for master server's Basic Auth").Default("").Envar("OVPN_MASTER_USER").String()
-	masterBasicAuthPassword  = kingpin.Flag("master.basic-auth.password", "password for master server's Basic Auth").Default("").Envar("OVPN_MASTER_PASSWORD").String()
-	masterSyncFrequency      = kingpin.Flag("master.sync-frequency", "master host data sync frequency in seconds").Default("600").Envar("OVPN_MASTER_SYNC_FREQUENCY").Int()
-	masterSyncToken          = kingpin.Flag("master.sync-token", "master host data sync security token").Default("VerySecureToken").Envar("OVPN_MASTER_TOKEN").PlaceHolder("TOKEN").String()
 	openvpnNetwork           = kingpin.Flag("ovpn.network", "NETWORK/MASK_PREFIX for OpenVPN server").Default("172.16.100.0/24").Envar("OVPN_NETWORK").String()
 	openvpnServer            = kingpin.Flag("ovpn.server", "HOST:PORT:PROTOCOL for OpenVPN server; can have multiple values").Default("127.0.0.1:7777:tcp").Envar("OVPN_SERVER").PlaceHolder("HOST:PORT:PROTOCOL").Strings()
 	openvpnServerBehindLB    = kingpin.Flag("ovpn.server.behindLB", "enable if your OpenVPN server is behind Kubernetes Service having the LoadBalancer type").Default("false").Envar("OVPN_LB").Bool()
@@ -115,9 +105,6 @@ var (
 		"self-heal reconcile period").
 		Default("5m").Envar("OVPN_FIREWALL_RECONCILE_INTERVAL").Duration()
 
-	certsArchivePath = "/tmp/" + certsArchiveFileName
-	ccdArchivePath   = "/tmp/" + ccdArchiveFileName
-
 	version = "2.0.0"
 )
 
@@ -142,14 +129,6 @@ func main() {
 
 	log.SetLevel(logLevels[*logLevel])
 	log.SetFormatter(logFormats[*logFormat])
-
-	// Both master and slave must reject the publicly-known default token.
-	// Master fails because anyone could call /api/data/certs/download with
-	// it; slave fails because it would happily pull a malicious PKI from any
-	// "master" that accepts the same default.
-	if *masterSyncToken == "" || *masterSyncToken == "VerySecureToken" {
-		log.Fatalf("SECURITY: --master.sync-token must be set to a strong random value (role=%s). The default 'VerySecureToken' is publicly known and would expose or poison the entire PKI.", *serverRole)
-	}
 
 	initAuth()
 
@@ -188,10 +167,6 @@ func main() {
 
 	ovpnAdmin := new(OvpnAdmin)
 
-	ovpnAdmin.lastSyncTime = "unknown"
-	ovpnAdmin.role = *serverRole
-	ovpnAdmin.lastSuccessfulSyncTime = "unknown"
-	ovpnAdmin.masterSyncToken = *masterSyncToken
 	ovpnAdmin.promRegistry = prometheus.NewRegistry()
 	ovpnAdmin.modules = []string{}
 	ovpnAdmin.createUserMutex = &sync.Mutex{}
@@ -233,12 +208,6 @@ func main() {
 	ovpnAdmin.setState()
 
 	go ovpnAdmin.updateState()
-
-	if *masterBasicAuthPassword != "" && *masterBasicAuthUser != "" {
-		ovpnAdmin.masterHostBasicAuth = true
-	} else {
-		ovpnAdmin.masterHostBasicAuth = false
-	}
 
 	ovpnAdmin.modules = append(ovpnAdmin.modules, "core")
 
@@ -363,11 +332,6 @@ func main() {
 		}
 	}
 
-	if ovpnAdmin.role == "slave" {
-		ovpnAdmin.syncDataFromMaster()
-		go ovpnAdmin.syncWithMaster()
-	}
-
 	tplSub, err := fs.Sub(templatesFS, "templates")
 	if err != nil {
 		log.Fatalf("cannot create sub-FS for templates: %v", err)
@@ -382,17 +346,15 @@ func main() {
 
 	http.Handle(*listenBaseUrl, http.StripPrefix(strings.TrimRight(*listenBaseUrl, "/"), static))
 
-	// Route registration uses two small middlewares to remove ~40 duplicated
-	// `if r.Method != …` and `if oAdmin.role == "slave"` guards from handlers:
+	// Route registration uses small middlewares to remove duplicated
+	// `if r.Method != …` guards from handlers:
 	//   requireMethod(http.MethodX, …)  — returns 405 on mismatch
-	//   requireMaster(…)                — returns 423 on slave nodes (write ops)
-	// Order matters: requireAuth (outermost) → requireMaster → requireMethod →
-	// handler. Auth runs first so an anonymous request gets 401 rather than
-	// leaking that the endpoint exists.
+	// Order matters: requireAuth (outermost) → requireMethod → handler.
+	// Auth runs first so an anonymous request gets 401 rather than leaking
+	// that the endpoint exists.
 	post := func(h http.HandlerFunc) http.HandlerFunc { return requireMethod(http.MethodPost, h) }
 	get := func(h http.HandlerFunc) http.HandlerFunc { return requireMethod(http.MethodGet, h) }
 	del := func(h http.HandlerFunc) http.HandlerFunc { return requireMethod(http.MethodDelete, h) }
-	master := ovpnAdmin.requireMaster
 	auth := ovpnAdmin.requireAuth
 	mfa := ovpnAdmin.requireAdminMfa
 
@@ -409,7 +371,7 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/mfa/confirm", auth(post(ovpnAdmin.mfaConfirmHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/mfa", auth(del(ovpnAdmin.mfaDisableHandler)))
 
-	// Protected API endpoints — read-only (no requireMaster)
+	// Protected API endpoints — read-only
 	http.HandleFunc(*listenBaseUrl+"api/server/settings", auth(get(ovpnAdmin.serverSettingsHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/users/list", auth(get(ovpnAdmin.userListHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/user/config/show", auth(post(ovpnAdmin.userShowConfigHandler)))
@@ -418,43 +380,31 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/server-config/test", auth(post(ovpnAdmin.serverConfigTestHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/server-config/defaults", auth(get(ovpnAdmin.serverConfigDefaultsHandler)))
 
-	// Protected API endpoints — write-side (requireMaster + requireAdminMfa).
-	// Order: auth → master → mfa → method → handler. MFA gate is placed AFTER
-	// auth so we can extract the username, and BEFORE method so a wrong method
-	// from a non-MFA admin still returns 412 (cheaper than 405 + retry).
-	http.HandleFunc(*listenBaseUrl+"api/user/create", auth(master(mfa(post(ovpnAdmin.userCreateHandler)))))
-	http.HandleFunc(*listenBaseUrl+"api/user/change-password", auth(master(mfa(post(ovpnAdmin.userChangePasswordHandler)))))
-	http.HandleFunc(*listenBaseUrl+"api/user/rotate", auth(master(mfa(post(ovpnAdmin.userRotateHandler)))))
-	http.HandleFunc(*listenBaseUrl+"api/user/delete", auth(master(mfa(post(ovpnAdmin.userDeleteHandler)))))
-	http.HandleFunc(*listenBaseUrl+"api/user/revoke", auth(master(mfa(post(ovpnAdmin.userRevokeHandler)))))
-	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", auth(master(mfa(post(ovpnAdmin.userUnrevokeHandler)))))
-	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", auth(master(mfa(post(ovpnAdmin.userDisconnectHandler)))))
-	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", auth(master(mfa(post(ovpnAdmin.userApplyCcdHandler)))))
-	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", auth(master(mfa(post(ovpnAdmin.commonRoutesRefreshHandler)))))
+	// Protected API endpoints — write-side (requireAdminMfa).
+	// Order: auth → mfa → method → handler. MFA gate is placed AFTER auth so we
+	// can extract the username, and BEFORE method so a wrong method from a
+	// non-MFA admin still returns 412 (cheaper than 405 + retry).
+	http.HandleFunc(*listenBaseUrl+"api/user/create", auth(mfa(post(ovpnAdmin.userCreateHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/change-password", auth(mfa(post(ovpnAdmin.userChangePasswordHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/rotate", auth(mfa(post(ovpnAdmin.userRotateHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/delete", auth(mfa(post(ovpnAdmin.userDeleteHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/revoke", auth(mfa(post(ovpnAdmin.userRevokeHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", auth(mfa(post(ovpnAdmin.userUnrevokeHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", auth(mfa(post(ovpnAdmin.userDisconnectHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", auth(mfa(post(ovpnAdmin.userApplyCcdHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", auth(mfa(post(ovpnAdmin.commonRoutesRefreshHandler))))
 
-	// Multi-method routes — method dispatch + slave check stay inside the
-	// handler (it routes GET to a read path and POST/PUT/DELETE to a write path
-	// that itself returns 423 on slave).
+	// Multi-method routes — method dispatch stays inside the handler.
 	http.HandleFunc(*listenBaseUrl+"api/common-routes", auth(ovpnAdmin.commonRoutesHandler))
 	http.HandleFunc(*listenBaseUrl+"api/common-routes/", auth(ovpnAdmin.commonRoutesItemHandler))
 	http.HandleFunc(*listenBaseUrl+"api/server-config", auth(ovpnAdmin.serverConfigHandler))
 
-	http.HandleFunc(*listenBaseUrl+"api/sync/last/try", auth(get(ovpnAdmin.lastSyncTimeHandler)))
-	http.HandleFunc(*listenBaseUrl+"api/sync/last/successful", auth(get(ovpnAdmin.lastSuccessfulSyncTimeHandler)))
-	// downloadCerts/Ccd are master-only sync endpoints called by slaves via
-	// X-Sync-Token (verified inside the handler with subtle.ConstantTimeCompare).
-	// They must NOT be wrapped in requireAuth — slaves do not present a session
-	// cookie, so requireAuth would reject every sync request with 401 before the
-	// token check could run, breaking master→slave replication entirely.
-	http.HandleFunc(*listenBaseUrl+downloadCertsApiUrl, master(get(ovpnAdmin.downloadCertsHandler)))
-	http.HandleFunc(*listenBaseUrl+downloadCcdApiUrl, master(get(ovpnAdmin.downloadCcdHandler)))
-
 	http.HandleFunc(*metricsPath, ovpnAdmin.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		promhttp.HandlerFor(ovpnAdmin.promRegistry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
 	}))
-	http.HandleFunc(*listenBaseUrl+"ping", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc(*listenBaseUrl+"ping", get(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "pong")
-	})
+	}))
 
 	log.Printf("Bind: http://%s:%s%s", *listenHost, *listenPort, *listenBaseUrl)
 	srv := &http.Server{
@@ -462,9 +412,8 @@ func main() {
 		Handler:           securityMiddleware(http.DefaultServeMux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		// WriteTimeout 5m to accommodate cert-archive downloads via /api/data/*/download.
-		WriteTimeout: 5 * time.Minute,
-		IdleTimeout:  2 * time.Minute,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 	log.Fatal(srv.ListenAndServe())
 }

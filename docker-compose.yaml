@@ -27,8 +27,17 @@ services:
       OVPN_SERVER_NET: "${OVPN_NETWORK_BASE:-172.16.100.0}"
       OVPN_SERVER_MASK: "${OVPN_NETWORK_MASK:-255.255.255.0}"
       OVPN_PASSWD_AUTH: "${OVPN_PASSWD_AUTH:-false}"
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
+      - NET_RAW
+      - MKNOD
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 200
     ports:
       # OpenVPN public port. Defaults to UDP/1194 — change OVPN_PROTO to "tcp" if needed.
       - "${OVPN_PORT:-1194}:1194/${OVPN_PROTO:-udp}"
@@ -60,13 +69,19 @@ services:
       OVPN_AUTH_DB_PATH: "/mnt/easyrsa/pki/users.db"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       OVPN_FIREWALL: "${OVPN_FIREWALL:-true}"
-      OVPN_MASTER_TOKEN: "${OVPN_MASTER_TOKEN:-}"
       OVPN_SERVER_CONFIG_PATH: "/etc/openvpn-dynamic/server.conf"
       # Pin admin password by mounting ./htpasswd → /mnt/auth/htpasswd (read-only)
       # When unset, ovpn-admin auto-generates a temporary password printed in logs.
       ADMIN_HTPASSWD_FILE: "${ADMIN_HTPASSWD_FILE:-}"
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 200
     network_mode: service:openvpn
     volumes:
       - ${OVPN_EASYRSA_PATH:-./easyrsa_master}:/mnt/easyrsa

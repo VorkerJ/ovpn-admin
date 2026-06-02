@@ -5,6 +5,26 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **BREAKING: master/slave replication feature** — `sync.go`, the
+  `requireMaster` middleware, the `OvpnAdmin.role` / `lastSyncTime` /
+  `masterSyncToken` fields, all `--role` / `--master.*` CLI flags
+  (`OVPN_ROLE`, `OVPN_MASTER_HOST`, `OVPN_MASTER_USER`,
+  `OVPN_MASTER_PASSWORD`, `OVPN_MASTER_SYNC_FREQUENCY`, `OVPN_MASTER_TOKEN`),
+  the `/api/data/certs/download`, `/api/data/ccd/download`,
+  `/api/sync/last/try`, `/api/sync/last/successful` endpoints,
+  `docker-compose-slave.yaml`, `start-with-slave.sh`. The feature was dead
+  code carrying real risk: the download handlers exposed the entire PKI via
+  HTTP behind only `X-Sync-Token`, and the default token
+  (`VerySecureToken`) was publicly known. Single-master deployments are
+  unaffected. Operators who relied on this feature should migrate to
+  external PKI replication (git-versioned easyrsa, rsync, K8s Secret sync).
+- Frontend: `serverRole` ref / props, slave-readonly UI gating, header
+  "slave · sync …" indicator, `fetchLastSync` API call.
+
 ## [2.0.0] — 2026-06-01
 
 Major release: large pragmatic refactor, MFA/TOTP for the admin UI, editable

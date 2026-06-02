@@ -1,6 +1,6 @@
 <!-- frontend/src/components/CommonRoutesView.vue -->
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import Input from '@/components/ui/Input.vue'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
@@ -15,9 +15,6 @@ import {
   CheckCircle2, AlertTriangle, CornerDownRight,
 } from 'lucide-vue-next'
 
-const props = defineProps({
-  serverRole: { type: String, default: 'master' },
-})
 const emit = defineEmits(['mfa-required'])
 
 const routes = ref([])
@@ -37,8 +34,6 @@ const { toast: _toast } = useToast()
 function notify(title, variant = 'default') {
   _toast({ title, variant })
 }
-
-const isMaster = computed(() => props.serverRole === 'master')
 
 const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/
 const domainPattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/
@@ -183,7 +178,6 @@ onMounted(reload)
         </p>
       </div>
       <Button
-        v-if="isMaster"
         variant="secondary"
         size="sm"
         :loading="refreshing"
@@ -196,7 +190,7 @@ onMounted(reload)
     </div>
 
     <!-- Add form -->
-    <div v-if="isMaster" class="rounded-lg border border-border bg-card p-4 space-y-3">
+    <div class="rounded-lg border border-border bg-card p-4 space-y-3">
       <div class="flex items-center gap-3">
         <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Тип маршрута:</span>
         <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
@@ -252,7 +246,7 @@ onMounted(reload)
             <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Значение</th>
             <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Описание</th>
             <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-56">DNS</th>
-            <th v-if="isMaster" class="px-4 py-3 w-24" />
+            <th class="px-4 py-3 w-24" />
           </tr>
         </thead>
         <tbody>
@@ -298,7 +292,7 @@ onMounted(reload)
               </template>
               <span v-else class="text-muted-foreground">—</span>
             </td>
-            <td v-if="isMaster" class="px-4 py-3">
+            <td class="px-4 py-3">
               <div class="flex items-center justify-end gap-1">
                 <button
                   type="button"

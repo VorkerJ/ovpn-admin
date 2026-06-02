@@ -7,7 +7,6 @@ import { Search, Eye, EyeOff } from 'lucide-vue-next'
 
 const props = defineProps({
   users: { type: Array, default: () => [] },
-  serverRole: { type: String, default: 'master' },
   modulesEnabled: { type: Array, default: () => [] },
   // serverInitialized — пробрасывается ниже в ActionsMenu чтобы при необходимости
   // визуально приглушить «Ротация» (бэкенд всё равно вернёт 412).
@@ -136,7 +135,6 @@ function badgeLabel(status) {
               <div class="flex justify-end">
                 <ActionsMenu
                   :user="user"
-                  :server-role="serverRole"
                   :modules-enabled="modulesEnabled"
                   @revoke="emit('revoke', $event)"
                   @unrevoke="emit('unrevoke', $event)"

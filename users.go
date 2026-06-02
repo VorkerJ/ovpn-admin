@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -12,6 +13,22 @@ import (
 
 	log "github.com/sirupsen/logrus"
 )
+
+// ovpnUserInitDb initializes the openvpn-user password database when missing
+// or zero-byte (Docker bind mounts often pre-create the path as empty).
+// Triggered by --auth.db-init=true; safe to call at every startup.
+func ovpnUserInitDb() {
+	fi, err := os.Stat(*authDatabase)
+	if !(errors.Is(err, os.ErrNotExist) || (err == nil && fi.Size() == 0)) {
+		return
+	}
+	// Execute via runOpenvpnUser (argv-based exec.Command) rather than
+	// runBash(fmt.Sprintf(...)). Shell interpolation of *authDatabase was a
+	// command-injection vector if the operator pointed --auth-database at a
+	// path containing shell metacharacters.
+	log.Debug(runOpenvpnUser("--db.path", *authDatabase, "db-init"))
+	log.Debug(runOpenvpnUser("--db.path", *authDatabase, "db-migrate"))
+}
 
 // mustJSONMsg encodes a "msg" envelope safely. Inline string concatenation in
 // the old code (`{"msg":"User \"%s\" not found"}`) produced invalid JSON when
@@ -62,8 +79,8 @@ type usernamePasswordRequest struct {
 	Password string `json:"password"`
 }
 
-// Method / slave-role checks are enforced by requireMethod / requireMaster
-// middleware at route registration time; do not re-check them inside handlers.
+// HTTP method check is enforced by requireMethod middleware at route
+// registration time; do not re-check it inside handlers.
 
 func (oAdmin *OvpnAdmin) userListHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
@@ -95,6 +112,10 @@ func (oAdmin *OvpnAdmin) userStatisticHandler(w http.ResponseWriter, r *http.Req
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
 	userStatistic, _ := json.Marshal(oAdmin.getUserStatistic(req.Username))
@@ -140,6 +161,10 @@ func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
+		return
+	}
 	err, msg := oAdmin.userRotate(req.Username, req.Password)
 	if err != nil {
 		log.Errorf("userRotate: %v", err)
@@ -155,6 +180,10 @@ func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Reques
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
 	err, msg := oAdmin.userDelete(req.Username)
@@ -174,6 +203,10 @@ func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
+		return
+	}
 	err, msg := oAdmin.userRevoke(req.Username)
 	if err != nil {
 		log.Errorf("userRevoke: %v", err)
@@ -189,6 +222,10 @@ func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Requ
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
 	err, msg := oAdmin.userUnrevoke(req.Username)
@@ -212,6 +249,10 @@ func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *htt
 		writeJSONError(w, http.StatusNotImplemented, "password auth disabled")
 		return
 	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
+		return
+	}
 	err, msg := oAdmin.userChangePassword(req.Username, req.Password)
 	if err != nil {
 		log.Errorf("userChangePassword: %v", err)
@@ -232,6 +273,10 @@ func (oAdmin *OvpnAdmin) userShowConfigHandler(w http.ResponseWriter, r *http.Re
 	var req usernameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
 	fmt.Fprintf(w, "%s", oAdmin.renderClientConfig(req.Username))

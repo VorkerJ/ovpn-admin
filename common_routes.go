@@ -222,14 +222,7 @@ func refreshAllDomains(ctx context.Context, cfg CommonRoutesConfig, now time.Tim
 const commonRoutesRefreshIntervalHours = 24
 
 // commonRoutesHandler dispatches GET (list) and POST (create) on /api/common-routes.
-// Multi-method routes can't use requireMethod, so per-handler dispatch stays here;
-// the slave check is still off-loaded — wrap POST callers in requireMaster.
-//
-// Practically: GET is open to slave (read-only), POST is wrapped at the route
-// registration. Because both methods share a path, we keep the inner method
-// switch but rely on requireMaster being applied at route level for POSTs.
-// In tests that call this handler directly with role=slave + POST, slave is
-// no longer rejected here — that's expected and covered by middleware tests.
+// Multi-method routes can't use requireMethod, so per-handler dispatch stays here.
 func (oAdmin *OvpnAdmin) commonRoutesHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	switch r.Method {
@@ -240,10 +233,6 @@ func (oAdmin *OvpnAdmin) commonRoutesHandler(w http.ResponseWriter, r *http.Requ
 			"refreshIntervalHours": commonRoutesRefreshIntervalHours,
 		})
 	case http.MethodPost:
-		if oAdmin.role == "slave" {
-			writeJSONError(w, http.StatusLocked, "slave is read-only")
-			return
-		}
 		// Multi-method route — MFA gate cannot be applied at the route level
 		// (GET reads must remain accessible without MFA). Inline-check here.
 		if !oAdmin.adminHasMfa(r) {
@@ -269,10 +258,6 @@ func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusBadRequest, "missing id")
 		return
 	}
-	if oAdmin.role == "slave" {
-		writeJSONError(w, http.StatusLocked, "slave is read-only")
-		return
-	}
 	// All branches here are writes (PUT/DELETE) — gate MFA before dispatch.
 	if !oAdmin.adminHasMfa(r) {
 		writeJSONError(w, http.StatusPreconditionFailed, "MFA must be enabled to perform this action")
@@ -289,7 +274,7 @@ func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.
 }
 
 // commonRoutesRefreshHandler POST /api/common-routes/refresh.
-// Method check + slave check are enforced by middleware at route registration.
+// Method check is enforced by middleware at route registration.
 func (oAdmin *OvpnAdmin) commonRoutesRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 

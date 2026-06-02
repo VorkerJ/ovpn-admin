@@ -42,7 +42,6 @@ helm repo add ovpn-admin <repo-url>
 helm repo update
 
 # 2. Generate secrets you will pass to the chart
-SYNC_TOKEN=$(openssl rand -hex 24)
 htpasswd -Bbn admin "$(openssl rand -base64 24)" > admin.htpasswd
 
 # 3. Create namespace + htpasswd Secret
@@ -53,16 +52,14 @@ kubectl -n vpn create secret generic ovpn-admin-htpasswd \
 # 4. Install
 helm install ovpn ovpn-admin/ovpn-admin \
     -n vpn \
-    --set ovpnAdmin.masterSyncToken="$SYNC_TOKEN" \
     --set ovpnAdmin.adminHtpasswdSecret=ovpn-admin-htpasswd \
     --set image.tag=2.0.0
 ```
 
 `helm status ovpn -n vpn` should report `STATUS: deployed`.
 
-> Save `admin.htpasswd` and `SYNC_TOKEN` in your password manager. They are
-> not recoverable from the cluster (the htpasswd file is hashed, and the sync
-> token is only stored where it was set).
+> Save `admin.htpasswd` in your password manager. It is
+> not recoverable from the cluster (the file is hashed).
 
 ---
 
@@ -70,7 +67,6 @@ helm install ovpn ovpn-admin/ovpn-admin \
 
 | Value | Why | How |
 |-------|-----|-----|
-| `ovpnAdmin.masterSyncToken` | Default is empty / dev — replicas refuse to sync without one. | `--set ovpnAdmin.masterSyncToken=$(openssl rand -hex 24)` |
 | `ovpnAdmin.adminHtpasswdSecret` | Name of a Secret with key `auth` containing bcrypt htpasswd. | Generate with `htpasswd -Bbn admin <pw>`, create Secret, set the name. |
 | `image.tag` | Default may be `latest`. Pinning is mandatory for reproducible rollbacks. | `--set image.tag=2.0.0` |
 | `ingress.hosts[0].host` | Public DNS name of the admin UI. | `--set ingress.hosts[0].host=vpn-admin.<your-domain>` |
@@ -273,18 +269,6 @@ persistence:
    kubectl run -it --rm dnsutils --image=busybox --restart=Never -- \
        nc -zvu openvpn.vpn.svc.cluster.local 1194
    ```
-
-### 7.4 Replicas not syncing
-
-Logs on a replica:
-
-```bash
-kubectl -n vpn logs -l app.kubernetes.io/name=ovpn-admin,role=replica
-```
-
-`401` from `/api/sync` means the replica's `masterSyncToken` does not match
-the master's. Re-set both to the same value and `kubectl rollout restart
-deploy -n vpn`.
 
 ---
 
