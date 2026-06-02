@@ -36,3 +36,9 @@ frontend/playwright-report/
 # Local dev overrides
 .env
 docker-compose.override.yml
+
+# Internal docs (not for public repo)
+CLAUDE.md
+docs/PRE_PROD_CHECKLIST.md
+docs/runbooks/
+docs/superpowers/
