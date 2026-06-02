@@ -353,11 +353,12 @@ var usedMfaJtis = struct {
 }{m: map[string]int64{}}
 
 // consumeMfaJti records the given jti as used and returns false if it was
-// already seen. Empty jti is treated as "no replay protection available" and
-// is allowed through (for backwards compatibility with old tokens).
+// already seen. Empty jti is rejected — signMfaToken always emits a jti,
+// so a missing one means a malformed payload or a pre-jti token we no
+// longer accept (refusing closes the replay window completely).
 func consumeMfaJti(jti string, exp int64) bool {
 	if jti == "" {
-		return true
+		return false
 	}
 	usedMfaJtis.Lock()
 	defer usedMfaJtis.Unlock()

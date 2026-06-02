@@ -368,7 +368,14 @@ func securityMiddleware(next http.Handler) http.Handler {
 		if !*insecureCookies {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		// Build the API prefix from the configured base-url so non-root
+		// deployments (e.g. --listen.base-url=/admin/) still get the
+		// no-store headers on every JSON response.
+		apiPrefix := "/api/"
+		if base := strings.TrimRight(*listenBaseUrl, "/"); base != "" {
+			apiPrefix = base + "/api/"
+		}
+		if strings.HasPrefix(r.URL.Path, apiPrefix) {
 			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 			w.Header().Set("Pragma", "no-cache")
 		}

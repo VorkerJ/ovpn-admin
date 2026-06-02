@@ -44,6 +44,9 @@ func TestDefaultServerConfig_PreservesBackwardCompat(t *testing.T) {
 	if cfg.DCOEnabled {
 		t.Error("DCOEnabled must default to false (alpine openvpn lacks DCO build flag)")
 	}
+	if !cfg.MgmtClientAuth {
+		t.Error("MgmtClientAuth must default to true (matches the rendered server.conf and the auth loop)")
+	}
 	if !cfg.ClientToClient || !cfg.DuplicateCN {
 		t.Error("ClientToClient/DuplicateCN must default to true")
 	}

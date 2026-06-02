@@ -60,6 +60,17 @@ type ServerConfig struct {
 	TLSAuthMode   string   `json:"tls_auth_mode"`
 	DCOEnabled    bool     `json:"dco_enabled"`
 
+	// MgmtClientAuth enables the `management-client-auth` directive in
+	// server.conf. When true, every client connect is gated by ovpn-admin
+	// via the OpenVPN management interface — pure cert verification is no
+	// longer enough; ovpn-admin must reply with `client-auth-nt` (allow)
+	// or `client-deny`. This lets ovpn-admin enforce policy beyond cert+CRL
+	// (hot revocation, custom rules, etc).
+	//
+	// When false the directive is omitted and OpenVPN authorizes solely on
+	// cert validity + CRL.
+	MgmtClientAuth bool `json:"mgmt_client_auth"`
+
 	// Behavior
 	KeepaliveInterval int    `json:"keepalive_interval"`
 	KeepaliveTimeout  int    `json:"keepalive_timeout"`
@@ -122,6 +133,10 @@ func defaultServerConfig() ServerConfig {
 		// will refuse to start the server config. Operators who run a
 		// DCO-enabled binary can toggle this on via the server-config UI.
 		DCOEnabled:        false,
+		// MgmtClientAuth=true is the safer default: every connect is gated
+		// by ovpn-admin so revocation/policy changes take effect immediately
+		// without waiting for CRL refresh on the client side.
+		MgmtClientAuth:    true,
 		KeepaliveInterval: 10,
 		KeepaliveTimeout:  60,
 		MaxClients:        0,
@@ -337,7 +352,9 @@ dev tun
 proto {{ if eq .Cfg.Proto "tcp" }}tcp-server{{ else }}udp{{ end }}
 port {{ .Cfg.Port }}
 management 127.0.0.1 8989
+{{- if .Cfg.MgmtClientAuth }}
 management-client-auth
+{{- end }}
 
 tun-mtu {{ .Cfg.TunMTU }}
 {{- if gt .Cfg.MssFix 0 }}
@@ -454,6 +471,7 @@ func categorizeChanges(old, new ServerConfig) string {
 		old.TLSVersionMin != new.TLSVersionMin ||
 		old.TLSAuthMode != new.TLSAuthMode ||
 		old.DCOEnabled != new.DCOEnabled ||
+		old.MgmtClientAuth != new.MgmtClientAuth ||
 		old.Compression != new.Compression ||
 		old.ClientToClient != new.ClientToClient ||
 		old.DuplicateCN != new.DuplicateCN ||

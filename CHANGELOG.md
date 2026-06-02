@@ -38,7 +38,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
-## [2.0.3] — 2026-06-02
+## [2.0.5] — 2026-06-02
+
+### Added
+
+- `management-client-auth` is now actually handled. ovpn-admin keeps a
+  long-lived connection to the OpenVPN management interface (per
+  `--mgmt` alias) and answers `>CLIENT:CONNECT` / `>CLIENT:REAUTH`
+  events with `client-auth-nt` (allow) or `client-deny` (reject) based
+  on the cert's CN being present and `Valid` in easyrsa's index. This
+  closes the bug where the server template emitted
+  `management-client-auth` but no code consumed the events — clients
+  would hang for 30s and get a misleading "no username/password" error.
+- New `MgmtClientAuth` field in server-config (default true). When
+  disabled the directive is omitted from the rendered server.conf and
+  the auth loop is not started — OpenVPN then authorizes purely on
+  cert validity + CRL.
+
+### Security
+
+- `/api/user/config/show` (downloads embedded client private key) now
+  requires the MFA gate, matching every other sensitive endpoint. A
+  stolen session cookie no longer hands out all client keys without
+  the second factor.
+- `userCreateHandler` now validates the username at the handler edge
+  before any disk lookup, and `userCreate` itself validates BEFORE
+  `checkUserExist`. Path-traversal CNs no longer reach store calls.
+- `filesystemStore.BuildClient` and `GetClientCert` re-validate the
+  CN at point of use as defence-in-depth, so a future caller that
+  forgets to validate cannot trigger path traversal on the PKI dir.
+- `consumeMfaJti` now rejects tokens with empty `jti`. `signMfaToken`
+  has always emitted one, so an empty jti is now treated as a
+  malformed/legacy token. Closes the residual replay window for
+  pre-jti tokens after a signing-key carryover.
+- `securityMiddleware` Cache-Control: no-store now honours the
+  configured `--listen.base-url`, not just `/api/`. Non-root
+  deployments no longer leak session-carrying responses to caches.
+- `mgmtClientAuthLoop` validates that `cid` and `kid` from the
+  management socket are decimal integers before interpolating them
+  into the response, and tracks pending CONNECT blocks as an ordered
+  slice (most-recent-wins) instead of a map sorted lexicographically
+  — the prior tie-break compared decimal strings (`"9" > "10"`) and
+  could mis-attribute ENV lines under contention.
+
+## [2.0.4] — 2026-06-02
 
 ### Fixed
 

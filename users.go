@@ -142,6 +142,12 @@ func (oAdmin *OvpnAdmin) userCreateHandler(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// Validate at the handler edge BEFORE any disk lookup, so a path-
+	// traversal username never reaches checkUserExist or store calls.
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	userCreated, userCreateStatus := oAdmin.userCreate(req.Username, req.Password)
 
 	if userCreated {
@@ -359,6 +365,14 @@ func checkUserExist(username string) bool {
 }
 
 func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
+	// Validate FIRST. Both callers should have already done this at the
+	// handler edge, but doing it here too prevents any path-traversal CN
+	// from reaching checkUserExist / store.BuildClient.
+	if err := validateUsername(username); err != nil {
+		log.Debugf("userCreate: validateUsername(): %s", err.Error())
+		return false, err.Error()
+	}
+
 	ucErr := fmt.Sprintf("User \"%s\" created", username)
 
 	oAdmin.createUserMutex.Lock()
@@ -368,11 +382,6 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 		ucErr = fmt.Sprintf("Пользователь \"%s\" уже существует\n", username)
 		log.Debugf("userCreate: checkUserExist():  %s", ucErr)
 		return false, ucErr
-	}
-
-	if err := validateUsername(username); err != nil {
-		log.Debugf("userCreate: validateUsername(): %s", err.Error())
-		return false, err.Error()
 	}
 
 	if *authByPassword {

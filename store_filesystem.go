@@ -37,6 +37,9 @@ type filesystemStore struct {
 var _ storage.Store = (*filesystemStore)(nil)
 
 func (s *filesystemStore) BuildClient(commonName string) error {
+	if err := validateUsername(commonName); err != nil {
+		return fmt.Errorf("BuildClient: %w", err)
+	}
 	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "build-client-full", commonName, "nopass")
 	log.Debug(out)
 	if err != nil {
@@ -220,6 +223,11 @@ func (s *filesystemStore) DeleteClient(commonName string) error {
 }
 
 func (s *filesystemStore) GetClientCert(commonName string) (cert, key string) {
+	// Defence-in-depth: validate before string-concatenating into a path.
+	// All current handlers already validate, but a future caller might not.
+	if err := validateUsername(commonName); err != nil {
+		return "", ""
+	}
 	cert = fRead(s.easyrsaDirPath + "/pki/issued/" + commonName + ".crt")
 	key = fRead(s.easyrsaDirPath + "/pki/private/" + commonName + ".key")
 	return
