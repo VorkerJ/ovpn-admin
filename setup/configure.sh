@@ -57,7 +57,9 @@ mkdir -p /etc/openvpn/ccd
 # server.conf is now rendered by ovpn-admin into /etc/openvpn-dynamic/server.conf
 # Allow ovpn-admin (non-root, member of GID 2000) to write here.
 # 0770 = root + ovpnshared group only, no world access.
-addgroup -g 2000 ovpnshared 2>/dev/null || true
+# Try Debian-style first (groupadd), fall back to BusyBox/Alpine (addgroup)
+# so the same script works in both base-image variants.
+( groupadd -g 2000 ovpnshared || addgroup -g 2000 ovpnshared ) 2>/dev/null || true
 chown root:2000 /etc/openvpn-dynamic 2>/dev/null || true
 chmod 0770 /etc/openvpn-dynamic 2>/dev/null || true
 echo "Waiting for ovpn-admin to render server.conf..."

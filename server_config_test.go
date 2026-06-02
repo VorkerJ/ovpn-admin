@@ -487,21 +487,41 @@ func TestCategorizeChanges_NoChange(t *testing.T) {
 
 func TestCategorizeChanges_SoftFields(t *testing.T) {
 	t.Parallel()
+	// Soft = server-only changes that SIGHUP can absorb without
+	// disturbing connected clients. Push-related fields moved to "hard"
+	// in v2.0.6 — clients keep stale push until reconnect, so saving any
+	// push change now forces a clean restart.
 	for _, mod := range []func(*ServerConfig){
 		func(c *ServerConfig) { c.Verb = 5 },
-		func(c *ServerConfig) { c.DNSServers = append(c.DNSServers, "9.9.9.9") },
-		func(c *ServerConfig) { c.RedirectGateway = true },
 		func(c *ServerConfig) { c.KeepaliveInterval = 20 },
 		func(c *ServerConfig) { c.KeepaliveTimeout = 120 },
 		func(c *ServerConfig) { c.MaxClients = 50 },
-		func(c *ServerConfig) { c.PushExtra = []string{"route 10.0.0.0 255.0.0.0"} },
-		func(c *ServerConfig) { c.CustomDirectives = []string{"explicit-exit-notify"} },
 	} {
 		old := defaultServerConfig()
 		new := defaultServerConfig()
 		mod(&new)
 		if got := categorizeChanges(old, new); got != "soft" {
 			t.Errorf("expected soft, got %q for change", got)
+		}
+	}
+}
+
+func TestCategorizeChanges_PushFieldsAreHard(t *testing.T) {
+	t.Parallel()
+	// Push fields used to be soft (SIGHUP-only) but a SIGHUP doesn't
+	// re-push to existing clients — they kept stale DNS/gateway until
+	// reconnect. v2.0.6 promotes these to hard so save-in-UI is enough.
+	for _, mod := range []func(*ServerConfig){
+		func(c *ServerConfig) { c.DNSServers = append(c.DNSServers, "9.9.9.9") },
+		func(c *ServerConfig) { c.RedirectGateway = !c.RedirectGateway },
+		func(c *ServerConfig) { c.PushExtra = []string{"route 10.0.0.0 255.0.0.0"} },
+		func(c *ServerConfig) { c.CustomDirectives = []string{"explicit-exit-notify"} },
+	} {
+		old := defaultServerConfig()
+		new := defaultServerConfig()
+		mod(&new)
+		if got := categorizeChanges(old, new); got != "hard" {
+			t.Errorf("expected hard (push field forces reload), got %q", got)
 		}
 	}
 }

@@ -38,6 +38,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.6] — 2026-06-03
+
+### Changed
+
+- **openvpn image base switched from `alpine:3.23` to `debian:trixie-slim`.**
+  Debian's `openvpn` package is built with `--enable-dco`, so the
+  `data-channel-offload` directive now works once the kernel has the
+  mainline `ovpn` module (kernel 6.16+) or an OOT `ovpn_dco` variant
+  loaded. Operators with a DCO-capable host can flip DCO on in the UI
+  without rebuilding the binary. Image grows ~50MB but stays under 100MB.
+- Push-related server-config fields (`RedirectGateway`, `DNSServers`,
+  `PushExtra`, `CustomDirectives`) now classify as **hard** reload
+  changes instead of soft. A SIGHUP-only soft reload doesn't re-push
+  to already-connected clients — they kept stale DNS/gateway until
+  reconnect. Saving any push change now forces a clean restart so
+  every session picks up the new config immediately. `Verb`,
+  `KeepaliveInterval/Timeout`, `MaxClients` remain soft (no client
+  impact, in-place SIGHUP).
+- `setup/configure.sh` group-creation step now tries `groupadd`
+  first (Debian) and falls back to BusyBox `addgroup` (Alpine), so
+  the same script works in either base image.
+
 ## [2.0.5] — 2026-06-02
 
 ### Added

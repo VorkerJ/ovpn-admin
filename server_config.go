@@ -472,6 +472,15 @@ func categorizeChanges(old, new ServerConfig) string {
 		old.TLSAuthMode != new.TLSAuthMode ||
 		old.DCOEnabled != new.DCOEnabled ||
 		old.MgmtClientAuth != new.MgmtClientAuth ||
+		// Push-related fields used to be "soft" (SIGHUP only), but SIGHUP
+		// doesn't re-deliver push to already-connected clients — they keep
+		// the old DNS/gateway until reconnect. Treating these as hard means
+		// every save forces a clean reload so existing sessions pick up the
+		// new push config without manual disconnect.
+		old.RedirectGateway != new.RedirectGateway ||
+		!reflect.DeepEqual(old.DNSServers, new.DNSServers) ||
+		!reflect.DeepEqual(old.PushExtra, new.PushExtra) ||
+		!reflect.DeepEqual(old.CustomDirectives, new.CustomDirectives) ||
 		old.Compression != new.Compression ||
 		old.ClientToClient != new.ClientToClient ||
 		old.DuplicateCN != new.DuplicateCN ||
@@ -481,14 +490,14 @@ func categorizeChanges(old, new ServerConfig) string {
 		return "hard"
 	}
 
+	// Soft = the openvpn process can reload via SIGHUP without dropping
+	// connected clients. Only fields with zero client-visible impact stay
+	// here (log verbosity, max-clients server-side cap, keepalive timings
+	// which OpenVPN re-applies at next ping).
 	soft := old.Verb != new.Verb ||
-		!reflect.DeepEqual(old.DNSServers, new.DNSServers) ||
-		old.RedirectGateway != new.RedirectGateway ||
 		old.KeepaliveInterval != new.KeepaliveInterval ||
 		old.KeepaliveTimeout != new.KeepaliveTimeout ||
-		old.MaxClients != new.MaxClients ||
-		!reflect.DeepEqual(old.PushExtra, new.PushExtra) ||
-		!reflect.DeepEqual(old.CustomDirectives, new.CustomDirectives)
+		old.MaxClients != new.MaxClients
 	if soft {
 		return "soft"
 	}
