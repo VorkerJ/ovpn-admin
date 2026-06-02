@@ -637,7 +637,11 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 		return "", fmt.Errorf("write conf: %w", err)
 	}
 
-	backup := current
+	// `current` was previously captured as a backup for rollback. Hard
+	// reload now self-exits (so the runtime rebinds the network namespace),
+	// which means we can't roll back from in-process anyway. The validation
+	// step above guards against the bad-config case at save time.
+	_ = current
 	m.store.replace(newCfg)
 	if err := m.persist(newCfg); err != nil {
 		log.Warnf("apply: persist failed: %v", err)
@@ -652,36 +656,35 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 		return "soft", nil
 	case "hard":
 		ovpnServerConfigReloads.WithLabelValues("hard").Inc()
+		// SIGTERM into openvpn's mgmt makes the openvpn process exit, which
+		// in turn makes the container exit and be recreated by the runtime
+		// (`restart: unless-stopped` in docker-compose; kubelet in K8s).
+		// The recreated openvpn container has a NEW network namespace.
+		//
+		// When ovpn-admin is in the same Pod (K8s) the pod's pause container
+		// holds the netns, so ovpn-admin keeps networking — fine.
+		// In docker-compose with `network_mode: service:openvpn`, ovpn-admin
+		// is locked to openvpn's OLD netns ID and becomes orphaned (502 on
+		// every UI request). To make this work in both runtimes we exit too
+		// after a short delay and let depends_on bring us back attached to
+		// the new netns. The HTTP caller has already received the apply()
+		// response by the time we exit.
 		if err := m.sendSignal("SIGTERM"); err != nil {
 			log.Warnf("SIGTERM via mgmt failed: %v", err)
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		defer cancel()
-		if err := m.waitMgmtReady(waitCtx); err != nil {
-			log.Warnf("openvpn did not come back after %v — rolling back", 15*time.Second)
-			return m.rollback(backup, updatedBy)
-		}
+		go func() {
+			// Give the HTTP handler ~1s to flush the success response to
+			// the client BEFORE the process dies. log.Info is buffered
+			// against stdout — sync via log.Fatal would write the line
+			// synchronously but also flag-up the exit as an error in
+			// healthchecks; use a plain Info + os.Exit instead.
+			time.Sleep(1200 * time.Millisecond)
+			log.Infof("hard reload: graceful self-exit so runtime rebinds netns to new openvpn (Docker network_mode: service:openvpn or K8s pod)")
+			os.Exit(0)
+		}()
 		return "hard", nil
 	}
 	return kind, nil
-}
-
-func (m *serverManager) rollback(backup ServerConfig, updatedBy string) (string, error) {
-	ovpnServerConfigReloads.WithLabelValues("rolled-back").Inc()
-	backup.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	backup.UpdatedBy = updatedBy + " (rollback)"
-
-	rendered, err := renderServerConfig(backup, m.dcoAvailable, m.ccdEnabled)
-	if err != nil {
-		return "rolled-back", fmt.Errorf("rollback render: %w", err)
-	}
-	if err := writeFileAtomic(m.confPath, []byte(rendered)); err != nil {
-		return "rolled-back", err
-	}
-	m.store.replace(backup)
-	_ = m.persist(backup)
-	_ = m.sendSignal("SIGTERM")
-	return "rolled-back", fmt.Errorf("new config invalid (openvpn did not restart); rolled back to previous version")
 }
 
 func (m *serverManager) persist(cfg ServerConfig) error {

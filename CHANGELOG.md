@@ -38,6 +38,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.8] — 2026-06-03
+
+### Fixed
+
+- **Hard config reload (DCO/port/cipher/tls-mode/etc) no longer breaks
+  the admin UI in `docker-compose` deployments.** Saving such a change
+  used to send SIGTERM into openvpn's mgmt → openvpn process exited →
+  docker recreated the openvpn container with a NEW network namespace,
+  but ovpn-admin was pinned via `network_mode: service:openvpn` to the
+  OLD netns and became orphaned (502 on every UI request until manual
+  `docker compose down && up`).
+  
+  `apply()` now self-exits ~1.2s after sending SIGTERM. With
+  `restart: unless-stopped` + `depends_on: openvpn`, both containers
+  come back in the right order and ovpn-admin rebinds to the new
+  openvpn netns automatically. The HTTP caller still receives the
+  success response before the exit.
+  
+  K8s deployments are unaffected by the original race (the pod's
+  pause container holds the netns), and the self-exit is harmless
+  there — kubelet just restarts the container in the same pod.
+
+- Removed the now-unreachable `rollback()` path. Since we self-exit
+  the rollback can't run from in-process. Bad-config protection still
+  lives in `validateServerConfig` at save time.
+
 ## [2.0.7] — 2026-06-03
 
 ### Fixed
