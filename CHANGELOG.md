@@ -38,6 +38,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.9] — 2026-06-03
+
+### Added
+
+- **Auto-kick after route change.** When admin saves a per-user CCD
+  (Save Routes), changes Common Routes, or the background scheduler
+  re-resolves a domain to new IPs, ovpn-admin now sends `kill <CN>`
+  to OpenVPN's mgmt for each affected client. The client auto-
+  reconnects within seconds and receives the updated push directives
+  in PUSH_REPLY. No more "I changed the route but my VPN session
+  still routes the old IPs" — push directives only apply at connect
+  time, so kicking is the only way to make in-flight sessions pick
+  up the change.
+- **Configurable DNS resolver** for domain routes via
+  `--domain-resolver` / `OVPN_DOMAIN_RESOLVER` (e.g. `8.8.8.8` or
+  `1.1.1.1:53`). Defaults to the container's `/etc/resolv.conf`,
+  which inside Docker is the embedded 127.0.0.11 forwarder and can
+  be flaky. Pinning to a public resolver gives reproducible IP sets
+  across nodes.
+- **Configurable refresh interval** (`domain_refresh_interval_hours`
+  in server-config, default 24). The background scheduler reads it
+  live, so a UI change takes effect at the next tick. Set to 0 (or
+  negative) to disable the scheduler — manual refresh stays
+  available via the existing buttons.
+- **"Обновить DNS" button for per-user routes** in `CcdModal`. Picks
+  up the same logic as Common Routes refresh — re-resolve domains,
+  rewrite CCD if any IP changed, kick the user.
+- New `POST /api/user/ccd/refresh` endpoint behind the same
+  `auth(mfa(...))` gate as `apply`.
+
+### Changed
+
+- `DomainRefreshIntervalHours` classifies as a **soft** change —
+  no openvpn restart, the scheduler picks the new value at the next
+  loop iteration. Other server-config edits keep their previous
+  classification.
+
 ## [2.0.8] — 2026-06-03
 
 ### Fixed

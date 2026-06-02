@@ -22,7 +22,7 @@ import ServerConfigView from '@/components/ServerConfigView.vue'
 import {
   fetchUsers, fetchServerSettings,
   createUser, revokeUser, unrevokeUser, rotateUser, deleteUser,
-  changePassword, fetchUserConfig, fetchUserCcd, applyCcd
+  changePassword, fetchUserConfig, fetchUserCcd, applyCcd, refreshUserCcdDns
 } from '@/api.js'
 
 // ── Auth ───────────────────────────────────────────────────────────
@@ -298,6 +298,26 @@ async function submitCcd(ccd) {
   }
 }
 
+async function refreshUserDns(username) {
+  modalSubmitting.value.ccd = true
+  try {
+    const res = await refreshUserCcdDns(username)
+    if (res?.changed) {
+      notify(`DNS обновлён: ${res.resolved} OK / ${res.failed} ошибок. Маршруты сохранены, клиент будет переподключён.`, 'success')
+    } else {
+      notify(`DNS обновлён: IP не изменились (${res?.resolved ?? 0} OK / ${res?.failed ?? 0} ошибок)`, 'default')
+    }
+    // Reload CCD into modal so resolved IPs / timestamps refresh on screen
+    ccdData.value = await fetchUserCcd(username)
+  } catch (e) {
+    if (!handleMfa412(e)) {
+      notify(e.response?.data?.error || e.message || 'Ошибка обновления DNS', 'error')
+    }
+  } finally {
+    modalSubmitting.value.ccd = false
+  }
+}
+
 // Revoke/unrevoke have no modal — surface MFA errors as toasts.
 async function safeRevoke(username) {
   try {
@@ -476,6 +496,7 @@ async function safeUnrevoke(username) {
         :error="modalErrors.ccd"
         @close="closeModal('ccd')"
         @submit="submitCcd"
+        @refresh-dns="refreshUserDns"
       />
 
       <MfaSetupModal

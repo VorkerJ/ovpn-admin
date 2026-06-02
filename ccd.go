@@ -126,6 +126,7 @@ func (oAdmin *OvpnAdmin) rerenderAllCcds(commonExpanded []ccdCommonRoute) {
 
 	start := time.Now()
 	count := 0
+	changedUsers := []string{}
 	for _, u := range oAdmin.snapshotClients() {
 		if u.AccountStatus != "Active" {
 			continue
@@ -137,8 +138,31 @@ func (oAdmin *OvpnAdmin) rerenderAllCcds(commonExpanded []ccdCommonRoute) {
 			continue
 		}
 		count++
+		changedUsers = append(changedUsers, u.Identity)
 	}
 	log.Infof("rerenderAllCcds: rerendered %d CCDs in %s", count, time.Since(start))
+	// Kick affected users so their next reconnect picks up the new push
+	// directives. CCD changes only apply at connect time; without a kick
+	// the user keeps the stale routes until they happen to reconnect on
+	// their own.
+	oAdmin.kickUsersAfterCcdChange(changedUsers)
+}
+
+// kickUsersAfterCcdChange disconnects each listed user from every mgmt
+// interface we know about. The user's OpenVPN client auto-reconnects
+// (typically within 5 seconds) and receives the freshly-written CCD.
+// Errors are logged but never fatal — a missing kill just means the
+// user wasn't connected on that server.
+func (oAdmin *OvpnAdmin) kickUsersAfterCcdChange(users []string) {
+	if len(users) == 0 {
+		return
+	}
+	for _, cn := range users {
+		for srv := range oAdmin.mgmtInterfaces {
+			oAdmin.mgmtKillUserConnection(cn, srv)
+		}
+	}
+	log.Infof("kickUsersAfterCcdChange: signalled %d user(s) to reconnect", len(users))
 }
 
 func (oAdmin *OvpnAdmin) runCommonRoutesScheduler() {
@@ -172,9 +196,26 @@ func (oAdmin *OvpnAdmin) runCommonRoutesScheduler() {
 
 	runOnce()
 
-	ticker := time.NewTicker(24 * time.Hour)
-	defer ticker.Stop()
-	for range ticker.C {
+	// Re-read interval each tick so a UI change takes effect at the next
+	// fire without restarting the process. interval==0 pauses the loop
+	// entirely; admin can resume by saving a non-zero value.
+	for {
+		interval := 24 * time.Hour
+		if oAdmin.serverConfigStore != nil {
+			h := oAdmin.serverConfigStore.snapshot().DomainRefreshIntervalHours
+			if h > 0 {
+				interval = time.Duration(h) * time.Hour
+			} else if h < 0 {
+				// negative means "disabled"; wait an hour then re-check
+				interval = time.Hour
+			}
+		}
+		time.Sleep(interval)
+		// Skip the refresh body when the admin has disabled it; only the
+		// re-poll loop above keeps spinning.
+		if oAdmin.serverConfigStore != nil && oAdmin.serverConfigStore.snapshot().DomainRefreshIntervalHours < 0 {
+			continue
+		}
 		runOnce()
 	}
 }
@@ -190,6 +231,7 @@ func (oAdmin *OvpnAdmin) refreshAllUserDomains(ctx context.Context) {
 		commonExpanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
 	}
 
+	changedUsers := []string{}
 	for _, u := range oAdmin.snapshotClients() {
 		if u.AccountStatus != "Active" {
 			continue
@@ -227,9 +269,14 @@ func (oAdmin *OvpnAdmin) refreshAllUserDomains(ctx context.Context) {
 		if changed {
 			if ok, msg := oAdmin.modifyCcd(ccd, commonExpanded); !ok {
 				log.Warnf("refreshAllUserDomains: %s: %s", u.Identity, msg)
+				continue
 			}
+			changedUsers = append(changedUsers, u.Identity)
 		}
 	}
+	// Only kick when IPs actually shifted — otherwise the periodic 24h
+	// refresh would tear down every connection daily for no reason.
+	oAdmin.kickUsersAfterCcdChange(changedUsers)
 }
 
 func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
@@ -396,10 +443,83 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 		if oAdmin.firewall != nil {
 			oAdmin.firewall.push(fwEvent{Kind: EvUserChanged, CN: ccd.User})
 		}
+		// Kick the user so they reconnect and pick up the new push lines.
+		oAdmin.kickUsersAfterCcdChange([]string{ccd.User})
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, applyStatus)
 		return
 	} else {
 		http.Error(w, applyStatus, http.StatusUnprocessableEntity)
 	}
+}
+
+// userCcdRefreshHandler re-resolves every domain route in the named user's
+// CCD with the current resolver, rewrites the CCD if any IP set changed,
+// and kicks the user so their next reconnect carries the refreshed push
+// directives. Same auth gate as userApplyCcdHandler.
+func (oAdmin *OvpnAdmin) userCcdRefreshHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid username")
+		return
+	}
+
+	ccd := oAdmin.getCcd(req.Username)
+	changed := false
+	resolved := 0
+	failed := 0
+	for i, route := range ccd.CustomRoutes {
+		if route.Kind != "domain" || route.Domain == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ips, err := domainResolver(ctx, route.Domain)
+		cancel()
+		ccd.CustomRoutes[i].LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+		if err != nil {
+			ccd.CustomRoutes[i].LastResolveErr = err.Error()
+			failed++
+			continue
+		}
+		ccd.CustomRoutes[i].LastResolveErr = ""
+		resolved++
+		if !sameIPSet(route.ResolvedIPs, ips) {
+			ccd.CustomRoutes[i].ResolvedIPs = ips
+			changed = true
+		}
+	}
+
+	if !changed {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"changed":  false,
+			"resolved": resolved,
+			"failed":   failed,
+		})
+		return
+	}
+
+	var expanded []ccdCommonRoute
+	if oAdmin.commonRoutes != nil {
+		expanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
+	}
+	if ok, msg := oAdmin.modifyCcd(ccd, expanded); !ok {
+		writeJSONError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+	if oAdmin.firewall != nil {
+		oAdmin.firewall.push(fwEvent{Kind: EvUserChanged, CN: req.Username})
+	}
+	oAdmin.kickUsersAfterCcdChange([]string{req.Username})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"changed":  true,
+		"resolved": resolved,
+		"failed":   failed,
+	})
 }

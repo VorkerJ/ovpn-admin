@@ -63,6 +63,11 @@ var (
 	clientCertExpirationDays = kingpin.Flag("client-cert.expiration-days", "Expiration period of OpenVPN client certificates in days, the period will shrink automatically to the CA expiration period").Default("3650").Envar("CLIENT_CERT_EXPIRATION_DAYS").String()
 	adminHtpasswdFile        = kingpin.Flag("admin.htpasswd-file", "path to htpasswd file with admin UI credentials; if empty, a random password is generated").Default("").Envar("ADMIN_HTPASSWD_FILE").String()
 	commonRoutesEnabled      = kingpin.Flag("common-routes", "enable common routes feature").Default("true").Envar("OVPN_COMMON_ROUTES").Bool()
+	// domainResolverAddr lets the operator pin DNS resolution for domain
+	// routes (Common Routes / per-user) to a stable public resolver
+	// instead of the container's /etc/resolv.conf, which inside Docker
+	// is the embedded 127.0.0.11 forwarder and can be flaky.
+	domainResolverAddr = kingpin.Flag("domain-resolver", "DNS server (host or host:port) for resolving domain routes; default uses system /etc/resolv.conf").Default("").Envar("OVPN_DOMAIN_RESOLVER").String()
 	insecureCookies          = kingpin.Flag("insecure-cookies", "disable Secure flag on session cookies (DEV ONLY — never use in production)").Default("false").Envar("OVPN_INSECURE_COOKIES").Bool()
 
 	serverConfigEnabled = kingpin.Flag("server-config",
@@ -125,6 +130,10 @@ func main() {
 
 	log.SetLevel(logLevels[*logLevel])
 	log.SetFormatter(logFormats[*logFormat])
+
+	if resolver := configureDomainResolver(*domainResolverAddr); resolver != "" {
+		log.Infof("domain-resolver: %s", resolver)
+	}
 
 	initAuth()
 
@@ -399,6 +408,7 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/user/unrevoke", auth(mfa(post(ovpnAdmin.userUnrevokeHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/user/disconnect", auth(mfa(post(ovpnAdmin.userDisconnectHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", auth(mfa(post(ovpnAdmin.userApplyCcdHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd/refresh", auth(mfa(post(ovpnAdmin.userCcdRefreshHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", auth(mfa(post(ovpnAdmin.commonRoutesRefreshHandler))))
 
 	// Multi-method routes — method dispatch stays inside the handler.

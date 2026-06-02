@@ -93,6 +93,12 @@ type ServerConfig struct {
 	PublicPort     int    `json:"public_port,omitempty"`
 	PublicProto    string `json:"public_proto,omitempty"`
 
+	// DomainRefreshIntervalHours controls how often the background
+	// scheduler re-resolves domain-based routes (Common Routes + per-user)
+	// and rewrites CCD files. 0 disables the scheduler entirely (manual
+	// refresh only). Default = 24 (once a day).
+	DomainRefreshIntervalHours int `json:"domain_refresh_interval_hours"`
+
 	// Bookkeeping
 	UpdatedAt string `json:"updated_at"`
 	UpdatedBy string `json:"updated_by"`
@@ -136,8 +142,9 @@ func defaultServerConfig() ServerConfig {
 		// MgmtClientAuth=true is the safer default: every connect is gated
 		// by ovpn-admin so revocation/policy changes take effect immediately
 		// without waiting for CRL refresh on the client side.
-		MgmtClientAuth:    true,
-		KeepaliveInterval: 10,
+		MgmtClientAuth:             true,
+		DomainRefreshIntervalHours: 24,
+		KeepaliveInterval:          10,
 		KeepaliveTimeout:  60,
 		MaxClients:        0,
 		ClientToClient:    true,
@@ -494,11 +501,13 @@ func categorizeChanges(old, new ServerConfig) string {
 	// Soft = the openvpn process can reload via SIGHUP without dropping
 	// connected clients. Only fields with zero client-visible impact stay
 	// here (log verbosity, max-clients server-side cap, keepalive timings
-	// which OpenVPN re-applies at next ping).
+	// which OpenVPN re-applies at next ping). DomainRefreshIntervalHours
+	// is read live by the background scheduler — no openvpn restart at all.
 	soft := old.Verb != new.Verb ||
 		old.KeepaliveInterval != new.KeepaliveInterval ||
 		old.KeepaliveTimeout != new.KeepaliveTimeout ||
-		old.MaxClients != new.MaxClients
+		old.MaxClients != new.MaxClients ||
+		old.DomainRefreshIntervalHours != new.DomainRefreshIntervalHours
 	if soft {
 		return "soft"
 	}

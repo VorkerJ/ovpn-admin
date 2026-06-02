@@ -352,6 +352,18 @@ onMounted(reload)
               class="font-mono mt-1"
             />
           </label>
+          <label class="block text-sm">
+            <span
+              class="text-xs text-muted-foreground"
+              title="Background-резолв доменных маршрутов (Common Routes + per-user). 0 = выключено, новые IP подхватятся только при ручном Refresh."
+            >Domain refresh interval (ч)</span>
+            <Input
+              v-model.number="cfg.domain_refresh_interval_hours"
+              type="number"
+              min="0"
+              class="font-mono mt-1"
+            />
+          </label>
         </div>
         <div class="flex gap-4 pt-2">
           <label class="inline-flex items-center gap-2 text-sm">

@@ -18,7 +18,7 @@ const props = defineProps({
   submitting: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['close', 'submit'])
+const emit = defineEmits(['close', 'submit', 'refresh-dns'])
 
 let routeId = 0
 function withIds(routes) {
@@ -34,6 +34,12 @@ watch(() => props.ccd, (val) => {
   localCcd.value = { ...val, CustomRoutes: withIds(val?.CustomRoutes) }
   validationError.value = ''
 }, { deep: true })
+
+// True when the user has at least one domain-typed route — Refresh DNS
+// button only makes sense for those (IP/CIDR routes don't need resolving).
+const hasDomainRoutes = computed(() =>
+  (localCcd.value.CustomRoutes || []).some(r => r.Kind === 'domain')
+)
 
 // VPN-IP режим: 'dynamic' = выдать из пула, 'static' = пин на конкретный адрес.
 // Когда переключают на static — очищаем поле (если там было "dynamic"), чтобы юзер ввёл IP.
@@ -378,6 +384,14 @@ function formatRelativeTime(iso) {
         @click="onClose"
       >
         Закрыть
+      </Button>
+      <Button
+        v-if="hasDomainRoutes"
+        variant="secondary"
+        :disabled="submitting"
+        @click="emit('refresh-dns', username)"
+      >
+        Обновить DNS
       </Button>
       <Button
         :loading="submitting"

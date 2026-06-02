@@ -101,6 +101,13 @@ export async function refreshCommonRoutesDns() {
   return data // { resolved, failed, changed }
 }
 
+export async function refreshUserCcdDns(username) {
+  const { data } = await axios.post('api/user/ccd/refresh', JSON.stringify({ username }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data // { changed, resolved, failed }
+}
+
 export async function fetchServerConfig() {
   const { data } = await axios.get('api/server-config')
   return data // { config, dco_available }

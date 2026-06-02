@@ -159,11 +159,39 @@ func sameIPSet(a, b []string) bool {
 	return true
 }
 
+// activeDomainResolver is swapped at startup once --domain-resolver / OVPN_DOMAIN_RESOLVER
+// is read. Tests override `domainResolver` directly to bypass DNS entirely.
+var activeDomainResolver = net.DefaultResolver
+
+// configureDomainResolver wires `activeDomainResolver` to dial the operator's
+// chosen DNS server (e.g. 8.8.8.8) instead of the container's /etc/resolv.conf.
+// addr can be either `host` (port 53 assumed) or `host:port`. Empty string
+// keeps the Go default resolver. Returns the effective address used.
+func configureDomainResolver(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		activeDomainResolver = net.DefaultResolver
+		return "system (/etc/resolv.conf)"
+	}
+	if !strings.Contains(addr, ":") {
+		addr += ":53"
+	}
+	chosen := addr
+	activeDomainResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, "udp", chosen)
+		},
+	}
+	return chosen
+}
+
 // resolveOneDomain выполняет один LookupIP с таймаутом и возвращает только IPv4.
 func resolveOneDomain(ctx context.Context, domain string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip4", domain)
+	addrs, err := activeDomainResolver.LookupIP(ctx, "ip4", domain)
 	if err != nil {
 		return nil, err
 	}
