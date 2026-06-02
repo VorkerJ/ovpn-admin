@@ -117,7 +117,11 @@ func defaultServerConfig() ServerConfig {
 		DataCiphers:       []string{"AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"},
 		TLSVersionMin:     "1.2",
 		TLSAuthMode:       "tls-auth",
-		DCOEnabled:        true,
+		// DCOEnabled opts in to `data-channel-offload`. Default off because
+		// the official Alpine `openvpn` package is built WITHOUT DCO and
+		// will refuse to start the server config. Operators who run a
+		// DCO-enabled binary can toggle this on via the server-config UI.
+		DCOEnabled:        false,
 		KeepaliveInterval: 10,
 		KeepaliveTimeout:  60,
 		MaxClients:        0,

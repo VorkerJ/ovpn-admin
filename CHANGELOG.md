@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: `serverRole` ref / props, slave-readonly UI gating, header
   "slave · sync …" indicator, `fetchLastSync` API call.
 
+## [2.0.2] — 2026-06-02
+
+### Fixed
+
+- Default `DCOEnabled` flipped from `true` to `false`. The previous
+  default caused the rendered `server.conf` to include
+  `data-channel-offload` whenever a DCO kernel module was detected,
+  but the official Alpine `openvpn` package is built **without** DCO
+  support and rejected the directive — putting the openvpn container
+  into a crash-loop. DCO is now opt-in via the server-config UI for
+  operators running a DCO-enabled binary.
+
 ## [2.0.1] — 2026-06-02
 
 ### Fixed
