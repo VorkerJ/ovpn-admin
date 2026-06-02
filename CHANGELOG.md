@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: `serverRole` ref / props, slave-readonly UI gating, header
   "slave · sync …" indicator, `fetchLastSync` API call.
 
+## [2.0.4] — 2026-06-02
+
+### Fixed
+
+- Client `.ovpn` config template now picks `tls-crypt` vs `tls-auth`
+  based on the server-side `TLSAuthMode`. Previously the template
+  hardcoded `<tls-auth>` + `key-direction 1`, which broke clients when
+  the server was switched to `tls-crypt` (handshake mismatch).
+- Removed the legacy `cipher AES-128-CBC` line from the client
+  template. Modern OpenVPN ≥2.5 clients negotiate the cipher via NCP
+  using the server's `data-ciphers` list; the hardcoded value was
+  misleading (the actual cipher is the first AEAD in `data-ciphers`).
+
 ## [2.0.3] — 2026-06-02
 
 ### Fixed

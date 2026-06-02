@@ -83,12 +83,13 @@ type OpenvpnServer struct {
 }
 
 type openvpnClientConfig struct {
-	Hosts      []OpenvpnServer
-	CA         string
-	Cert       string
-	Key        string
-	TLS        string
-	PasswdAuth bool
+	Hosts       []OpenvpnServer
+	CA          string
+	Cert        string
+	Key         string
+	TLS         string
+	TLSAuthMode string // "tls-auth" | "tls-crypt"; empty -> tls-auth (back-compat)
+	PasswdAuth  bool
 }
 
 type OpenvpnClient struct {
@@ -268,6 +269,10 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 		conf.Cert, conf.Key = oAdmin.store.GetClientCert(username)
 
 		conf.PasswdAuth = *authByPassword
+
+		if oAdmin.serverConfigStore != nil {
+			conf.TLSAuthMode = oAdmin.serverConfigStore.snapshot().TLSAuthMode
+		}
 
 		t := oAdmin.getClientConfigTemplate()
 

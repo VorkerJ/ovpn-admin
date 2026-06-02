@@ -6,8 +6,6 @@ verb 4
 client
 nobind
 dev tun
-cipher AES-128-CBC
-key-direction 1
 #redirect-gateway def1
 tls-client
 remote-cert-tls server
@@ -33,6 +31,13 @@ auth-user-pass
 <ca>
 {{ .CA -}}
 </ca>
+{{- if eq .TLSAuthMode "tls-crypt" }}
+<tls-crypt>
+{{ .TLS -}}
+</tls-crypt>
+{{- else }}
+key-direction 1
 <tls-auth>
 {{ .TLS -}}
 </tls-auth>
+{{- end }}
