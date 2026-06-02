@@ -378,8 +378,9 @@ data-ciphers {{ joinCiphers .Cfg.DataCiphers }}
 data-ciphers-fallback {{ index .Cfg.DataCiphers 0 }}
 tls-version-min {{ .Cfg.TLSVersionMin }}
 
-{{- if and .Cfg.DCOEnabled .DCOAvailable }}
-data-channel-offload
+{{- /* DCO in OpenVPN 2.6.x: built with --enable-dco engages kernel offload automatically when an ovpn/ovpn_dco module is loaded. There is no data-channel-offload directive; only --disable-dco to opt out. So we emit nothing for DCO=on, disable-dco for DCO=off. */ -}}
+{{- if not .Cfg.DCOEnabled }}
+disable-dco
 {{- end }}
 
 {{- if ne .Cfg.Compression "" }}

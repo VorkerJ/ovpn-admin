@@ -38,6 +38,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.7] — 2026-06-03
+
+### Fixed
+
+- **CCD files are now written with mode `0644` instead of `0600`.**
+  OpenVPN drops privileges to `nobody` per `user nobody` in server.conf
+  and reads `/etc/openvpn/ccd/<CN>` at each client connect. The previous
+  `0600` made the file unreadable after the drop, silently disabling
+  every per-user push directive (routes, DNS, gateway). This is the
+  reason CCD-based features (per-user split-tunnel, hot revocation
+  hints, common-routes targeting) appeared to do nothing. CCD content
+  is push directives, not secrets, so 0644 is appropriate.
+- Server template no longer emits the invented `data-channel-offload`
+  directive. OpenVPN 2.6.x with `--enable-dco` engages DCO automatically
+  when the kernel module is loaded; the only knob is `--disable-dco`
+  to opt out. The template now emits `disable-dco` only when DCOEnabled
+  is false, and nothing when DCOEnabled is true (DCO auto-attaches).
+- `docker-compose.yaml` openvpn service gets `DAC_OVERRIDE`, `SETUID`,
+  `SETGID`, `SETPCAP` capabilities. Without `SETPCAP` OpenVPN cannot
+  retain `NET_ADMIN` after dropping to `nobody`, so DCO falls back to
+  user-space crypto with a noisy "Cannot retain CAP_NET_ADMIN" log line.
+- `docker-compose.yaml` ovpn-admin service gets `depends_on: openvpn`.
+  Without it Compose may recreate openvpn first, leaving ovpn-admin
+  bound to a dead network namespace (502 on every UI request until a
+  manual `docker compose down && up`).
+- `filesystemStore.SaveCcd` now runs `validateUsername` at point of use
+  as defence-in-depth (matches BuildClient/GetClientCert).
+
 ## [2.0.6] — 2026-06-03
 
 ### Changed

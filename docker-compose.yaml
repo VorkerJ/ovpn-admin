@@ -33,6 +33,15 @@ services:
       - NET_ADMIN
       - NET_RAW
       - MKNOD
+      # DAC_OVERRIDE: read CCD files written by ovpn-admin (different uid)
+      # after OpenVPN drops privs to `nobody`.
+      - DAC_OVERRIDE
+      # SETUID/SETGID/SETPCAP: needed for OpenVPN to drop to `user nobody;
+      # group nogroup` AND retain NET_ADMIN. Without SETPCAP the cap is
+      # lost during the drop and DCO (kernel offload) silently disables.
+      - SETUID
+      - SETGID
+      - SETPCAP
     security_opt:
       - no-new-privileges:true
     mem_limit: 256m
@@ -82,6 +91,13 @@ services:
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 200
+    # network_mode shares the openvpn container's netns, but Compose doesn't
+    # treat that as a dependency — without an explicit depends_on, recreating
+    # openvpn (e.g. on image upgrade) can leave ovpn-admin bound to the dead
+    # netns and the admin UI becomes unreachable (502 from any front proxy).
+    depends_on:
+      openvpn:
+        condition: service_started
     network_mode: service:openvpn
     volumes:
       - ${OVPN_EASYRSA_PATH:-./easyrsa_master}:/mnt/easyrsa

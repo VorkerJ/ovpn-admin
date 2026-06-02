@@ -358,22 +358,29 @@ func TestRenderServerConfig_Defaults(t *testing.T) {
 	}
 }
 
-func TestRenderServerConfig_DCOEnabled(t *testing.T) {
+func TestRenderServerConfig_DCOEnabledEmitsNothing(t *testing.T) {
 	t.Parallel()
+	// In OpenVPN 2.6.x DCO engages automatically when the binary supports
+	// it and the kernel module is loaded — there is no explicit "enable"
+	// directive. The only knob is disable-dco. So enabled => no directive.
 	cfg := defaultServerConfig()
 	cfg.DCOEnabled = true
 	out, _ := renderServerConfig(cfg, true, false)
-	if !strings.Contains(out, "data-channel-offload") {
-		t.Error("data-channel-offload must appear when DCOEnabled+Available both true")
+	if strings.Contains(out, "data-channel-offload") {
+		t.Errorf("data-channel-offload is not a real OpenVPN directive; must not appear:\n%s", out)
+	}
+	if strings.Contains(out, "disable-dco") {
+		t.Errorf("disable-dco must NOT appear when DCOEnabled=true:\n%s", out)
 	}
 }
 
-func TestRenderServerConfig_DCODisabledByDefault(t *testing.T) {
+func TestRenderServerConfig_DCODisabledEmitsOptOut(t *testing.T) {
 	t.Parallel()
 	cfg := defaultServerConfig()
+	cfg.DCOEnabled = false
 	out, _ := renderServerConfig(cfg, true, false)
-	if strings.Contains(out, "data-channel-offload") {
-		t.Error("data-channel-offload must NOT appear with default DCOEnabled=false")
+	if !strings.Contains(out, "disable-dco") {
+		t.Errorf("disable-dco must appear when DCOEnabled=false:\n%s", out)
 	}
 }
 

@@ -247,7 +247,16 @@ func (s *filesystemStore) GetCcd(commonName string) string {
 }
 
 func (s *filesystemStore) SaveCcd(commonName string, data []byte) error {
-	return fWrite(s.ccdDir+"/"+commonName, string(data))
+	if err := validateUsername(commonName); err != nil {
+		return fmt.Errorf("SaveCcd: %w", err)
+	}
+	// CCD files must be world-readable: OpenVPN drops privileges to `nobody`
+	// (per `user nobody` in server.conf) and reads /etc/openvpn/ccd/<CN> at
+	// each client connect. The default 0600 we use for sensitive blobs makes
+	// the file unreadable post-drop, which silently disables every per-user
+	// push directive. 0644 is safe — CCD content is just routes/push lines,
+	// not secrets.
+	return os.WriteFile(s.ccdDir+"/"+commonName, data, 0o644)
 }
 
 func (s *filesystemStore) ListCcdSecrets() ([]storage.CcdSecret, error) {
