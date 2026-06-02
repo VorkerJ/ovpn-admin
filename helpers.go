@@ -5,7 +5,6 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -25,16 +24,6 @@ func parseDateToString(layout, datetime, format string) string {
 
 func parseDateToUnix(layout, datetime string) int64 {
 	return parseDate(layout, datetime).Unix()
-}
-
-func runBash(script string) string {
-	log.Debugln(script)
-	cmd := exec.Command("bash", "-c", script)
-	stdout, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Sprint(err) + " : " + string(stdout)
-	}
-	return string(stdout)
 }
 
 // fExist returns true only when path exists and is statable. Any other error
@@ -62,19 +51,6 @@ func fRead(path string) string {
 	}
 
 	return string(content)
-}
-
-func fCreate(path string) error {
-	var _, err = os.Stat(path)
-	if os.IsNotExist(err) {
-		var file, err = os.Create(path)
-		if err != nil {
-			log.Errorln(err)
-			return err
-		}
-		defer file.Close()
-	}
-	return nil
 }
 
 func fWrite(path, content string) error {

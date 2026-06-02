@@ -97,10 +97,6 @@ var (
 		"path to iptables binary").
 		Default("iptables").Envar("OVPN_FIREWALL_IPTABLES_BIN").String()
 
-	firewallStartupTimeout = kingpin.Flag("firewall.startup-timeout",
-		"max time to wait for first mgmt connection before failing startup").
-		Default("30s").Envar("OVPN_FIREWALL_STARTUP_TIMEOUT").Duration()
-
 	firewallReconcileInterval = kingpin.Flag("firewall.reconcile-interval",
 		"self-heal reconcile period").
 		Default("5m").Envar("OVPN_FIREWALL_RECONCILE_INTERVAL").Duration()

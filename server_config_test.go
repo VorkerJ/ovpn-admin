@@ -661,7 +661,7 @@ func (f *fakeMgmtServer) serve() {
 		}
 		go func(c net.Conn) {
 			defer c.Close()
-			c.Write([]byte(">INFO:OpenVPN Management Interface Version 5\r\n"))
+			_, _ = c.Write([]byte(">INFO:OpenVPN Management Interface Version 5\r\n"))
 			buf := make([]byte, 256)
 			for {
 				n, err := c.Read(buf)
@@ -672,9 +672,9 @@ func (f *fakeMgmtServer) serve() {
 				if strings.HasPrefix(line, "signal ") {
 					f.gotSignals = append(f.gotSignals, line)
 					if f.respondError {
-						c.Write([]byte("ERROR: signal not delivered\r\n"))
+						_, _ = c.Write([]byte("ERROR: signal not delivered\r\n"))
 					} else {
-						c.Write([]byte("SUCCESS: signal " + strings.TrimPrefix(line, "signal ") + " thrown\r\n"))
+						_, _ = c.Write([]byte("SUCCESS: signal " + strings.TrimPrefix(line, "signal ") + " thrown\r\n"))
 					}
 				}
 			}
@@ -872,7 +872,7 @@ func TestServerConfigHandler_PUT_Soft(t *testing.T) {
 		Config     ServerConfig `json:"config"`
 		ReloadKind string       `json:"reload_kind"`
 	}
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.ReloadKind != "soft" {
 		t.Errorf("expected reload_kind=soft, got %q", resp.ReloadKind)
 	}
@@ -996,7 +996,7 @@ func TestServerConfigHandler_Defaults(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	var cfg ServerConfig
-	json.Unmarshal(rec.Body.Bytes(), &cfg)
+	_ = json.Unmarshal(rec.Body.Bytes(), &cfg)
 	if cfg.Proto != "tcp" {
 		t.Errorf("defaults proto: %q", cfg.Proto)
 	}

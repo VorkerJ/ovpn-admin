@@ -1,3 +1,4 @@
+// Package storage defines the Store interface for ovpn-admin persistence.
 package storage
 
 // Store abstracts persistence operations across storage backends

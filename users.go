@@ -19,7 +19,12 @@ import (
 // Triggered by --auth.db-init=true; safe to call at every startup.
 func ovpnUserInitDb() {
 	fi, err := os.Stat(*authDatabase)
-	if !(errors.Is(err, os.ErrNotExist) || (err == nil && fi.Size() == 0)) {
+	// Init only when the DB file is missing or zero-byte. Any other stat error
+	// (permission denied, transient IO) — skip init; we can't safely overwrite.
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err == nil && fi.Size() > 0 {
 		return
 	}
 	// Execute via runOpenvpnUser (argv-based exec.Command) rather than

@@ -141,9 +141,9 @@ func newFirewallController(ccdReader CcdReader, chainName, iptBin string, vpnNet
 // Идемпотентно: повторный вызов даёт то же состояние.
 func (fc *firewallController) initChain() error {
 	// 1. Создаём цепочку (если уже есть — iptables вернёт "Chain already exists", глотаем)
-	if err := fc.iptCmd("-N", fc.chainName); err != nil {
-		// "already exists" — нормально для repeat-init
-	}
+	// Идемпотентно: "already exists" — нормально для repeat-init, любая другая ошибка
+	// всплывёт ниже на -F (flush несуществующей цепочки тоже падает).
+	_ = fc.iptCmd("-N", fc.chainName)
 
 	// 2. Очищаем содержимое
 	if err := fc.iptCmd("-F", fc.chainName); err != nil {

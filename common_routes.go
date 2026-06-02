@@ -107,19 +107,6 @@ func (s *commonRoutesStore) replace(cfg CommonRoutesConfig) {
 	s.cfg = cfg
 }
 
-// withWrite берёт write-lock, передаёт указатель на cfg в callback (внутри — модификации).
-// Возвращает копию изменённого конфига, чтобы можно было сохранить наружу без удержания lock'а.
-func (s *commonRoutesStore) withWrite(fn func(cfg *CommonRoutesConfig) error) (CommonRoutesConfig, error) {
-	s.mu.Lock()
-	if err := fn(&s.cfg); err != nil {
-		s.mu.Unlock()
-		return CommonRoutesConfig{}, err
-	}
-	cfgCopy := s.cfg
-	s.mu.Unlock()
-	return cfgCopy, nil
-}
-
 // newCommonRoutesStoreForTesting — конструктор для тестов; в проде создаётся в main.go.
 func newCommonRoutesStoreForTesting() *commonRoutesStore {
 	return &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}

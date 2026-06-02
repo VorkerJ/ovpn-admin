@@ -529,7 +529,7 @@ func (m *serverManager) sendSignal(sig string) error {
 	// indicating "last greeting", so each read uses a short deadline; once we
 	// time out (no more data buffered), we stop draining.
 	for {
-		conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			break
@@ -539,7 +539,7 @@ func (m *serverManager) sendSignal(sig string) error {
 		}
 	}
 
-	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	if _, err := fmt.Fprintln(conn, "signal "+sig); err != nil {
 		return fmt.Errorf("send signal: %w", err)
 	}
