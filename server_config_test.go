@@ -41,8 +41,8 @@ func TestDefaultServerConfig_PreservesBackwardCompat(t *testing.T) {
 	if cfg.Compression != "" {
 		t.Errorf("Compression must be empty (VORACLE), got %q", cfg.Compression)
 	}
-	if !cfg.DCOEnabled {
-		t.Error("DCOEnabled must default to true (gated by DCOAvailable at render time)")
+	if cfg.DCOEnabled {
+		t.Error("DCOEnabled must default to false (alpine openvpn lacks DCO build flag)")
 	}
 	if !cfg.ClientToClient || !cfg.DuplicateCN {
 		t.Error("ClientToClient/DuplicateCN must default to true")
@@ -358,9 +358,19 @@ func TestRenderServerConfig_Defaults(t *testing.T) {
 func TestRenderServerConfig_DCOEnabled(t *testing.T) {
 	t.Parallel()
 	cfg := defaultServerConfig()
+	cfg.DCOEnabled = true
 	out, _ := renderServerConfig(cfg, true, false)
 	if !strings.Contains(out, "data-channel-offload") {
 		t.Error("data-channel-offload must appear when DCOEnabled+Available both true")
+	}
+}
+
+func TestRenderServerConfig_DCODisabledByDefault(t *testing.T) {
+	t.Parallel()
+	cfg := defaultServerConfig()
+	out, _ := renderServerConfig(cfg, true, false)
+	if strings.Contains(out, "data-channel-offload") {
+		t.Error("data-channel-offload must NOT appear with default DCOEnabled=false")
 	}
 }
 
@@ -503,7 +513,7 @@ func TestCategorizeChanges_HardFields(t *testing.T) {
 		func(c *ServerConfig) { c.DataCiphers = []string{"AES-128-GCM"} },
 		func(c *ServerConfig) { c.TLSVersionMin = "1.3" },
 		func(c *ServerConfig) { c.TLSAuthMode = "tls-crypt" },
-		func(c *ServerConfig) { c.DCOEnabled = false },
+		func(c *ServerConfig) { c.DCOEnabled = true },
 		func(c *ServerConfig) { c.Compression = "lz4-v2" },
 		func(c *ServerConfig) { c.ClientToClient = false },
 		func(c *ServerConfig) { c.DuplicateCN = false },

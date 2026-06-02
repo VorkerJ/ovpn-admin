@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: `serverRole` ref / props, slave-readonly UI gating, header
   "slave · sync …" indicator, `fetchLastSync` API call.
 
-## [2.0.2] — 2026-06-02
+## [2.0.3] — 2026-06-02
 
 ### Fixed
 
@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   support and rejected the directive — putting the openvpn container
   into a crash-loop. DCO is now opt-in via the server-config UI for
   operators running a DCO-enabled binary.
+- Server-config unit tests realigned with the new default
+  (`TestDefaultServerConfig_PreservesBackwardCompat`,
+  `TestRenderServerConfig_DCOEnabled`, `TestCategorizeChanges_HardFields`)
+  and a new `TestRenderServerConfig_DCODisabledByDefault` pins the
+  directive's absence.
+
+### Note
+
+- `v2.0.2` tag exists in git but CI never produced images (tests
+  failed). `2.0.3` is the first successful release with the DCO
+  default fix.
 
 ## [2.0.1] — 2026-06-02
 
