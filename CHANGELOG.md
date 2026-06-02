@@ -25,6 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: `serverRole` ref / props, slave-readonly UI gating, header
   "slave · sync …" indicator, `fetchLastSync` API call.
 
+## [2.0.1] — 2026-06-02
+
+### Fixed
+
+- `detectDCOSupport` now also recognizes the out-of-tree `ovpn_dco_v2`
+  kernel module (commonly preloaded on older Ubuntu hosts), in addition
+  to mainline `ovpn` and OOT v1 `ovpn_dco`. Previously hosts running
+  only `ovpn_dco_v2` showed the "DCO unavailable" banner in the server
+  config UI even though kernel offload was usable.
+
+### Added
+
+- SVG favicon matching the in-app ShieldCheck logo (with `.ico` fallback
+  for legacy browsers).
+
 ## [2.0.0] — 2026-06-01
 
 Major release: large pragmatic refactor, MFA/TOTP for the admin UI, editable
