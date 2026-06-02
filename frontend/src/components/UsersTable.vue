@@ -65,24 +65,30 @@ function badgeLabel(status) {
     <!-- Toolbar -->
     <div class="flex justify-end items-center gap-2 mb-3">
       <div class="relative">
-        <Search :size="14" class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+        <Search
+          :size="14"
+          class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+        />
         <input
           v-model="search"
           placeholder="Поиск пользователя…"
           class="h-9 w-60 rounded-md border border-border bg-background pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring focus:border-ring transition-colors"
-        />
+        >
       </div>
       <button
         type="button"
-        @click="toggleHideRevoked"
         :class="[
           'h-9 inline-flex items-center gap-2 rounded-md border px-3 text-xs font-medium transition-colors',
           hideRevoked
             ? 'border-primary/40 bg-primary/10 text-primary'
             : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
         ]"
+        @click="toggleHideRevoked"
       >
-        <component :is="hideRevoked ? EyeOff : Eye" :size="14" />
+        <component
+          :is="hideRevoked ? EyeOff : Eye"
+          :size="14"
+        />
         {{ hideRevoked ? 'Показать отозванных' : 'Скрыть отозванных' }}
       </button>
     </div>
@@ -92,18 +98,35 @@ function badgeLabel(status) {
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border bg-muted/40">
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-12">#</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Имя</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Статус</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Подключений</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Дата истечения</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Дата отзыва</th>
-            <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-muted-foreground">Действия</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-12">
+              #
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Имя
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Статус
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Подключений
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Дата истечения
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Дата отзыва
+            </th>
+            <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Действия
+            </th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="filteredUsers.length === 0">
-            <td colspan="7" class="px-4 py-12 text-center text-sm text-muted-foreground">
+            <td
+              colspan="7"
+              class="px-4 py-12 text-center text-sm text-muted-foreground"
+            >
               Пользователи не найдены
             </td>
           </tr>
@@ -112,7 +135,9 @@ function badgeLabel(status) {
             :key="user.Identity"
             :class="['border-b border-border last:border-0 transition-colors hover:bg-muted/30', rowClass(user)]"
           >
-            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">{{ index + 1 }}</td>
+            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">
+              {{ index + 1 }}
+            </td>
             <td class="px-4 py-3">
               <div class="flex items-center gap-2">
                 <span class="font-medium text-[15px]">{{ user.Identity }}</span>
@@ -128,9 +153,15 @@ function badgeLabel(status) {
                 {{ badgeLabel(user.AccountStatus) }}
               </Badge>
             </td>
-            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">{{ user.Connections || 0 }}</td>
-            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">{{ user.ExpirationDate || '—' }}</td>
-            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">{{ user.RevocationDate || '—' }}</td>
+            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">
+              {{ user.Connections || 0 }}
+            </td>
+            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">
+              {{ user.ExpirationDate || '—' }}
+            </td>
+            <td class="px-4 py-3 text-muted-foreground font-mono text-sm tabular">
+              {{ user.RevocationDate || '—' }}
+            </td>
             <td class="px-4 py-3">
               <div class="flex justify-end">
                 <ActionsMenu

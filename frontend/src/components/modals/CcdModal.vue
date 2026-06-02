@@ -143,34 +143,40 @@ function formatRelativeTime(iso) {
           <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
             <button
               type="button"
-              @click="ipMode = 'dynamic'"
               :class="[
                 'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors',
                 ipMode === 'dynamic'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-foreground hover:bg-accent'
               ]"
+              @click="ipMode = 'dynamic'"
             >
               Из пула
             </button>
             <button
               type="button"
-              @click="ipMode = 'static'"
               :class="[
                 'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors',
                 ipMode === 'static'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-foreground hover:bg-accent'
               ]"
+              @click="ipMode = 'static'"
             >
               Фиксированный
             </button>
           </div>
-          <span v-if="ipMode === 'dynamic'" class="text-xs text-muted-foreground">
+          <span
+            v-if="ipMode === 'dynamic'"
+            class="text-xs text-muted-foreground"
+          >
             OpenVPN выдаст любой свободный адрес из своей подсети
           </span>
         </div>
-        <div v-if="ipMode === 'static'" class="flex items-center gap-2">
+        <div
+          v-if="ipMode === 'static'"
+          class="flex items-center gap-2"
+        >
           <Input
             v-model="localCcd.ClientAddress"
             placeholder="10.0.0.5"
@@ -189,25 +195,25 @@ function formatRelativeTime(iso) {
           <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
             <button
               type="button"
-              @click="newKind = 'ip'"
               :class="[
                 'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors',
                 newKind === 'ip'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-foreground hover:bg-accent'
               ]"
+              @click="newKind = 'ip'"
             >
               <Network :size="14" /> IP / маска
             </button>
             <button
               type="button"
-              @click="newKind = 'domain'"
               :class="[
                 'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors',
                 newKind === 'domain'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-foreground hover:bg-accent'
               ]"
+              @click="newKind = 'domain'"
             >
               <Globe :size="14" /> Домен
             </button>
@@ -215,12 +221,32 @@ function formatRelativeTime(iso) {
         </div>
         <div class="flex gap-2 flex-wrap items-start">
           <template v-if="newKind === 'ip'">
-            <Input v-model="newRoute.Address" placeholder="10.0.0.0" class="w-40 font-mono" />
-            <Input v-model="newRoute.Mask" placeholder="255.255.255.0" class="w-40 font-mono" />
+            <Input
+              v-model="newRoute.Address"
+              placeholder="10.0.0.0"
+              class="w-40 font-mono"
+            />
+            <Input
+              v-model="newRoute.Mask"
+              placeholder="255.255.255.0"
+              class="w-40 font-mono"
+            />
           </template>
-          <Input v-else v-model="newRoute.Domain" placeholder="youtube.com" class="w-60 font-mono" />
-          <Input v-model="newRoute.Description" placeholder="Описание (опционально)" class="flex-1 min-w-[160px]" />
-          <Button size="sm" @click="addRoute">
+          <Input
+            v-else
+            v-model="newRoute.Domain"
+            placeholder="youtube.com"
+            class="w-60 font-mono"
+          />
+          <Input
+            v-model="newRoute.Description"
+            placeholder="Описание (опционально)"
+            class="flex-1 min-w-[160px]"
+          />
+          <Button
+            size="sm"
+            @click="addRoute"
+          >
             <Plus :size="13" /> Добавить
           </Button>
         </div>
@@ -231,15 +257,24 @@ function formatRelativeTime(iso) {
         <table class="w-full text-sm">
           <thead class="bg-muted/40 border-b border-border">
             <tr>
-              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-24">Тип</th>
-              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Значение</th>
-              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Описание</th>
+              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-24">
+                Тип
+              </th>
+              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Значение
+              </th>
+              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Описание
+              </th>
               <th class="px-3 py-2.5 w-12" />
             </tr>
           </thead>
           <tbody>
             <tr v-if="!localCcd.CustomRoutes || localCcd.CustomRoutes.length === 0">
-              <td colspan="4" class="px-3 py-6 text-center text-sm text-muted-foreground">
+              <td
+                colspan="4"
+                class="px-3 py-6 text-center text-sm text-muted-foreground"
+              >
                 Нет персональных маршрутов
               </td>
             </tr>
@@ -250,32 +285,63 @@ function formatRelativeTime(iso) {
             >
               <td class="px-3 py-2.5">
                 <Badge :variant="route.Kind === 'domain' ? 'info' : 'neutral'">
-                  <component :is="route.Kind === 'domain' ? Globe : Network" :size="11" class="mr-1" />
+                  <component
+                    :is="route.Kind === 'domain' ? Globe : Network"
+                    :size="11"
+                    class="mr-1"
+                  />
                   {{ route.Kind === 'domain' ? 'Domain' : 'IP' }}
                 </Badge>
               </td>
               <td class="px-3 py-2.5 font-mono text-sm">
                 <template v-if="route.Kind === 'domain'">
-                  <div class="font-medium">{{ route.Domain }}</div>
-                  <div v-if="route.ResolvedIPs && route.ResolvedIPs.length" class="flex items-start gap-1 text-muted-foreground mt-1 text-xs">
-                    <CornerDownRight :size="11" class="mt-0.5 shrink-0" />
+                  <div class="font-medium">
+                    {{ route.Domain }}
+                  </div>
+                  <div
+                    v-if="route.ResolvedIPs && route.ResolvedIPs.length"
+                    class="flex items-start gap-1 text-muted-foreground mt-1 text-xs"
+                  >
+                    <CornerDownRight
+                      :size="11"
+                      class="mt-0.5 shrink-0"
+                    />
                     <span class="break-all">{{ route.ResolvedIPs.join(', ') }}</span>
                   </div>
-                  <div v-if="route.LastResolveErr" class="text-yellow-600 dark:text-yellow-400 mt-1 text-xs inline-flex items-center gap-1" :title="route.LastResolveErr">
+                  <div
+                    v-if="route.LastResolveErr"
+                    class="text-yellow-600 dark:text-yellow-400 mt-1 text-xs inline-flex items-center gap-1"
+                    :title="route.LastResolveErr"
+                  >
                     <AlertTriangle :size="11" /> DNS error · {{ formatRelativeTime(route.LastResolveAt) }}
                   </div>
-                  <div v-else-if="route.LastResolveAt" class="text-green-600 dark:text-green-400 mt-1 text-xs inline-flex items-center gap-1">
+                  <div
+                    v-else-if="route.LastResolveAt"
+                    class="text-green-600 dark:text-green-400 mt-1 text-xs inline-flex items-center gap-1"
+                  >
                     <CheckCircle2 :size="11" /> {{ formatRelativeTime(route.LastResolveAt) }}
                   </div>
                 </template>
                 <template v-else>
-                  <Input v-model="route.Address" placeholder="10.0.0.0" class="w-36 inline-block font-mono" />
+                  <Input
+                    v-model="route.Address"
+                    placeholder="10.0.0.0"
+                    class="w-36 inline-block font-mono"
+                  />
                   <span class="text-muted-foreground mx-1">/</span>
-                  <Input v-model="route.Mask" placeholder="255.255.255.0" class="w-36 inline-block font-mono" />
+                  <Input
+                    v-model="route.Mask"
+                    placeholder="255.255.255.0"
+                    class="w-36 inline-block font-mono"
+                  />
                 </template>
               </td>
               <td class="px-3 py-2.5">
-                <Input v-model="route.Description" placeholder="Описание" class="text-sm" />
+                <Input
+                  v-model="route.Description"
+                  placeholder="Описание"
+                  class="text-sm"
+                />
               </td>
               <td class="px-3 py-2.5">
                 <button
@@ -292,16 +358,32 @@ function formatRelativeTime(iso) {
         </table>
       </div>
 
-      <div v-if="validationError" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+      <div
+        v-if="validationError"
+        class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+      >
         {{ validationError }}
       </div>
-      <div v-else-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+      <div
+        v-else-if="error"
+        class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+      >
         {{ error }}
       </div>
     </div>
     <template #footer>
-      <Button variant="ghost" :disabled="submitting" @click="onClose">Закрыть</Button>
-      <Button :loading="submitting" :disabled="submitting" @click="submitCcd">
+      <Button
+        variant="ghost"
+        :disabled="submitting"
+        @click="onClose"
+      >
+        Закрыть
+      </Button>
+      <Button
+        :loading="submitting"
+        :disabled="submitting"
+        @click="submitCcd"
+      >
         Сохранить
       </Button>
     </template>

@@ -46,20 +46,59 @@ function submit() {
 </script>
 
 <template>
-  <Dialog :open="open" :title="`Редактирование маршрута`" @close="onClose">
+  <Dialog
+    :open="open"
+    :title="`Редактирование маршрута`"
+    @close="onClose"
+  >
     <div class="space-y-3">
-      <div class="text-xs text-muted-foreground">Тип: {{ local.kind === 'ip' ? 'IP / маска' : 'Домен' }}</div>
-      <div v-if="local.kind === 'ip'" class="flex gap-2">
-        <Input v-model="local.address" placeholder="10.0.0.0" class="w-40" />
-        <Input v-model="local.mask" placeholder="255.255.255.0" class="w-40" />
+      <div class="text-xs text-muted-foreground">
+        Тип: {{ local.kind === 'ip' ? 'IP / маска' : 'Домен' }}
       </div>
-      <Input v-else v-model="local.domain" placeholder="youtube.com" />
-      <Input v-model="local.description" placeholder="Описание" />
-      <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">{{ error }}</div>
+      <div
+        v-if="local.kind === 'ip'"
+        class="flex gap-2"
+      >
+        <Input
+          v-model="local.address"
+          placeholder="10.0.0.0"
+          class="w-40"
+        />
+        <Input
+          v-model="local.mask"
+          placeholder="255.255.255.0"
+          class="w-40"
+        />
+      </div>
+      <Input
+        v-else
+        v-model="local.domain"
+        placeholder="youtube.com"
+      />
+      <Input
+        v-model="local.description"
+        placeholder="Описание"
+      />
+      <div
+        v-if="error"
+        class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+      >
+        {{ error }}
+      </div>
     </div>
     <template #footer>
-      <Button variant="ghost" :disabled="submitting" @click="onClose">Отмена</Button>
-      <Button :loading="submitting" :disabled="submitting" @click="submit">
+      <Button
+        variant="ghost"
+        :disabled="submitting"
+        @click="onClose"
+      >
+        Отмена
+      </Button>
+      <Button
+        :loading="submitting"
+        :disabled="submitting"
+        @click="submit"
+      >
         Сохранить
       </Button>
     </template>

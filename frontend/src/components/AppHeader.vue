@@ -24,16 +24,30 @@ const { isDark, toggle } = useTheme()
       <!-- Brand -->
       <div class="flex items-center gap-2.5">
         <div class="w-7 h-7 rounded-md bg-primary flex items-center justify-center">
-          <ShieldCheck :size="16" class="text-primary-foreground" />
+          <ShieldCheck
+            :size="16"
+            class="text-primary-foreground"
+          />
         </div>
         <span class="font-semibold text-[15px] tracking-tight">OVPN Admin</span>
       </div>
 
       <!-- Actions -->
       <div class="flex items-center gap-1.5">
-        <Button variant="ghost" size="icon-sm" :title="isDark ? 'Светлая тема' : 'Тёмная тема'" @click="toggle">
-          <Sun v-if="isDark" :size="16" />
-          <Moon v-else :size="16" />
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :title="isDark ? 'Светлая тема' : 'Тёмная тема'"
+          @click="toggle"
+        >
+          <Sun
+            v-if="isDark"
+            :size="16"
+          />
+          <Moon
+            v-else
+            :size="16"
+          />
         </Button>
 
         <Button
@@ -43,7 +57,10 @@ const { isDark, toggle } = useTheme()
           class="relative"
           @click="$emit('open-mfa')"
         >
-          <ShieldCheck :size="16" :class="adminMfaEnabled ? '' : 'text-orange-500'" />
+          <ShieldCheck
+            :size="16"
+            :class="adminMfaEnabled ? '' : 'text-orange-500'"
+          />
           <!-- Orange pulsing dot draws the eye when MFA is off and write ops are blocked. -->
           <span
             v-if="!adminMfaEnabled"
@@ -65,7 +82,12 @@ const { isDark, toggle } = useTheme()
           Добавить пользователя
         </Button>
 
-        <Button variant="ghost" size="icon-sm" title="Выйти" @click="$emit('logout')">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="Выйти"
+          @click="$emit('logout')"
+        >
           <LogOut :size="16" />
         </Button>
       </div>

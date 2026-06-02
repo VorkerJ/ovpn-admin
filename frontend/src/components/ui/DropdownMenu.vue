@@ -34,8 +34,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="menuRef" class="relative inline-block">
-    <div @click.stop="toggle" :aria-expanded="open">
+  <div
+    ref="menuRef"
+    class="relative inline-block"
+  >
+    <div
+      :aria-expanded="open"
+      @click.stop="toggle"
+    >
       <slot name="trigger" />
     </div>
     <Transition name="dropdown">

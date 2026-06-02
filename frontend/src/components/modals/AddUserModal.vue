@@ -36,9 +36,17 @@ function onClose() {
 </script>
 
 <template>
-  <Dialog :open="open" title="Добавить пользователя" @close="onClose">
+  <Dialog
+    :open="open"
+    title="Добавить пользователя"
+    @close="onClose"
+  >
     <div class="space-y-3">
-      <Input v-model="username" placeholder="Имя пользователя" autocomplete="off" />
+      <Input
+        v-model="username"
+        placeholder="Имя пользователя"
+        autocomplete="off"
+      />
       <Input
         v-if="modulesEnabled.includes('passwdAuth')"
         v-model="password"
@@ -47,13 +55,26 @@ function onClose() {
         autocomplete="new-password"
         minlength="6"
       />
-      <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+      <div
+        v-if="error"
+        class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+      >
         {{ error }}
       </div>
     </div>
     <template #footer>
-      <Button variant="ghost" :disabled="submitting" @click="onClose">Отмена</Button>
-      <Button :loading="submitting" :disabled="submitting" @click="submit">
+      <Button
+        variant="ghost"
+        :disabled="submitting"
+        @click="onClose"
+      >
+        Отмена
+      </Button>
+      <Button
+        :loading="submitting"
+        :disabled="submitting"
+        @click="submit"
+      >
         {{ submitting ? 'Создание' : 'Создать' }}
       </Button>
     </template>

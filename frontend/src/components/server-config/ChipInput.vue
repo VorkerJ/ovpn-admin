@@ -41,7 +41,11 @@ function removeChip(i) {
         class="inline-flex items-center gap-1 rounded-md bg-secondary px-2 py-0.5 text-xs font-mono"
       >
         {{ chip }}
-        <button type="button" class="text-muted-foreground hover:text-destructive" @click="removeChip(i)">
+        <button
+          type="button"
+          class="text-muted-foreground hover:text-destructive"
+          @click="removeChip(i)"
+        >
           <X :size="12" />
         </button>
       </span>

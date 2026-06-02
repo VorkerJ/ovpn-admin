@@ -143,36 +143,62 @@ function onClose() {
 </script>
 
 <template>
-  <Dialog :open="open" title="Двухфакторная аутентификация" @close="onClose">
+  <Dialog
+    :open="open"
+    title="Двухфакторная аутентификация"
+    @close="onClose"
+  >
     <!-- Loading -->
-    <div v-if="step === 'loading'" class="flex items-center justify-center py-8">
+    <div
+      v-if="step === 'loading'"
+      class="flex items-center justify-center py-8"
+    >
       <span class="text-sm text-muted-foreground">Загрузка...</span>
     </div>
 
     <!-- Step: OFF — 2FA disabled -->
-    <div v-else-if="step === 'off'" class="space-y-4">
+    <div
+      v-else-if="step === 'off'"
+      class="space-y-4"
+    >
       <div class="flex items-start gap-3">
-        <ShieldOff :size="20" class="text-muted-foreground mt-0.5 shrink-0" />
+        <ShieldOff
+          :size="20"
+          class="text-muted-foreground mt-0.5 shrink-0"
+        />
         <div>
-          <p class="text-sm font-medium">2FA отключена</p>
+          <p class="text-sm font-medium">
+            2FA отключена
+          </p>
           <p class="text-sm text-muted-foreground">
             Включите двухфакторную аутентификацию для дополнительной защиты аккаунта.
           </p>
         </div>
       </div>
 
-      <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+      <div
+        v-if="error"
+        class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+      >
         {{ error }}
       </div>
 
-      <Button :loading="submitting" :disabled="submitting" class="w-full" @click="startSetup">
+      <Button
+        :loading="submitting"
+        :disabled="submitting"
+        class="w-full"
+        @click="startSetup"
+      >
         <ShieldCheck :size="14" />
         {{ submitting ? 'Настройка...' : 'Включить 2FA' }}
       </Button>
     </div>
 
     <!-- Step: SETUP — QR + code input -->
-    <div v-else-if="step === 'setup'" class="space-y-4">
+    <div
+      v-else-if="step === 'setup'"
+      class="space-y-4"
+    >
       <p class="text-sm text-muted-foreground">
         Отсканируйте QR-код в приложении аутентификации (Google Authenticator, Authy и др.)
         и введите полученный код для подтверждения.
@@ -185,7 +211,7 @@ function onClose() {
           width="200"
           height="200"
           class="rounded-md border border-border"
-        />
+        >
       </div>
 
       <div class="space-y-1.5">
@@ -193,16 +219,25 @@ function onClose() {
         <OtpInput v-model="confirmCode" />
       </div>
 
-      <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+      <div
+        v-if="error"
+        class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+      >
         {{ error }}
       </div>
     </div>
 
     <!-- Step: BACKUP — show backup codes -->
-    <div v-else-if="step === 'backup'" class="space-y-4">
+    <div
+      v-else-if="step === 'backup'"
+      class="space-y-4"
+    >
       <div class="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3">
         <div class="flex items-start gap-3">
-          <AlertTriangle :size="20" class="text-yellow-500 mt-0.5 shrink-0" />
+          <AlertTriangle
+            :size="20"
+            class="text-yellow-500 mt-0.5 shrink-0"
+          />
           <div>
             <p class="text-sm font-semibold text-yellow-600 dark:text-yellow-400">
               Сохраните эти коды СЕЙЧАС — больше они не покажутся
@@ -226,28 +261,46 @@ function onClose() {
       </div>
 
       <div class="grid grid-cols-2 gap-2">
-        <Button variant="secondary" @click="copyBackupCodes">
+        <Button
+          variant="secondary"
+          @click="copyBackupCodes"
+        >
           <Copy :size="14" />
           {{ copied ? 'Скопировано!' : 'Скопировать' }}
         </Button>
-        <Button variant="secondary" @click="downloadBackupCodes">
+        <Button
+          variant="secondary"
+          @click="downloadBackupCodes"
+        >
           <Download :size="14" />
           Скачать .txt
         </Button>
       </div>
 
       <label class="flex items-center gap-2 text-sm cursor-pointer pt-2 border-t border-border">
-        <input type="checkbox" v-model="savedConfirmed" class="w-4 h-4" />
+        <input
+          v-model="savedConfirmed"
+          type="checkbox"
+          class="w-4 h-4"
+        >
         <span>Я сохранил коды в надёжном месте</span>
       </label>
     </div>
 
     <!-- Step: ON — 2FA enabled -->
-    <div v-else-if="step === 'on'" class="space-y-4">
+    <div
+      v-else-if="step === 'on'"
+      class="space-y-4"
+    >
       <div class="flex items-start gap-3">
-        <ShieldCheck :size="20" class="text-green-500 mt-0.5 shrink-0" />
+        <ShieldCheck
+          :size="20"
+          class="text-green-500 mt-0.5 shrink-0"
+        />
         <div>
-          <p class="text-sm font-medium">2FA включена</p>
+          <p class="text-sm font-medium">
+            2FA включена
+          </p>
           <p class="text-sm text-muted-foreground">
             Ваш аккаунт защищён двухфакторной аутентификацией.
           </p>
@@ -255,7 +308,9 @@ function onClose() {
       </div>
 
       <div class="border-t border-border pt-4 space-y-3">
-        <p class="text-sm font-medium text-destructive">Отключить 2FA</p>
+        <p class="text-sm font-medium text-destructive">
+          Отключить 2FA
+        </p>
         <div class="space-y-1.5">
           <label class="text-sm text-muted-foreground">Текущий пароль</label>
           <Input
@@ -270,11 +325,20 @@ function onClose() {
           <OtpInput v-model="disableCode" />
         </div>
 
-        <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+        <div
+          v-if="error"
+          class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+        >
           {{ error }}
         </div>
 
-        <Button variant="destructive" :loading="submitting" :disabled="submitting" class="w-full" @click="disable">
+        <Button
+          variant="destructive"
+          :loading="submitting"
+          :disabled="submitting"
+          class="w-full"
+          @click="disable"
+        >
           <ShieldOff :size="14" />
           {{ submitting ? 'Отключение...' : 'Отключить 2FA' }}
         </Button>
@@ -283,16 +347,36 @@ function onClose() {
 
     <template #footer>
       <template v-if="step === 'setup'">
-        <Button variant="ghost" :disabled="submitting" @click="onClose">Отмена</Button>
-        <Button :loading="submitting" :disabled="submitting" @click="confirm">
+        <Button
+          variant="ghost"
+          :disabled="submitting"
+          @click="onClose"
+        >
+          Отмена
+        </Button>
+        <Button
+          :loading="submitting"
+          :disabled="submitting"
+          @click="confirm"
+        >
           {{ submitting ? 'Проверка...' : 'Подтвердить' }}
         </Button>
       </template>
       <template v-else-if="step === 'backup'">
-        <Button :disabled="!savedConfirmed" @click="onClose">Готово</Button>
+        <Button
+          :disabled="!savedConfirmed"
+          @click="onClose"
+        >
+          Готово
+        </Button>
       </template>
       <template v-else>
-        <Button variant="ghost" @click="onClose">Закрыть</Button>
+        <Button
+          variant="ghost"
+          @click="onClose"
+        >
+          Закрыть
+        </Button>
       </template>
     </template>
   </Dialog>

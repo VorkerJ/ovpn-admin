@@ -172,7 +172,9 @@ onMounted(reload)
     <!-- Header -->
     <div class="flex items-start justify-between gap-4">
       <div>
-        <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Общие маршруты</p>
+        <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">
+          Общие маршруты
+        </p>
         <p class="text-sm text-muted-foreground max-w-xl">
           Применяются ко всем активным пользователям. Изменения вступают в силу после переподключения клиента.
         </p>
@@ -184,7 +186,10 @@ onMounted(reload)
         :disabled="refreshing"
         @click="refreshDns"
       >
-        <RefreshCw v-if="!refreshing" :size="14" />
+        <RefreshCw
+          v-if="!refreshing"
+          :size="14"
+        />
         {{ refreshing ? 'Обновляем' : 'Обновить DNS' }}
       </Button>
     </div>
@@ -196,25 +201,25 @@ onMounted(reload)
         <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
           <button
             type="button"
-            @click="newKind = 'ip'"
             :class="[
               'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors',
               newKind === 'ip'
                 ? 'bg-primary text-primary-foreground'
                 : 'text-foreground hover:bg-accent'
             ]"
+            @click="newKind = 'ip'"
           >
             <Network :size="14" /> IP / маска
           </button>
           <button
             type="button"
-            @click="newKind = 'domain'"
             :class="[
               'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors',
               newKind === 'domain'
                 ? 'bg-primary text-primary-foreground'
                 : 'text-foreground hover:bg-accent'
             ]"
+            @click="newKind = 'domain'"
           >
             <Globe :size="14" /> Домен
           </button>
@@ -222,17 +227,44 @@ onMounted(reload)
       </div>
       <div class="flex gap-2 flex-wrap items-start">
         <template v-if="newKind === 'ip'">
-          <Input v-model="newRoute.address" placeholder="10.0.0.0" class="w-40 font-mono" />
-          <Input v-model="newRoute.mask" placeholder="255.255.255.0" class="w-40 font-mono" />
+          <Input
+            v-model="newRoute.address"
+            placeholder="10.0.0.0"
+            class="w-40 font-mono"
+          />
+          <Input
+            v-model="newRoute.mask"
+            placeholder="255.255.255.0"
+            class="w-40 font-mono"
+          />
         </template>
-        <Input v-else v-model="newRoute.domain" placeholder="youtube.com" class="w-60 font-mono" />
-        <Input v-model="newRoute.description" placeholder="Описание (опционально)" class="flex-1 min-w-[200px]" />
-        <Button :loading="submitting" :disabled="submitting" @click="addRoute">
-          <Plus v-if="!submitting" :size="14" />
+        <Input
+          v-else
+          v-model="newRoute.domain"
+          placeholder="youtube.com"
+          class="w-60 font-mono"
+        />
+        <Input
+          v-model="newRoute.description"
+          placeholder="Описание (опционально)"
+          class="flex-1 min-w-[200px]"
+        />
+        <Button
+          :loading="submitting"
+          :disabled="submitting"
+          @click="addRoute"
+        >
+          <Plus
+            v-if="!submitting"
+            :size="14"
+          />
           {{ submitting ? 'Добавляем' : 'Добавить' }}
         </Button>
       </div>
-      <div v-if="formError" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+      <div
+        v-if="formError"
+        class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+      >
         {{ formError }}
       </div>
     </div>
@@ -242,27 +274,55 @@ onMounted(reload)
       <table class="w-full text-sm">
         <thead>
           <tr class="bg-muted/40 border-b border-border">
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-28">Тип</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Значение</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">Описание</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-56">DNS</th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-28">
+              Тип
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Значение
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Описание
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-56">
+              DNS
+            </th>
             <th class="px-4 py-3 w-24" />
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="5" class="px-4 py-8 text-center text-sm text-muted-foreground">Загрузка…</td>
+            <td
+              colspan="5"
+              class="px-4 py-8 text-center text-sm text-muted-foreground"
+            >
+              Загрузка…
+            </td>
           </tr>
           <tr v-else-if="routes.length === 0">
-            <td colspan="5" class="px-4 py-12 text-center text-sm text-muted-foreground">
+            <td
+              colspan="5"
+              class="px-4 py-12 text-center text-sm text-muted-foreground"
+            >
               Пока нет общих маршрутов. Добавьте первый, чтобы все пользователи могли к нему попасть.
             </td>
           </tr>
-          <tr v-for="r in routes" :key="r.id" class="border-b border-border last:border-0 align-top hover:bg-muted/30 transition-colors">
+          <tr
+            v-for="r in routes"
+            :key="r.id"
+            class="border-b border-border last:border-0 align-top hover:bg-muted/30 transition-colors"
+          >
             <td class="px-4 py-3">
               <Badge :variant="r.kind === 'ip' ? 'neutral' : 'info'">
-                <Network v-if="r.kind === 'ip'" :size="11" class="mr-1" />
-                <Globe v-else :size="11" class="mr-1" />
+                <Network
+                  v-if="r.kind === 'ip'"
+                  :size="11"
+                  class="mr-1"
+                />
+                <Globe
+                  v-else
+                  :size="11"
+                  class="mr-1"
+                />
                 {{ r.kind === 'ip' ? 'IP' : 'Domain' }}
               </Badge>
             </td>
@@ -273,24 +333,44 @@ onMounted(reload)
                 <span>{{ r.mask }}</span>
               </template>
               <template v-else>
-                <div class="font-medium">{{ r.domain }}</div>
-                <div v-if="r.resolved_ips && r.resolved_ips.length" class="flex items-start gap-1 text-muted-foreground mt-1">
-                  <CornerDownRight :size="11" class="mt-0.5 shrink-0" />
+                <div class="font-medium">
+                  {{ r.domain }}
+                </div>
+                <div
+                  v-if="r.resolved_ips && r.resolved_ips.length"
+                  class="flex items-start gap-1 text-muted-foreground mt-1"
+                >
+                  <CornerDownRight
+                    :size="11"
+                    class="mt-0.5 shrink-0"
+                  />
                   <span class="break-all">{{ r.resolved_ips.join(', ') }}</span>
                 </div>
               </template>
             </td>
-            <td class="px-4 py-3 text-muted-foreground">{{ r.description || '—' }}</td>
+            <td class="px-4 py-3 text-muted-foreground">
+              {{ r.description || '—' }}
+            </td>
             <td class="px-4 py-3 text-sm">
               <template v-if="r.kind === 'domain'">
-                <span v-if="r.last_resolve_err" class="inline-flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400" :title="r.last_resolve_err">
+                <span
+                  v-if="r.last_resolve_err"
+                  class="inline-flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400"
+                  :title="r.last_resolve_err"
+                >
                   <AlertTriangle :size="14" /> DNS error · {{ formatRelativeTime(r.last_resolve_at) }}
                 </span>
-                <span v-else class="inline-flex items-center gap-1.5 text-green-600 dark:text-green-400">
+                <span
+                  v-else
+                  class="inline-flex items-center gap-1.5 text-green-600 dark:text-green-400"
+                >
                   <CheckCircle2 :size="14" /> OK · {{ formatRelativeTime(r.last_resolve_at) }}
                 </span>
               </template>
-              <span v-else class="text-muted-foreground">—</span>
+              <span
+                v-else
+                class="text-muted-foreground"
+              >—</span>
             </td>
             <td class="px-4 py-3">
               <div class="flex items-center justify-end gap-1">

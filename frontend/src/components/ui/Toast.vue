@@ -25,10 +25,21 @@ function accentFor(variant) {
           :key="t.id"
           class="pointer-events-auto flex items-start gap-3 rounded-lg border border-border bg-card text-card-foreground px-4 py-3 shadow-md text-sm"
         >
-          <component :is="iconFor(t.variant)" :size="18" :class="['mt-0.5 shrink-0', accentFor(t.variant)]" />
+          <component
+            :is="iconFor(t.variant)"
+            :size="18"
+            :class="['mt-0.5 shrink-0', accentFor(t.variant)]"
+          />
           <div class="min-w-0">
-            <div class="font-medium">{{ t.title }}</div>
-            <div v-if="t.description" class="text-muted-foreground mt-0.5">{{ t.description }}</div>
+            <div class="font-medium">
+              {{ t.title }}
+            </div>
+            <div
+              v-if="t.description"
+              class="text-muted-foreground mt-0.5"
+            >
+              {{ t.description }}
+            </div>
           </div>
         </div>
       </TransitionGroup>

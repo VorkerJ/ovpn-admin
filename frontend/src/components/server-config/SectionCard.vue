@@ -20,12 +20,26 @@ const open = ref(props.defaultOpen)
       @click="open = !open"
     >
       <div class="text-left">
-        <p class="text-sm font-semibold">{{ title }}</p>
-        <p v-if="description" class="text-xs text-muted-foreground mt-0.5">{{ description }}</p>
+        <p class="text-sm font-semibold">
+          {{ title }}
+        </p>
+        <p
+          v-if="description"
+          class="text-xs text-muted-foreground mt-0.5"
+        >
+          {{ description }}
+        </p>
       </div>
-      <component :is="open ? ChevronDown : ChevronRight" :size="16" class="text-muted-foreground" />
+      <component
+        :is="open ? ChevronDown : ChevronRight"
+        :size="16"
+        class="text-muted-foreground"
+      />
     </button>
-    <div v-if="open" class="border-t border-border p-4 space-y-3">
+    <div
+      v-if="open"
+      class="border-t border-border p-4 space-y-3"
+    >
       <slot />
     </div>
   </div>

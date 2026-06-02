@@ -76,7 +76,11 @@ function onFocus(i, e) {
 </script>
 
 <template>
-  <div class="flex gap-2 justify-center" data-testid="otp-input" @paste.prevent="onPaste(0, $event)">
+  <div
+    class="flex gap-2 justify-center"
+    data-testid="otp-input"
+    @paste.prevent="onPaste(0, $event)"
+  >
     <input
       v-for="(d, i) in digits"
       :key="i"
@@ -87,10 +91,10 @@ function onFocus(i, e) {
       autocomplete="one-time-code"
       maxlength="1"
       :value="d"
+      class="w-12 h-14 text-center text-2xl font-mono font-semibold rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring transition"
       @input="onInput(i, $event)"
       @keydown="onKeydown(i, $event)"
       @focus="onFocus(i, $event)"
-      class="w-12 h-14 text-center text-2xl font-mono font-semibold rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring transition"
-    />
+    >
   </div>
 </template>

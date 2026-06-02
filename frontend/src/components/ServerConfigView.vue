@@ -90,24 +90,45 @@ onMounted(reload)
   <div class="space-y-4">
     <div class="flex items-start justify-between">
       <div>
-        <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Сервер</p>
+        <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">
+          Сервер
+        </p>
         <p class="text-sm text-muted-foreground max-w-2xl">
           Параметры OpenVPN-сервера. Изменения часть применяются hot (push routes, verb, keepalive),
           часть требует перезапуска openvpn-процесса (port, proto, MTU, шифр, DCO).
         </p>
       </div>
       <div class="flex gap-2">
-        <Button variant="secondary" size="sm" data-testid="server-config-reset" @click="resetToDefaults">
+        <Button
+          variant="secondary"
+          size="sm"
+          data-testid="server-config-reset"
+          @click="resetToDefaults"
+        >
           <RotateCcw :size="14" /> Сбросить
         </Button>
-        <Button size="sm" :loading="submitting" :disabled="!cfg" data-testid="server-config-save" @click="save">
+        <Button
+          size="sm"
+          :loading="submitting"
+          :disabled="!cfg"
+          data-testid="server-config-save"
+          @click="save"
+        >
           <Save :size="14" /> Сохранить
         </Button>
       </div>
     </div>
 
-    <div v-if="loading" class="text-sm text-muted-foreground">Загрузка…</div>
-    <div v-else-if="cfg" class="space-y-3">
+    <div
+      v-if="loading"
+      class="text-sm text-muted-foreground"
+    >
+      Загрузка…
+    </div>
+    <div
+      v-else-if="cfg"
+      class="space-y-3"
+    >
       <div
         :class="[
           'rounded-md border px-3 py-2 text-sm flex items-center gap-2',
@@ -116,69 +137,120 @@ onMounted(reload)
             : 'border-yellow-500/30 bg-yellow-500/5 text-yellow-700 dark:text-yellow-300'
         ]"
       >
-        <CheckCircle2 v-if="dcoAvailable" :size="16" />
-        <AlertTriangle v-else :size="16" />
+        <CheckCircle2
+          v-if="dcoAvailable"
+          :size="16"
+        />
+        <AlertTriangle
+          v-else
+          :size="16"
+        />
         <span>
           <strong>DCO (kernel offload):</strong>
           {{ dcoAvailable ? 'доступен на этой ноде' : 'не загружен kernel-модуль ovpn — toggle ниже неактивен' }}
         </span>
       </div>
 
-      <SectionCard title="Сеть и транспорт" description="Протокол, порт, MTU, подсеть VPN">
+      <SectionCard
+        title="Сеть и транспорт"
+        description="Протокол, порт, MTU, подсеть VPN"
+      >
         <div class="grid grid-cols-2 gap-3">
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Proto</span>
-            <select v-model="cfg.proto" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+            <select
+              v-model="cfg.proto"
+              class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono"
+            >
               <option value="udp">UDP (быстрее, рекомендуется)</option>
               <option value="tcp">TCP</option>
             </select>
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Port</span>
-            <Input v-model.number="cfg.port" type="number" class="font-mono mt-1" />
+            <Input
+              v-model.number="cfg.port"
+              type="number"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Network</span>
-            <Input v-model="cfg.network" class="font-mono mt-1" />
+            <Input
+              v-model="cfg.network"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Network mask</span>
-            <Input v-model="cfg.network_mask" class="font-mono mt-1" />
+            <Input
+              v-model="cfg.network_mask"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">tun-mtu (576–9000)</span>
-            <Input v-model.number="cfg.tun_mtu" type="number" class="font-mono mt-1" />
+            <Input
+              v-model.number="cfg.tun_mtu"
+              type="number"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">mssfix (0=выкл, 100–9000)</span>
-            <Input v-model.number="cfg.mss_fix" type="number" class="font-mono mt-1" />
+            <Input
+              v-model.number="cfg.mss_fix"
+              type="number"
+              class="font-mono mt-1"
+            />
           </label>
         </div>
       </SectionCard>
 
-      <SectionCard title="Публичный endpoint" description="Что попадает в .ovpn клиентам (по умолчанию — из --ovpn.server)" :default-open="false">
+      <SectionCard
+        title="Публичный endpoint"
+        description="Что попадает в .ovpn клиентам (по умолчанию — из --ovpn.server)"
+        :default-open="false"
+      >
         <div class="grid grid-cols-3 gap-3">
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Hostname / IP</span>
-            <Input v-model="cfg.public_hostname" placeholder="vpn.example.com" class="font-mono mt-1" />
+            <Input
+              v-model="cfg.public_hostname"
+              placeholder="vpn.example.com"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Port</span>
-            <Input v-model.number="cfg.public_port" type="number" placeholder="1194" class="font-mono mt-1" />
+            <Input
+              v-model.number="cfg.public_port"
+              type="number"
+              placeholder="1194"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Protocol</span>
-            <select v-model="cfg.public_proto" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+            <select
+              v-model="cfg.public_proto"
+              class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono"
+            >
               <option value="">(default)</option>
               <option value="udp">UDP</option>
               <option value="tcp">TCP</option>
             </select>
           </label>
         </div>
-        <p class="text-xs text-muted-foreground mt-2">Оставьте пустым чтобы использовать значение из --ovpn.server CLI флага</p>
+        <p class="text-xs text-muted-foreground mt-2">
+          Оставьте пустым чтобы использовать значение из --ovpn.server CLI флага
+        </p>
       </SectionCard>
 
-      <SectionCard title="Шифрование" description="Cipher, TLS, DCO">
+      <SectionCard
+        title="Шифрование"
+        description="Cipher, TLS, DCO"
+      >
         <div class="space-y-3">
           <div>
             <span class="text-xs text-muted-foreground">Data ciphers (порядок = приоритет NCP)</span>
@@ -187,13 +259,13 @@ onMounted(reload)
                 v-for="c in dataCipherChoices"
                 :key="c"
                 type="button"
-                               @click="toggleCipher(c)"
                 :class="[
                   'inline-flex items-center gap-1 rounded-md border px-2.5 h-7 text-xs font-mono transition-colors',
                   cfg.data_ciphers.includes(c)
                     ? 'border-primary bg-primary text-primary-foreground'
                     : 'border-border bg-background text-muted-foreground hover:bg-accent'
                 ]"
+                @click="toggleCipher(c)"
               >
                 {{ c }}
               </button>
@@ -202,43 +274,71 @@ onMounted(reload)
           <div class="grid grid-cols-2 gap-3">
             <label class="block text-sm">
               <span class="text-xs text-muted-foreground">TLS version min</span>
-              <select v-model="cfg.tls_version_min" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+              <select
+                v-model="cfg.tls_version_min"
+                class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono"
+              >
                 <option value="1.2">1.2</option>
                 <option value="1.3">1.3 (рекомендуется)</option>
               </select>
             </label>
             <label class="block text-sm">
               <span class="text-xs text-muted-foreground">TLS auth mode</span>
-              <select v-model="cfg.tls_auth_mode" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+              <select
+                v-model="cfg.tls_auth_mode"
+                class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono"
+              >
                 <option value="tls-auth">tls-auth (HMAC)</option>
                 <option value="tls-crypt">tls-crypt (encrypted, рекомендуется)</option>
               </select>
             </label>
           </div>
           <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" v-model="cfg.dco_enabled" :disabled="!dcoAvailable" />
+            <input
+              v-model="cfg.dco_enabled"
+              type="checkbox"
+              :disabled="!dcoAvailable"
+            >
             DCO (kernel offload) {{ !dcoAvailable ? '— недоступен на этой ноде' : '' }}
           </label>
         </div>
       </SectionCard>
 
-      <SectionCard title="Поведение" description="Keepalive, лимиты, логи">
+      <SectionCard
+        title="Поведение"
+        description="Keepalive, лимиты, логи"
+      >
         <div class="grid grid-cols-2 gap-3">
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Keepalive interval (sec)</span>
-            <Input v-model.number="cfg.keepalive_interval" type="number" class="font-mono mt-1" />
+            <Input
+              v-model.number="cfg.keepalive_interval"
+              type="number"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Keepalive timeout (sec)</span>
-            <Input v-model.number="cfg.keepalive_timeout" type="number" class="font-mono mt-1" />
+            <Input
+              v-model.number="cfg.keepalive_timeout"
+              type="number"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Max clients (0 = unlimited)</span>
-            <Input v-model.number="cfg.max_clients" type="number" class="font-mono mt-1" />
+            <Input
+              v-model.number="cfg.max_clients"
+              type="number"
+              class="font-mono mt-1"
+            />
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Compression</span>
-            <select v-model="cfg.compression" class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono">
+            <select
+              v-model="cfg.compression"
+              class="w-full h-9 mt-1 rounded-md border border-border bg-background px-2 text-sm font-mono"
+            >
               <option value="">отключено (рекомендуется — VORACLE)</option>
               <option value="lz4-v2">lz4-v2</option>
               <option value="lzo">lzo</option>
@@ -246,24 +346,40 @@ onMounted(reload)
           </label>
           <label class="block text-sm">
             <span class="text-xs text-muted-foreground">Verb (log level 0–11)</span>
-            <Input v-model.number="cfg.verb" type="number" class="font-mono mt-1" />
+            <Input
+              v-model.number="cfg.verb"
+              type="number"
+              class="font-mono mt-1"
+            />
           </label>
         </div>
         <div class="flex gap-4 pt-2">
           <label class="inline-flex items-center gap-2 text-sm">
-            <input type="checkbox" v-model="cfg.client_to_client" />
+            <input
+              v-model="cfg.client_to_client"
+              type="checkbox"
+            >
             client-to-client
           </label>
           <label class="inline-flex items-center gap-2 text-sm">
-            <input type="checkbox" v-model="cfg.duplicate_cn" />
+            <input
+              v-model="cfg.duplicate_cn"
+              type="checkbox"
+            >
             duplicate-cn
           </label>
         </div>
       </SectionCard>
 
-      <SectionCard title="Пуш клиентам" description="Маршруты, DNS, gateway">
+      <SectionCard
+        title="Пуш клиентам"
+        description="Маршруты, DNS, gateway"
+      >
         <label class="inline-flex items-center gap-2 text-sm">
-          <input type="checkbox" v-model="cfg.redirect_gateway" />
+          <input
+            v-model="cfg.redirect_gateway"
+            type="checkbox"
+          >
           redirect-gateway def1 (весь трафик через VPN)
         </label>
         <div>
@@ -278,17 +394,21 @@ onMounted(reload)
           <span class="text-xs text-muted-foreground">Push extra (одна строка = одна push-директива; whitelist)</span>
           <textarea
             v-model="pushExtraText"
-                       rows="3"
+            rows="3"
             class="w-full mt-1 rounded-md border border-border bg-background px-2 py-1 text-sm font-mono"
             placeholder="route 10.0.0.0 255.0.0.0"
           />
         </div>
       </SectionCard>
 
-      <SectionCard title="Дополнительно" description="Custom OpenVPN directives (whitelist)" :default-open="false">
+      <SectionCard
+        title="Дополнительно"
+        description="Custom OpenVPN directives (whitelist)"
+        :default-open="false"
+      >
         <textarea
           v-model="customDirectivesText"
-                   rows="5"
+          rows="5"
           class="w-full rounded-md border border-border bg-background px-2 py-1 text-sm font-mono"
           placeholder="explicit-exit-notify
 route 192.168.0.0 255.255.0.0"

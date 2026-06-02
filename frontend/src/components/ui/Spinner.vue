@@ -9,5 +9,8 @@ defineProps({
 </script>
 
 <template>
-  <Loader2 :size="size" :class="['animate-spin', $props.class]" />
+  <Loader2
+    :size="size"
+    :class="['animate-spin', $props.class]"
+  />
 </template>

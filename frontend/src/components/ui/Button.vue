@@ -42,7 +42,10 @@ const sizes = {
     )"
     v-bind="$attrs"
   >
-    <Spinner v-if="loading" :size="size === 'sm' ? 12 : 14" />
+    <Spinner
+      v-if="loading"
+      :size="size === 'sm' ? 12 : 14"
+    />
     <slot />
   </button>
 </template>

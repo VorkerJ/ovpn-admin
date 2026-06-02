@@ -326,136 +326,166 @@ async function safeUnrevoke(username) {
 
 <template>
   <div class="min-h-screen bg-background">
-    <LoginPage v-if="authChecked && !authenticated" @login="handleLogin" />
+    <LoginPage
+      v-if="authChecked && !authenticated"
+      @login="handleLogin"
+    />
 
     <template v-else-if="authenticated">
-    <AppHeader
-      :server-initialized="serverInitialized"
-      :admin-mfa-enabled="adminMfaEnabled"
-      @add-user="openModal('addUser')"
-      @open-mfa="mfaModalOpen = true"
-      @logout="handleLogout"
-    />
+      <AppHeader
+        :server-initialized="serverInitialized"
+        :admin-mfa-enabled="adminMfaEnabled"
+        @add-user="openModal('addUser')"
+        @open-mfa="mfaModalOpen = true"
+        @logout="handleLogout"
+      />
 
-    <TabBar v-model="activeTab" :tabs="visibleTabs" />
+      <TabBar
+        v-model="activeTab"
+        :tabs="visibleTabs"
+      />
 
-    <!-- MFA enforcement banner — shown on EVERY tab, above the tab content,
+      <!-- MFA enforcement banner — shown on EVERY tab, above the tab content,
          because the gate applies to all write endpoints (users, routes, server-config). -->
-    <main class="max-w-7xl mx-auto px-6 pt-4 -mb-2" v-if="adminMfaRequired && !adminMfaEnabled">
-      <div
-        class="rounded-md bg-orange-500/10 border-2 border-orange-500/50 px-4 py-3 flex items-start gap-3"
-        data-testid="admin-mfa-banner"
+      <main
+        v-if="adminMfaRequired && !adminMfaEnabled"
+        class="max-w-7xl mx-auto px-6 pt-4 -mb-2"
       >
-        <ShieldAlert :size="20" class="text-orange-500 mt-0.5 shrink-0" />
-        <div class="flex-1">
-          <p class="font-semibold text-orange-900 dark:text-orange-200">Включите двухфакторную аутентификацию</p>
-          <p class="text-sm text-muted-foreground mt-0.5">
-            Без 2FA вы не сможете создавать пользователей, редактировать маршруты или менять настройки сервера.
-          </p>
-        </div>
-        <Button size="sm" class="bg-orange-500 hover:bg-orange-600 text-white" @click="mfaModalOpen = true">
-          Включить
-        </Button>
-      </div>
-    </main>
-
-    <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
-      <template v-if="activeTab === 'users'">
         <div
-          v-if="!serverInitialized"
-          class="rounded-md bg-amber-500/10 border border-amber-500/30 px-4 py-3 flex items-start gap-2"
-          data-testid="server-not-initialized-banner"
+          class="rounded-md bg-orange-500/10 border-2 border-orange-500/50 px-4 py-3 flex items-start gap-3"
+          data-testid="admin-mfa-banner"
         >
-          <AlertTriangle :size="16" class="text-amber-500 mt-0.5 shrink-0" />
-          <div class="text-sm">
-            <p class="font-medium">Сервер не настроен</p>
-            <p class="text-muted-foreground">
-              Откройте вкладку «Сервер», проверьте настройки и нажмите «Сохранить». До этого создание пользователей заблокировано.
+          <ShieldAlert
+            :size="20"
+            class="text-orange-500 mt-0.5 shrink-0"
+          />
+          <div class="flex-1">
+            <p class="font-semibold text-orange-900 dark:text-orange-200">
+              Включите двухфакторную аутентификацию
+            </p>
+            <p class="text-sm text-muted-foreground mt-0.5">
+              Без 2FA вы не сможете создавать пользователей, редактировать маршруты или менять настройки сервера.
             </p>
           </div>
+          <Button
+            size="sm"
+            class="bg-orange-500 hover:bg-orange-600 text-white"
+            @click="mfaModalOpen = true"
+          >
+            Включить
+          </Button>
         </div>
+      </main>
 
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Обзор</p>
-          <StatCards :users="users" />
-        </div>
+      <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
+        <template v-if="activeTab === 'users'">
+          <div
+            v-if="!serverInitialized"
+            class="rounded-md bg-amber-500/10 border border-amber-500/30 px-4 py-3 flex items-start gap-2"
+            data-testid="server-not-initialized-banner"
+          >
+            <AlertTriangle
+              :size="16"
+              class="text-amber-500 mt-0.5 shrink-0"
+            />
+            <div class="text-sm">
+              <p class="font-medium">
+                Сервер не настроен
+              </p>
+              <p class="text-muted-foreground">
+                Откройте вкладку «Сервер», проверьте настройки и нажмите «Сохранить». До этого создание пользователей заблокировано.
+              </p>
+            </div>
+          </div>
 
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">Пользователи</p>
-          <UsersTable
-            :users="users"
-            :modules-enabled="modulesEnabled"
-            :server-initialized="serverInitialized"
-            @revoke="handleRevoke"
-            @unrevoke="handleUnrevoke"
-            @rotate="(u) => openModal('rotateUser', u)"
-            @delete="(u) => openModal('deleteUser', u)"
-            @download-config="handleDownloadConfig"
-            @edit-ccd="handleEditCcd"
-            @change-password="(u) => openModal('changePassword', u)"
+          <div>
+            <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">
+              Обзор
+            </p>
+            <StatCards :users="users" />
+          </div>
+
+          <div>
+            <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">
+              Пользователи
+            </p>
+            <UsersTable
+              :users="users"
+              :modules-enabled="modulesEnabled"
+              :server-initialized="serverInitialized"
+              @revoke="handleRevoke"
+              @unrevoke="handleUnrevoke"
+              @rotate="(u) => openModal('rotateUser', u)"
+              @delete="(u) => openModal('deleteUser', u)"
+              @download-config="handleDownloadConfig"
+              @edit-ccd="handleEditCcd"
+              @change-password="(u) => openModal('changePassword', u)"
+            />
+          </div>
+        </template>
+        <template v-else-if="activeTab === 'common-routes'">
+          <CommonRoutesView @mfa-required="onMfaRequired" />
+        </template>
+        <template v-else-if="activeTab === 'server-config'">
+          <ServerConfigView
+            @saved="loadSettings"
+            @mfa-required="onMfaRequired"
           />
-        </div>
-      </template>
-      <template v-else-if="activeTab === 'common-routes'">
-        <CommonRoutesView @mfa-required="onMfaRequired" />
-      </template>
-      <template v-else-if="activeTab === 'server-config'">
-        <ServerConfigView @saved="loadSettings" @mfa-required="onMfaRequired" />
-      </template>
-    </main>
+        </template>
+      </main>
 
-    <!-- Modals -->
-    <AddUserModal
-      :open="modals.addUser"
-      :modules-enabled="modulesEnabled"
-      :error="modalErrors.addUser"
-      :submitting="modalSubmitting.addUser"
-      @close="closeModal('addUser')"
-      @submit="submitAddUser"
-    />
-    <DeleteUserModal
-      :open="modals.deleteUser"
-      :username="activeUser"
-      :error="modalErrors.deleteUser"
-      :submitting="modalSubmitting.deleteUser"
-      @close="closeModal('deleteUser')"
-      @submit="submitDeleteUser"
-    />
-    <RotateUserModal
-      :open="modals.rotateUser"
-      :username="activeUser"
-      :modules-enabled="modulesEnabled"
-      :error="modalErrors.rotateUser"
-      :submitting="modalSubmitting.rotateUser"
-      @close="closeModal('rotateUser')"
-      @submit="submitRotateUser"
-    />
-    <ChangePasswordModal
-      :open="modals.changePassword"
-      :username="activeUser"
-      :error="modalErrors.changePassword"
-      :submitting="modalSubmitting.changePassword"
-      @close="closeModal('changePassword')"
-      @submit="submitChangePassword"
-    />
-    <CcdModal
-      :open="modals.ccd"
-      :username="activeUser"
-      :submitting="modalSubmitting.ccd"
-      :ccd="ccdData"
-      :error="modalErrors.ccd"
-      @close="closeModal('ccd')"
-      @submit="submitCcd"
-    />
+      <!-- Modals -->
+      <AddUserModal
+        :open="modals.addUser"
+        :modules-enabled="modulesEnabled"
+        :error="modalErrors.addUser"
+        :submitting="modalSubmitting.addUser"
+        @close="closeModal('addUser')"
+        @submit="submitAddUser"
+      />
+      <DeleteUserModal
+        :open="modals.deleteUser"
+        :username="activeUser"
+        :error="modalErrors.deleteUser"
+        :submitting="modalSubmitting.deleteUser"
+        @close="closeModal('deleteUser')"
+        @submit="submitDeleteUser"
+      />
+      <RotateUserModal
+        :open="modals.rotateUser"
+        :username="activeUser"
+        :modules-enabled="modulesEnabled"
+        :error="modalErrors.rotateUser"
+        :submitting="modalSubmitting.rotateUser"
+        @close="closeModal('rotateUser')"
+        @submit="submitRotateUser"
+      />
+      <ChangePasswordModal
+        :open="modals.changePassword"
+        :username="activeUser"
+        :error="modalErrors.changePassword"
+        :submitting="modalSubmitting.changePassword"
+        @close="closeModal('changePassword')"
+        @submit="submitChangePassword"
+      />
+      <CcdModal
+        :open="modals.ccd"
+        :username="activeUser"
+        :submitting="modalSubmitting.ccd"
+        :ccd="ccdData"
+        :error="modalErrors.ccd"
+        @close="closeModal('ccd')"
+        @submit="submitCcd"
+      />
 
-    <MfaSetupModal
-      :open="mfaModalOpen"
-      @close="mfaModalOpen = false"
-      @status-change="onMfaStatusChange"
-    />
+      <MfaSetupModal
+        :open="mfaModalOpen"
+        @close="mfaModalOpen = false"
+        @status-change="onMfaStatusChange"
+      />
 
-    <!-- Toast notifications -->
-    <Toast />
+      <!-- Toast notifications -->
+      <Toast />
     </template>
   </div>
 </template>

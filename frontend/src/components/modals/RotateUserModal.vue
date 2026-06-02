@@ -44,13 +44,27 @@ function onClose() {
         autocomplete="new-password"
         minlength="6"
       />
-      <div v-if="error" class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+      <div
+        v-if="error"
+        class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
+      >
         {{ error }}
       </div>
     </div>
     <template #footer>
-      <Button variant="ghost" :disabled="submitting" @click="onClose">Отмена</Button>
-      <Button variant="destructive" :loading="submitting" :disabled="submitting" @click="submit">
+      <Button
+        variant="ghost"
+        :disabled="submitting"
+        @click="onClose"
+      >
+        Отмена
+      </Button>
+      <Button
+        variant="destructive"
+        :loading="submitting"
+        :disabled="submitting"
+        @click="submit"
+      >
         Ротация
       </Button>
     </template>
