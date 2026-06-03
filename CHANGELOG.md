@@ -38,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.11] — 2026-06-03
+
+### Fixed
+
+- `userDelete` now kicks the user's active VPN session via mgmt
+  BEFORE wiping cert/files. Previously the deleted user kept
+  tunnelling traffic until they happened to reconnect — CRL only
+  takes effect at the next TLS handshake, not on already-established
+  sessions. `userRevoke` already did this; bringing delete in line
+  fixes "I deleted the user but they're still connected".
+
 ## [2.0.10] — 2026-06-03
 
 ### Added

@@ -518,6 +518,19 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 
 func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 	if checkUserExist(username) {
+		// Kick BEFORE we delete the on-disk state so the kill command still
+		// has a CN to match in OpenVPN's connected-clients table. Without
+		// this the deleted user keeps tunnelling traffic until they happen
+		// to reconnect — CRL only takes effect at the next TLS handshake,
+		// not on already-established sessions.
+		connectedUsers := oAdmin.mgmtGetActiveClients()
+		connected, connections := isUserConnected(username, connectedUsers)
+		if connected {
+			for _, conn := range connections {
+				oAdmin.mgmtKillUserConnection(username, conn)
+			}
+		}
+
 		if *authByPassword {
 			_ = runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
 		}
