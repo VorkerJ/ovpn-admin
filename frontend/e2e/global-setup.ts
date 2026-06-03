@@ -1,7 +1,13 @@
 import { execFileSync, spawn } from 'child_process'
 import { mkdtempSync, writeFileSync, mkdirSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { tmpdir } from 'os'
+import { fileURLToPath } from 'url'
+
+// ESM doesn't expose __dirname; derive it from import.meta.url so the
+// project-root resolution below still works under "type": "module".
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 export default async function globalSetup() {
   const tmp = mkdtempSync(join(tmpdir(), 'ovpn-e2e-'))
@@ -75,7 +81,10 @@ export default async function globalSetup() {
       OVPN_SERVER_CONFIG: 'true',
       OVPN_SERVER_CONFIG_PATH: join(tmp, 'server.conf'),
       OVPN_COMMON_ROUTES: 'false',
-      OVPN_CCD: 'false',
+      // CCD enabled so the redirect-gateway + exclusions spec can exercise
+      // the user-settings modal end-to-end (full-tunnel toggle, exclusion
+      // table, save, then read-back via API).
+      OVPN_CCD: 'true',
       // Disable MFA enforcement at the gate level — see comment above.
       OVPN_MFA_REQUIRED: 'false',
       // Tests run over plain http://127.0.0.1 — Secure-flagged cookies would

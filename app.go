@@ -112,12 +112,50 @@ type ccdRoute struct {
 	LastResolveErr string   `json:"LastResolveErr,omitempty"`
 }
 
+// Subnet — IPv4 network in dotted-quad form (Address + Mask), with optional
+// human-readable description. Used for redirect-gateway exclusions both
+// globally (ServerConfig.RedirectGatewayExclusions) and per-user
+// (Ccd.RedirectGatewayExclusions). Lower-case JSON tags so the frontend
+// can share a single component for both contexts.
+type Subnet struct {
+	Address     string `json:"address"`
+	Mask        string `json:"mask"`
+	Description string `json:"description,omitempty"`
+}
+
 type Ccd struct {
 	User             string           `json:"User"`
 	ClientAddress    string           `json:"ClientAddress"`
 	CustomRoutes     []ccdRoute       `json:"CustomRoutes"`
 	CommonRoutes     []ccdCommonRoute `json:"-"` // not serialized over API, render-only
 	MergedPushRoutes []pushRoute      `json:"-"` // computed at render time; unique by (Address, Mask)
+
+	// RedirectGateway — per-user "send all traffic through VPN" toggle.
+	// When true, the CCD renders `push "redirect-gateway def1"` plus the
+	// union (deduped) of global ServerConfig.RedirectGatewayExclusions and
+	// the per-user RedirectGatewayExclusions below, each as a
+	// `push "route X Y net_gateway"` directive.
+	RedirectGateway bool `json:"RedirectGateway"`
+
+	// RedirectGatewayExclusions — per-user EXTRA subnets that should bypass
+	// the VPN even when full-tunnel is on (e.g. a user's specific work VPN
+	// subnet on top of the typical 192.168/16 defaults). Globals from
+	// ServerConfig always apply; this list adds to them.
+	RedirectGatewayExclusions []Subnet `json:"RedirectGatewayExclusions"`
+
+	// MergedExclusions — render-time union of global + per-user exclusions,
+	// deduped by (Address, Mask). Not serialized over API.
+	MergedExclusions []renderedExclusion `json:"-"`
+}
+
+// renderedExclusion is one entry emitted into the CCD as a
+// `push "route X Y net_gateway"` line. Source carries the marker
+// comment used by parseCcd to round-trip the entry back to its origin
+// (global vs per-user) so the operator-side state survives a re-read.
+type renderedExclusion struct {
+	Address string
+	Mask    string
+	Source  string // either "__exclusion_global__ desc" or "__exclusion_user__ desc"
 }
 
 type indexTxtLine struct {

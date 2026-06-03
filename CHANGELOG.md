@@ -38,6 +38,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.17] — 2026-06-03
+
+### Added
+
+- **Per-user `redirect-gateway` toggle in the CCD modal**: a "Полный туннель"
+  checkbox that, when on, renders `push "redirect-gateway def1"` into the
+  user's CCD so every byte (DNS included) leaves through the VPN. Solves
+  the "I just want it to work" case where the operator doesn't want to
+  hunt down every CDN block for a single user.
+- **Global redirect-gateway exclusions list in `ServerConfig`**: a structured
+  table of `Address`/`Mask`/`Description` rows that render as
+  `push "route X Y net_gateway"` for every full-tunnel user. Default ships
+  with the typical home-LAN ranges (192.168/16, 10/8, 172.16/12, 169.254/16)
+  so home printer / NAS / router admin keep working without manual setup.
+- **Per-user exclusion list** layered on top: each user can add subnets that
+  apply only to them (e.g. their corp-VPN range) without touching the global
+  defaults. Render-side merge dedupes by `(Address, Mask)` and tags the
+  combined `Source` comment so an operator grepping the CCD can tell where
+  the entry came from.
+- New `Subnet` type with strict IPv4 validation: rejects malformed addresses
+  and masks, non-contiguous netmasks (e.g. `255.0.255.0`), addresses with
+  host bits set under their mask (forces canonical network form), IPv6,
+  and descriptions containing newlines / double quotes / NUL bytes /
+  >200 chars — all of which would otherwise let an attacker with CCD-edit
+  permission inject extra `push` directives.
+
+### Changed
+
+- `serverConfigHandler` now rerenders all CCDs in the background when
+  `RedirectGateway` or `RedirectGatewayExclusions` change, so existing
+  users pick up the new globals at next reconnect without a manual edit.
+- `parseCcd` learns three new marker prefixes (`__redirect_gateway__`,
+  `__exclusion_global__`, `__exclusion_user__`) so a saved CCD round-trips
+  cleanly. Global exclusions are intentionally NOT re-imported into the
+  per-user list — server-config stays authoritative for those.
+- User-row dropdown action "Маршруты" renamed to "Настройки", and the
+  modal title becomes "Настройки: <user>". The modal now uses three tabs
+  (Подключение, Маршруты, Исключения) instead of a single long form, so
+  the operator focuses on one concern at a time. Bulk import lives under
+  an expandable section inside the Маршруты tab.
+- Dialog body now scrolls internally (max-h-90vh) and locks `<body>`
+  scroll while a modal is visible; the footer with Save/Close stays
+  pinned above long forms. Affects every modal in the app.
+- UsersTable and CommonRoutesView gain client-side pagination + a
+  visible-range counter + a sticky thead, and the global ServerConfigView
+  header (Save / Reset) sticks under the AppHeader so it stays reachable
+  when editing collapsed sections lower on the page.
+- Common-routes Add form is now a `<form>` so Enter submits, and known
+  backend errors (`duplicate entry`, `invalid IP/mask/domain`) are
+  surfaced in Russian.
+
+### Migrations
+
+- **`deserializeServerConfig` now backfills `redirect_gateway_exclusions`
+  on upgrade** from any prior version that never wrote that field. Without
+  this an operator who turned on full-tunnel for a single user after
+  upgrade would lose home-LAN access entirely — no global LAN exclusions
+  would be pushed because the loaded slice was empty. Distinguishes
+  "missing field in JSON" from "explicitly empty list set by operator"
+  via a `map[string]json.RawMessage` peek, so deliberately-cleared lists
+  are respected and not re-populated on every load.
+- `Dockerfile.ovpn-admin` honours BuildKit's `TARGETARCH` (defaulting to
+  `amd64` for CI), so local builds on Apple Silicon produce a native
+  arm64 binary instead of failing cross-compile via `gcc -m64`.
+
+### Fixed
+
+- **CcdModal silently dropped the `RedirectGateway` toggle when the
+  operator added a per-user exclusion**: `withFullTunnelDefaults` reused
+  the same `RedirectGatewayExclusions` array reference as `props.ccd`,
+  so the per-user `push` mutation bubbled to props, fired the deep watch,
+  and reset `localCcd` (with the old `RedirectGateway: false` from the
+  initial GET). The toggle visibly stayed on in the UI but the POST
+  body carried `false`. Caught by the new Playwright spec. Fix: clone
+  each exclusion into its own object on initialisation.
+- Default-exclusion `Description` validation now rejects NUL bytes (in
+  addition to newlines, double quotes, and >200-char strings) so an
+  attacker with CCD-edit permission can't truncate the rendered comment.
+
+### Tests
+
+- New Playwright spec `redirect-gateway.spec.ts` covers:
+  - Unauthenticated `/api/server-config`, `/api/users/list`,
+    `/api/auth/check`, `POST /api/user/ccd/apply`, and
+    `PUT /api/server-config` all return 401.
+  - Logging out invalidates the session cookie immediately.
+  - End-to-end UI flow: open the user-settings modal, toggle full-tunnel,
+    switch to Исключения tab, add a per-user exclusion, save — verifies
+    both the outgoing POST body and the round-trip via parseCcd.
+  - Backend validation rejects an exclusion whose address has host bits
+    set under its mask (422 + "host bits" message).
+- New `DataTable.vue` component extracts the sticky-thead +
+  internal-scroll + empty-state shell shared by the routes and
+  exclusions tables.
+
 ## [2.0.16] — 2026-06-03
 
 ### Fixed

@@ -4,7 +4,7 @@ import DropdownMenu from '@/components/ui/DropdownMenu.vue'
 import Button from '@/components/ui/Button.vue'
 import {
   Download, RotateCcw, MoreHorizontal,
-  ShieldOff, RefreshCw, Route, KeyRound, Trash2,
+  ShieldOff, RefreshCw, Settings, KeyRound, Trash2,
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -82,7 +82,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-violet-600 dark:text-violet-400 hover:bg-accent cursor-pointer"
           @click="emit('edit-ccd', user.Identity)"
         >
-          <Route :size="14" /> Маршруты
+          <Settings :size="14" /> Настройки
         </button>
         <button
           v-if="hasModule('passwdAuth')"

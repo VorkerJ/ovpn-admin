@@ -5,9 +5,10 @@ import Dialog from '@/components/ui/Dialog.vue'
 import Input from '@/components/ui/Input.vue'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
+import DataTable from '@/components/ui/DataTable.vue'
 import {
   Network, Globe, Plus, Trash2, CornerDownRight,
-  CheckCircle2, AlertTriangle,
+  CheckCircle2, AlertTriangle, Shield, ChevronDown, Upload,
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -22,10 +23,12 @@ const emit = defineEmits(['close', 'submit', 'refresh-dns', 'import-routes'])
 
 const importText = ref('')
 const importFileRef = ref(null)
+const importFileName = ref('')
 const importReport = ref(null)
 function onImportFile(e) {
   const f = e.target.files?.[0]
   if (!f) return
+  importFileName.value = f.name
   const reader = new FileReader()
   reader.onload = (ev) => {
     importText.value = ev.target.result || ''
@@ -42,14 +45,47 @@ function withIds(routes) {
   return (routes || []).map(r => ({ ...r, _id: ++routeId, Kind: r.Kind || 'ip' }))
 }
 
-const localCcd = ref({ ...props.ccd, CustomRoutes: withIds(props.ccd?.CustomRoutes) })
+function withFullTunnelDefaults(c) {
+  return {
+    ...c,
+    CustomRoutes: withIds(c?.CustomRoutes),
+    RedirectGateway: c?.RedirectGateway || false,
+    // Copy each exclusion into a NEW object, not just slice the outer array.
+    // Sharing references with props.ccd would let our user-side mutations
+    // (push, splice on description) bubble through the deep watch below and
+    // reset localCcd — silently clearing the operator's RedirectGateway
+    // toggle the instant they add their first per-user exclusion.
+    RedirectGatewayExclusions: Array.isArray(c?.RedirectGatewayExclusions)
+      ? c.RedirectGatewayExclusions.map(e => ({ ...e }))
+      : [],
+  }
+}
+
+const localCcd = ref(withFullTunnelDefaults(props.ccd))
 const newKind = ref('ip')
 const newRoute = ref({ Address: '', Mask: '', Domain: '', Description: '' })
+const newUserExclusion = ref({ address: '', mask: '', description: '' })
 const validationError = ref('')
+const userExclusionError = ref('')
+// Сворачиваем секцию исключений по умолчанию — у большинства юзеров она
+// будет пустая и достаточно глобальных. Раскрывается кликом на чип со
+// счётчиком; авто-раскрывается если у юзера уже есть свои исключения,
+// чтобы он сразу их видел.
+const showExclusions = ref(false)
+// Активная вкладка модалки. Маршруты по умолчанию — это основной экшен,
+// ради которого открывают окно. Подключение и Исключения — реже.
+const activeTab = ref('routes')
+// Импорт спрятан под кнопкой внутри Маршрутов — нужен редко (массовая заливка),
+// и видеть пустую textarea на каждом открытии модалки не хочется.
+const showImport = ref(false)
 
 watch(() => props.ccd, (val) => {
-  localCcd.value = { ...val, CustomRoutes: withIds(val?.CustomRoutes) }
+  localCcd.value = withFullTunnelDefaults(val)
   validationError.value = ''
+  userExclusionError.value = ''
+  // Если у юзера уже есть персональные исключения — раскрываем сразу,
+  // чтобы оператор не искал их за свёрнутым «+N».
+  showExclusions.value = (localCcd.value.RedirectGatewayExclusions || []).length > 0
 }, { deep: true })
 
 // True when the user has at least one domain-typed route — Refresh DNS
@@ -116,6 +152,30 @@ function removeRoute(index) {
   validationError.value = ''
 }
 
+function addUserExclusion() {
+  userExclusionError.value = ''
+  const a = (newUserExclusion.value.address || '').trim()
+  const m = (newUserExclusion.value.mask || '').trim()
+  if (!isValidIp(a)) { userExclusionError.value = `Неверный IP: "${a}"`; return }
+  if (!isValidIp(m)) { userExclusionError.value = `Неверная маска: "${m}"`; return }
+  const list = localCcd.value.RedirectGatewayExclusions
+  if (list.some(e => e.address === a && e.mask === m)) {
+    userExclusionError.value = 'Уже добавлено'
+    return
+  }
+  list.push({
+    address: a,
+    mask: m,
+    description: (newUserExclusion.value.description || '').trim(),
+  })
+  newUserExclusion.value = { address: '', mask: '', description: '' }
+}
+
+function removeUserExclusion(i) {
+  localCcd.value.RedirectGatewayExclusions.splice(i, 1)
+  userExclusionError.value = ''
+}
+
 function onClose() {
   if (props.submitting) return
   validationError.value = ''
@@ -137,6 +197,8 @@ function submitCcd() {
   const payload = {
     ...localCcd.value,
     CustomRoutes: localCcd.value.CustomRoutes.map(({ _id, ...r }) => r),
+    RedirectGateway: !!localCcd.value.RedirectGateway,
+    RedirectGatewayExclusions: localCcd.value.RedirectGatewayExclusions || [],
   }
   emit('submit', payload)
 }
@@ -155,14 +217,49 @@ function formatRelativeTime(iso) {
   <Dialog
     :open="open"
     size="lg"
-    :title="`Маршруты: ${username}`"
+    :title="`Настройки: ${username}`"
     @close="onClose"
   >
     <div class="space-y-4">
-      <!-- VPN IP mode -->
-      <div class="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
+      <!-- Tab strip: 3 concerns. Routes is the primary action and default tab. -->
+      <div class="flex items-center gap-1 border-b border-border">
+        <button
+          v-for="tab in [
+            { id: 'connection', label: 'Подключение' },
+            { id: 'routes', label: 'Маршруты', count: localCcd.CustomRoutes?.length },
+            { id: 'exclusions', label: 'Исключения', count: localCcd.RedirectGatewayExclusions?.length, hint: 'Подсети, идущие НАПРЯМУЮ (без VPN) при полном туннеле' },
+          ]"
+          :key="tab.id"
+          type="button"
+          :title="tab.hint"
+          :class="[
+            'inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+            activeTab === tab.id
+              ? 'border-primary text-foreground'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
+          ]"
+          @click="activeTab = tab.id"
+        >
+          {{ tab.label }}
+          <span
+            v-if="tab.count"
+            :class="[
+              'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold leading-none',
+              activeTab === tab.id
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground'
+            ]"
+          >{{ tab.count }}</span>
+        </button>
+      </div>
+
+      <!-- TAB: Подключение -->
+      <div
+        v-show="activeTab === 'connection'"
+        class="space-y-3"
+      >
         <div class="flex items-center gap-3 flex-wrap">
-          <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">VPN-адрес:</span>
+          <span class="text-xs text-muted-foreground w-24">VPN-адрес</span>
           <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
             <button
               type="button"
@@ -189,58 +286,185 @@ function formatRelativeTime(iso) {
               Фиксированный
             </button>
           </div>
-          <span
-            v-if="ipMode === 'dynamic'"
-            class="text-xs text-muted-foreground"
-          >
-            OpenVPN выдаст любой свободный адрес из своей подсети
-          </span>
-        </div>
-        <div
-          v-if="ipMode === 'static'"
-          class="flex items-center gap-2"
-        >
           <Input
+            v-if="ipMode === 'static'"
             v-model="localCcd.ClientAddress"
             placeholder="10.0.0.5"
-            class="w-48 font-mono"
+            class="w-40 font-mono h-8 text-sm"
           />
-          <span class="text-xs text-muted-foreground">
-            этот адрес будет закреплён за пользователем
+          <span
+            v-else
+            class="text-xs text-muted-foreground"
+          >
+            OpenVPN выдаст любой свободный адрес
           </span>
+        </div>
+
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="text-xs text-muted-foreground w-24">Режим</span>
+          <label class="inline-flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              v-model="localCcd.RedirectGateway"
+              type="checkbox"
+            >
+            <Shield
+              :size="14"
+              class="text-muted-foreground"
+            />
+            <span class="font-medium">Полный туннель</span>
+            <span class="text-xs text-muted-foreground">— весь трафик через VPN</span>
+          </label>
         </div>
       </div>
 
-      <!-- Add form -->
-      <div class="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
-        <div class="flex items-center gap-3">
-          <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Тип маршрута:</span>
+      <!-- TAB: Исключения -->
+      <div
+        v-show="activeTab === 'exclusions'"
+        class="space-y-3"
+      >
+        <div
+          v-if="!localCcd.RedirectGateway"
+          class="rounded-md bg-muted/50 border border-border px-3 py-2 text-xs text-muted-foreground"
+        >
+          <AlertTriangle
+            :size="12"
+            class="inline -mt-0.5 mr-1"
+          />
+          Исключения применяются только при включённом «Полном туннеле». Включи его на вкладке «Подключение» — иначе эти подсети ни на что не влияют.
+        </div>
+        <p class="text-xs text-muted-foreground">
+          Подсети, которые идут МИМО VPN. Глобальные LAN-исключения уже применяются из настроек сервера — здесь добавь специфичные для этого юзера (рабочая VPN, домашний NAS на нетипичной подсети и т.п.).
+        </p>
+
+        <!-- Add form (same shape as routes Add to keep visual rhythm) -->
+        <div class="flex gap-2 flex-wrap items-start">
+          <Input
+            v-model="newUserExclusion.address"
+            placeholder="10.42.0.0"
+            class="w-40 font-mono"
+          />
+          <Input
+            v-model="newUserExclusion.mask"
+            placeholder="255.255.255.0"
+            class="w-40 font-mono"
+          />
+          <Input
+            v-model="newUserExclusion.description"
+            placeholder="Описание (опционально)"
+            class="flex-1 min-w-[160px]"
+          />
+          <Button
+            size="sm"
+            @click="addUserExclusion"
+          >
+            <Plus :size="13" /> Добавить
+          </Button>
+        </div>
+        <p
+          v-if="userExclusionError"
+          class="text-xs text-destructive flex items-center gap-1"
+        >
+          <AlertTriangle :size="12" /> {{ userExclusionError }}
+        </p>
+
+        <DataTable
+          :empty="!localCcd.RedirectGatewayExclusions?.length"
+          empty-text="Нет персональных исключений"
+          :colspan="4"
+        >
+          <template #colgroup>
+            <col class="w-[28%]">
+            <col class="w-[28%]">
+            <col>
+            <col class="w-10">
+          </template>
+          <template #header>
+            <th class="px-2 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              IP
+            </th>
+            <th class="px-2 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Маска
+            </th>
+            <th class="px-2 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Описание
+            </th>
+            <th class="px-2 py-2" />
+          </template>
+          <template #body>
+            <tr
+              v-for="(e, i) in localCcd.RedirectGatewayExclusions"
+              :key="`${e.address}/${e.mask}/${i}`"
+              class="border-t border-border hover:bg-muted/20 transition-colors"
+            >
+              <td class="px-2 py-2 font-mono text-sm">
+                {{ e.address }}
+              </td>
+              <td class="px-2 py-2 font-mono text-sm">
+                {{ e.mask }}
+              </td>
+              <td class="px-2 py-2 text-sm text-muted-foreground truncate">
+                {{ e.description || '—' }}
+              </td>
+              <td class="px-2 py-2">
+                <button
+                  type="button"
+                  class="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                  :title="`Удалить ${e.address}/${e.mask}`"
+                  @click="removeUserExclusion(i)"
+                >
+                  <Trash2 :size="13" />
+                </button>
+              </td>
+            </tr>
+          </template>
+        </DataTable>
+      </div>
+
+      <!-- TAB: Маршруты -->
+      <div
+        v-show="activeTab === 'routes'"
+        class="space-y-3"
+      >
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <!-- Compact segmented switcher (auto-width to its content) so it
+               doesn't visually dominate the smaller inputs row below it. -->
           <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
             <button
               type="button"
               :class="[
-                'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors',
+                'inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium transition-colors',
                 newKind === 'ip'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-foreground hover:bg-accent'
               ]"
               @click="newKind = 'ip'"
             >
-              <Network :size="14" /> IP / маска
+              <Network :size="13" /> IP / маска
             </button>
             <button
               type="button"
               :class="[
-                'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors',
+                'inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium border-l border-border transition-colors',
                 newKind === 'domain'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-foreground hover:bg-accent'
               ]"
               @click="newKind = 'domain'"
             >
-              <Globe :size="14" /> Домен
+              <Globe :size="13" /> Домен
             </button>
           </div>
+          <button
+            type="button"
+            class="text-xs text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1 shrink-0"
+            @click="showImport = !showImport"
+          >
+            Импорт
+            <ChevronDown
+              :size="12"
+              :class="['transition-transform', showImport ? 'rotate-180' : '']"
+            />
+          </button>
         </div>
         <div class="flex gap-2 flex-wrap items-start">
           <template v-if="newKind === 'ip'">
@@ -273,40 +497,37 @@ function formatRelativeTime(iso) {
             <Plus :size="13" /> Добавить
           </Button>
         </div>
-      </div>
 
-      <!-- Routes table -->
-      <div class="rounded-lg border border-border overflow-hidden">
-        <table class="w-full text-sm">
-          <thead class="bg-muted/40 border-b border-border">
-            <tr>
-              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-24">
-                Тип
-              </th>
-              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Значение
-              </th>
-              <th class="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Описание
-              </th>
-              <th class="px-3 py-2.5 w-12" />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="!localCcd.CustomRoutes || localCcd.CustomRoutes.length === 0">
-              <td
-                colspan="4"
-                class="px-3 py-6 text-center text-sm text-muted-foreground"
-              >
-                Нет персональных маршрутов
-              </td>
-            </tr>
+        <DataTable
+          :empty="!localCcd.CustomRoutes?.length"
+          empty-text="Нет персональных маршрутов"
+          :colspan="4"
+        >
+          <template #colgroup>
+            <col class="w-20">
+            <col class="w-[44%]">
+            <col>
+            <col class="w-10">
+          </template>
+          <template #header>
+            <th class="px-2 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Тип
+            </th>
+            <th class="px-2 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Значение
+            </th>
+            <th class="px-2 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Описание
+            </th>
+            <th class="px-2 py-2" />
+          </template>
+          <template #body>
             <tr
               v-for="(route, i) in localCcd.CustomRoutes"
               :key="route._id"
               class="border-t border-border align-top hover:bg-muted/20 transition-colors"
             >
-              <td class="px-3 py-2.5">
+              <td class="px-2 py-2">
                 <Badge :variant="route.Kind === 'domain' ? 'info' : 'neutral'">
                   <component
                     :is="route.Kind === 'domain' ? Globe : Network"
@@ -316,7 +537,7 @@ function formatRelativeTime(iso) {
                   {{ route.Kind === 'domain' ? 'Domain' : 'IP' }}
                 </Badge>
               </td>
-              <td class="px-3 py-2.5 font-mono text-sm">
+              <td class="px-2 py-2 font-mono text-sm">
                 <template v-if="route.Kind === 'domain'">
                   <div class="font-medium">
                     {{ route.Domain }}
@@ -345,62 +566,73 @@ function formatRelativeTime(iso) {
                     <CheckCircle2 :size="11" /> {{ formatRelativeTime(route.LastResolveAt) }}
                   </div>
                 </template>
-                <template v-else>
+                <div
+                  v-else
+                  class="flex items-center gap-1"
+                >
                   <Input
                     v-model="route.Address"
                     placeholder="10.0.0.0"
-                    class="w-36 inline-block font-mono"
+                    class="h-8 text-xs font-mono flex-1 min-w-0"
                   />
-                  <span class="text-muted-foreground mx-1">/</span>
+                  <span class="text-muted-foreground text-xs shrink-0">/</span>
                   <Input
                     v-model="route.Mask"
                     placeholder="255.255.255.0"
-                    class="w-36 inline-block font-mono"
+                    class="h-8 text-xs font-mono flex-1 min-w-0"
                   />
-                </template>
+                </div>
               </td>
-              <td class="px-3 py-2.5">
+              <td class="px-2 py-2">
                 <Input
                   v-model="route.Description"
                   placeholder="Описание"
-                  class="text-sm"
+                  class="h-8 text-xs"
                 />
               </td>
-              <td class="px-3 py-2.5">
+              <td class="px-2 py-2">
                 <button
                   type="button"
-                  class="h-8 w-8 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                  class="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                   title="Удалить"
                   @click="removeRoute(i)"
                 >
-                  <Trash2 :size="15" />
+                  <Trash2 :size="13" />
                 </button>
               </td>
             </tr>
-          </tbody>
-        </table>
-      </div>
+          </template>
+        </DataTable>
 
-      <!-- Bulk import: one entry per line; comments (#) and empty lines ignored -->
-      <details class="rounded-lg border border-border bg-muted/20 p-3">
-        <summary class="cursor-pointer text-sm font-medium select-none">
-          Импорт из файла (по строке на запись)
-        </summary>
-        <div class="mt-2 space-y-2">
+        <!-- Inline bulk import: hidden by default, toggled by the "Импорт ▾" button above. -->
+        <div
+          v-if="showImport"
+          class="space-y-2 pt-3 border-t border-border"
+        >
+          <p class="text-xs text-muted-foreground">
+            По строке на запись. Комментарии (#) и пустые строки игнорируются. Поддерживаются: домены, IP/CIDR, IP+маска.
+          </p>
           <textarea
             v-model="importText"
-            rows="6"
+            rows="5"
             placeholder="example.com&#10;10.0.0.0/24&#10;1.2.3.4 255.255.255.255&#10;1.1.1.1"
             class="w-full font-mono text-xs rounded-md border border-border bg-background px-2 py-1.5"
           />
-          <div class="flex gap-2 items-center">
-            <input
-              ref="importFileRef"
-              type="file"
-              accept=".txt,.csv,.list,text/plain"
-              class="text-xs"
-              @change="onImportFile"
-            >
+          <div class="flex gap-2 items-center flex-wrap">
+            <!-- Native file input is hidden; click bubbles from the styled label.
+                 importFileName is set in onImportFile so the operator sees what
+                 they selected (otherwise the chosen file is invisible). -->
+            <label class="inline-flex items-center gap-2 h-8 px-3 text-xs font-medium rounded-md border border-border bg-background hover:bg-accent cursor-pointer transition-colors">
+              <Upload :size="12" />
+              <span>{{ importFileName || 'Выбрать файл' }}</span>
+              <input
+                ref="importFileRef"
+                type="file"
+                accept=".txt,.csv,.list,text/plain"
+                class="sr-only"
+                @change="onImportFile"
+              >
+            </label>
             <Button
               size="sm"
               variant="secondary"
@@ -440,7 +672,7 @@ function formatRelativeTime(iso) {
             </div>
           </div>
         </div>
-      </details>
+      </div>
 
       <div
         v-if="validationError"
@@ -457,6 +689,7 @@ function formatRelativeTime(iso) {
     </div>
     <template #footer>
       <Button
+        size="sm"
         variant="ghost"
         :disabled="submitting"
         @click="onClose"
@@ -465,6 +698,7 @@ function formatRelativeTime(iso) {
       </Button>
       <Button
         v-if="hasDomainRoutes"
+        size="sm"
         variant="secondary"
         :disabled="submitting"
         @click="emit('refresh-dns', username)"
@@ -472,6 +706,7 @@ function formatRelativeTime(iso) {
         Обновить DNS
       </Button>
       <Button
+        size="sm"
         :loading="submitting"
         :disabled="submitting"
         @click="submitCcd"

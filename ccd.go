@@ -32,6 +32,7 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 	ccd.User = username
 	ccd.ClientAddress = "dynamic"
 	ccd.CustomRoutes = []ccdRoute{}
+	ccd.RedirectGatewayExclusions = []Subnet{}
 
 	var txtLinesArray []string
 	ccdContent := oAdmin.store.GetCcd(ccd.User)
@@ -54,6 +55,33 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 		case strings.HasPrefix(str[0], "ifconfig-push"):
 			ccd.ClientAddress = str[1]
 		case strings.HasPrefix(str[0], "push"):
+			// Order of marker checks matters: redirect-gateway and exclusion
+			// markers must be detected BEFORE the generic route parse below,
+			// otherwise "route X Y net_gateway" lines would be mis-stored as
+			// CustomRoutes (with "net_gateway" as their description!).
+			if strings.Contains(v, "# __redirect_gateway__") {
+				ccd.RedirectGateway = true
+				continue
+			}
+			// Global exclusions live only in ServerConfig — we re-merge them
+			// at render time, so swallow the marker on round-trip rather than
+			// duplicating them into the per-user list.
+			if strings.Contains(v, "# __exclusion_global__") {
+				continue
+			}
+			if idx := strings.Index(v, "# __exclusion_user__"); idx >= 0 {
+				// Format: push "route ADDR MASK net_gateway" # __exclusion_user__ Description...
+				// We need at least 5 fields after `push` to have ADDR + MASK + net_gateway.
+				if len(str) >= 5 {
+					addr := strings.Trim(str[2], "\"")
+					mask := strings.Trim(str[3], "\"")
+					desc := strings.TrimSpace(v[idx+len("# __exclusion_user__"):])
+					ccd.RedirectGatewayExclusions = append(ccd.RedirectGatewayExclusions, Subnet{
+						Address: addr, Mask: mask, Description: desc,
+					})
+				}
+				continue
+			}
 			if strings.Contains(v, "# __common__:") {
 				continue
 			}
@@ -113,6 +141,22 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 	// PUSH_REPLY grows past its 1k limit at scale.
 	ccd.MergedPushRoutes = mergePushRoutes(ccd.CustomRoutes, ccd.CommonRoutes)
 
+	// Build the union of global default exclusions and per-user extras.
+	// Globals come from ServerConfig at render time (not stored in the CCD
+	// file), so changing the global list rerenders without touching users.
+	// When the server-wide RedirectGateway flag is on, treat every user as
+	// full-tunnel even if their per-user flag is off — matches the
+	// historical semantics of the global toggle as a "force everyone" knob.
+	if oAdmin.serverConfigStore != nil {
+		cfg := oAdmin.serverConfigStore.snapshot()
+		if cfg.RedirectGateway {
+			ccd.RedirectGateway = true
+		}
+		ccd.MergedExclusions = mergeExclusions(cfg.RedirectGatewayExclusions, ccd.RedirectGatewayExclusions)
+	} else {
+		ccd.MergedExclusions = mergeExclusions(nil, ccd.RedirectGatewayExclusions)
+	}
+
 	t := oAdmin.getCcdTemplate()
 	var tmp bytes.Buffer
 	if err := t.Execute(&tmp, ccd); err != nil {
@@ -141,6 +185,47 @@ type pushRoute struct {
 // route and returns one pushRoute per unique (Address, Mask) pair.
 // Domain routes expand to their resolved IP set; the original list
 // order is preserved so the file stays diff-friendly between renders.
+// mergeExclusions walks the global + per-user exclusion lists and returns
+// one renderedExclusion per unique (Address, Mask) pair. The Source field
+// carries the origin marker so parseCcd can route per-user entries back
+// to Ccd.RedirectGatewayExclusions while ignoring global ones (those are
+// always re-read from ServerConfig at render time).
+//
+// Order: globals first (deterministic for diff-friendliness), then per-user
+// extras. A duplicate (e.g. user re-adds 192.168.0.0/16 which is already
+// global) is collapsed onto the first occurrence with a combined source
+// comment, just like mergePushRoutes does for routes.
+func mergeExclusions(global, user []Subnet) []renderedExclusion {
+	type key struct{ a, m string }
+	seen := map[key]int{}
+	out := []renderedExclusion{}
+	add := func(s Subnet, marker string) {
+		if s.Address == "" || s.Mask == "" {
+			return
+		}
+		k := key{s.Address, s.Mask}
+		src := marker
+		if d := strings.TrimSpace(s.Description); d != "" {
+			src = marker + " " + d
+		}
+		if idx, ok := seen[k]; ok {
+			if !strings.Contains(out[idx].Source, marker) {
+				out[idx].Source += "," + src
+			}
+			return
+		}
+		seen[k] = len(out)
+		out = append(out, renderedExclusion{Address: s.Address, Mask: s.Mask, Source: src})
+	}
+	for _, s := range global {
+		add(s, "__exclusion_global__")
+	}
+	for _, s := range user {
+		add(s, "__exclusion_user__")
+	}
+	return out
+}
+
 func mergePushRoutes(custom []ccdRoute, common []ccdCommonRoute) []pushRoute {
 	type srcKey struct{ a, m string }
 	seen := map[srcKey]int{} // key → index into out
@@ -404,6 +489,13 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 			}
 		default:
 			ccdErr = fmt.Sprintf("CustomRoute.Kind %q is invalid (expected ip|domain)", route.Kind)
+			return false, ccdErr
+		}
+	}
+
+	for i, e := range ccd.RedirectGatewayExclusions {
+		if err := validateSubnet(e); err != nil {
+			ccdErr = fmt.Sprintf("RedirectGatewayExclusions[%d]: %v", i, err)
 			return false, ccdErr
 		}
 	}

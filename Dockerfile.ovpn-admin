@@ -11,7 +11,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=frontend-builder /app/static ./frontend/static
-RUN env CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+# TARGETARCH is auto-set by BuildKit from --platform (defaults to host arch
+# when no platform flag is passed). The ":-amd64" fallback covers the rare
+# case where the builder doesn't set it. On Apple Silicon local builds this
+# becomes arm64 so the binary doesn't fail cross-compile via gcc -m64.
+ARG TARGETARCH
+RUN env CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
     go build -a -tags netgo -ldflags '-linkmode external -extldflags -static -s -w' \
     -o ovpn-admin
 

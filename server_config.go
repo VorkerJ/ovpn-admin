@@ -85,6 +85,13 @@ type ServerConfig struct {
 	DNSServers      []string `json:"dns_servers"`
 	PushExtra       []string `json:"push_extra"`
 
+	// RedirectGatewayExclusions — default LAN/CGNAT subnets that bypass the
+	// VPN even when full-tunnel (redirect-gateway) is enabled for a user.
+	// Applied to every user with Ccd.RedirectGateway = true, on top of any
+	// per-user exclusions. Defaults to the RFC1918 + link-local set so home
+	// LAN access (printer, NAS, router admin) keeps working out of the box.
+	RedirectGatewayExclusions []Subnet `json:"redirect_gateway_exclusions"`
+
 	// Advanced
 	CustomDirectives []string `json:"custom_directives"`
 
@@ -125,36 +132,42 @@ type ServerConfigResponse struct {
 // до явного сохранения создание пользователей будет заблокировано.
 func defaultServerConfig() ServerConfig {
 	return ServerConfig{
-		Proto:             "tcp",
-		Port:              1194,
-		Network:           "172.16.100.0",
-		NetworkMask:       "255.255.255.0",
-		TunMTU:            1500,
-		MssFix:            1450,
-		DataCiphers:       []string{"AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"},
-		TLSVersionMin:     "1.2",
-		TLSAuthMode:       "tls-auth",
+		Proto:         "tcp",
+		Port:          1194,
+		Network:       "172.16.100.0",
+		NetworkMask:   "255.255.255.0",
+		TunMTU:        1500,
+		MssFix:        1450,
+		DataCiphers:   []string{"AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"},
+		TLSVersionMin: "1.2",
+		TLSAuthMode:   "tls-auth",
 		// DCOEnabled opts in to `data-channel-offload`. Default off because
 		// the official Alpine `openvpn` package is built WITHOUT DCO and
 		// will refuse to start the server config. Operators who run a
 		// DCO-enabled binary can toggle this on via the server-config UI.
-		DCOEnabled:        false,
+		DCOEnabled: false,
 		// MgmtClientAuth=true is the safer default: every connect is gated
 		// by ovpn-admin so revocation/policy changes take effect immediately
 		// without waiting for CRL refresh on the client side.
 		MgmtClientAuth:             true,
 		DomainRefreshIntervalHours: 24,
 		KeepaliveInterval:          10,
-		KeepaliveTimeout:  60,
-		MaxClients:        0,
-		ClientToClient:    true,
-		DuplicateCN:       true,
-		Compression:       "",
-		Verb:              3,
-		RedirectGateway:   false,
-		DNSServers:        []string{"1.1.1.1", "8.8.8.8"},
-		PushExtra:         []string{},
-		CustomDirectives:  []string{},
+		KeepaliveTimeout:           60,
+		MaxClients:                 0,
+		ClientToClient:             true,
+		DuplicateCN:                true,
+		Compression:                "",
+		Verb:                       3,
+		RedirectGateway:            false,
+		DNSServers:                 []string{"1.1.1.1", "8.8.8.8"},
+		PushExtra:                  []string{},
+		CustomDirectives:           []string{},
+		RedirectGatewayExclusions: []Subnet{
+			{Address: "192.168.0.0", Mask: "255.255.0.0", Description: "Home/office LAN"},
+			{Address: "10.0.0.0", Mask: "255.0.0.0", Description: "Private 10/8"},
+			{Address: "172.16.0.0", Mask: "255.240.0.0", Description: "Private 172.16/12 + Docker"},
+			{Address: "169.254.0.0", Mask: "255.255.0.0", Description: "Link-local / mDNS"},
+		},
 	}
 }
 
@@ -176,6 +189,15 @@ func (s *serverConfigStore) snapshot() ServerConfig {
 	out.DNSServers = cloneStringsNonNil(s.cfg.DNSServers)
 	out.PushExtra = cloneStringsNonNil(s.cfg.PushExtra)
 	out.CustomDirectives = cloneStringsNonNil(s.cfg.CustomDirectives)
+	out.RedirectGatewayExclusions = cloneSubnetsNonNil(s.cfg.RedirectGatewayExclusions)
+	return out
+}
+
+// cloneSubnetsNonNil — deep-copy that guarantees non-nil result so
+// JSON round-trips return [] instead of null for an empty list.
+func cloneSubnetsNonNil(in []Subnet) []Subnet {
+	out := make([]Subnet, len(in))
+	copy(out, in)
 	return out
 }
 
@@ -210,6 +232,9 @@ func normalizeServerConfig(cfg *ServerConfig) {
 	}
 	if cfg.CustomDirectives == nil {
 		cfg.CustomDirectives = []string{}
+	}
+	if cfg.RedirectGatewayExclusions == nil {
+		cfg.RedirectGatewayExclusions = []Subnet{}
 	}
 }
 
@@ -324,6 +349,68 @@ func validateServerConfig(cfg ServerConfig) error {
 		if err := validateDirectiveLine(line); err != nil {
 			return fmt.Errorf("push_extra: %w", err)
 		}
+	}
+	for i, s := range cfg.RedirectGatewayExclusions {
+		if err := validateSubnet(s); err != nil {
+			return fmt.Errorf("redirect_gateway_exclusions[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// validateSubnet enforces:
+//   - Address parses as IPv4
+//   - Mask parses as a contiguous IPv4 netmask (e.g. 255.255.0.0, NOT 255.0.255.0)
+//   - Address has no host bits set under Mask (canonical network form)
+//   - Description has no shell/template-injection vectors (newlines, double quotes)
+//   - Description length cap matching existing route-description policy
+func validateSubnet(s Subnet) error {
+	ip := net.ParseIP(s.Address)
+	if ip == nil {
+		return fmt.Errorf("address %q is not a valid IP", s.Address)
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return fmt.Errorf("address %q must be IPv4 (IPv6 not supported)", s.Address)
+	}
+	mip := net.ParseIP(s.Mask)
+	if mip == nil {
+		return fmt.Errorf("mask %q is not a valid IP", s.Mask)
+	}
+	mv4 := mip.To4()
+	if mv4 == nil {
+		return fmt.Errorf("mask %q must be IPv4 dotted-quad", s.Mask)
+	}
+	mask := net.IPv4Mask(mv4[0], mv4[1], mv4[2], mv4[3])
+	ones, bits := mask.Size()
+	if bits == 0 {
+		return fmt.Errorf("mask %q is not a contiguous network mask", s.Mask)
+	}
+	// Reject host bits in Address: 192.168.0.5/16 → must be 192.168.0.0/16.
+	// This catches a common operator mistake that OpenVPN itself silently
+	// ignores (it ANDs with the mask), making debugging easier later.
+	network := v4.Mask(mask)
+	if !network.Equal(v4) {
+		return fmt.Errorf("address %q has host bits set under mask %q (canonical form: %s)", s.Address, s.Mask, network.String())
+	}
+	if ones < 0 || ones > 32 {
+		return fmt.Errorf("mask %q out of range", s.Mask)
+	}
+	if strings.ContainsAny(s.Description, "\n\r") {
+		return fmt.Errorf("description must not contain newlines")
+	}
+	if strings.Contains(s.Description, `"`) {
+		return fmt.Errorf("description must not contain double quotes")
+	}
+	// NUL byte would truncate the comment in OpenVPN's C-string parser
+	// (the comment ends at the first \x00), making rendered configs hard
+	// to read. Defensive reject — operator should never need a NUL in a
+	// human-readable label.
+	if strings.ContainsAny(s.Description, "\x00") {
+		return fmt.Errorf("description must not contain NUL bytes")
+	}
+	if len(s.Description) > 200 {
+		return fmt.Errorf("description too long (max 200 chars)")
 	}
 	return nil
 }
@@ -486,6 +573,7 @@ func categorizeChanges(old, new ServerConfig) string {
 		// every save forces a clean reload so existing sessions pick up the
 		// new push config without manual disconnect.
 		old.RedirectGateway != new.RedirectGateway ||
+		!reflect.DeepEqual(old.RedirectGatewayExclusions, new.RedirectGatewayExclusions) ||
 		!reflect.DeepEqual(old.DNSServers, new.DNSServers) ||
 		!reflect.DeepEqual(old.PushExtra, new.PushExtra) ||
 		!reflect.DeepEqual(old.CustomDirectives, new.CustomDirectives) ||
@@ -526,6 +614,18 @@ func deserializeServerConfig(data []byte) (ServerConfig, error) {
 	var cfg ServerConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return ServerConfig{}, err
+	}
+	// Migration for upgrades from pre-v2.0.17: distinguish "field missing"
+	// (old config — apply RFC1918 defaults so home LAN keeps working when
+	// the operator first enables full-tunnel) from "field present but empty"
+	// (operator deliberately cleared the list — respect that).
+	// We do this by peeking at the raw JSON before normalizeServerConfig
+	// collapses both cases to an empty slice.
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawMap); err == nil {
+		if _, present := rawMap["redirect_gateway_exclusions"]; !present {
+			cfg.RedirectGatewayExclusions = defaultServerConfig().RedirectGatewayExclusions
+		}
 	}
 	normalizeServerConfig(&cfg)
 	return cfg, nil
@@ -788,11 +888,28 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 		// инициализированный — это и есть сигнал "admin осознанно настроил сервер".
 		cfg.Initialized = true
 		updatedBy := "admin"
+		// Capture before apply so we can tell whether CCDs need rerendering
+		// (global redirect-gateway exclusions are pulled into every CCD at
+		// render time; changing them requires a rewrite + kick to take effect).
+		preExclusions := oAdmin.serverConfigStore.snapshot().RedirectGatewayExclusions
+		preGlobalRedirect := oAdmin.serverConfigStore.snapshot().RedirectGateway
 		kind, err := oAdmin.serverManager.apply(r.Context(), cfg, updatedBy)
 		if err != nil {
 			log.Errorf("server-config: apply: %v", err)
 			writeJSONError(w, http.StatusBadRequest, "failed to apply server config")
 			return
+		}
+		if !reflect.DeepEqual(preExclusions, cfg.RedirectGatewayExclusions) || preGlobalRedirect != cfg.RedirectGateway {
+			// Run in background so the API response isn't blocked by render+kick
+			// of every user. The user is forced to reconnect anyway by the hard
+			// reload that apply() already triggered for push-affecting changes.
+			go func() {
+				var expanded []ccdCommonRoute
+				if oAdmin.commonRoutes != nil {
+					expanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
+				}
+				oAdmin.rerenderAllCcds(expanded)
+			}()
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"config":      oAdmin.serverConfigStore.snapshot(),

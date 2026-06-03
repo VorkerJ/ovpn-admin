@@ -9,7 +9,7 @@ import { useToast } from '@/composables/useToast'
 import {
   fetchServerConfig, updateServerConfig, fetchServerConfigDefaults,
 } from '@/api.js'
-import { Save, RotateCcw, AlertTriangle, CheckCircle2 } from 'lucide-vue-next'
+import { Save, RotateCcw, AlertTriangle, CheckCircle2, Plus, X } from 'lucide-vue-next'
 
 // saved — успешное сохранение конфига; App.vue использует это чтобы
 // перечитать /api/server/settings и убрать баннер "сервер не настроен".
@@ -83,13 +83,54 @@ function toggleCipher(c) {
   else cfg.value.data_ciphers.splice(idx, 1)
 }
 
+const newExclusion = ref({ address: '', mask: '', description: '' })
+const exclusionError = ref('')
+
+function exclusions() {
+  if (!cfg.value) return []
+  if (!Array.isArray(cfg.value.redirect_gateway_exclusions)) {
+    cfg.value.redirect_gateway_exclusions = []
+  }
+  return cfg.value.redirect_gateway_exclusions
+}
+
+function addExclusion() {
+  exclusionError.value = ''
+  const a = (newExclusion.value.address || '').trim()
+  const m = (newExclusion.value.mask || '').trim()
+  if (!ipPattern.test(a)) { exclusionError.value = `Неверный IP: "${a}"`; return }
+  if (!ipPattern.test(m)) { exclusionError.value = `Неверная маска: "${m}"`; return }
+  const list = exclusions()
+  if (list.some(e => e.address === a && e.mask === m)) {
+    exclusionError.value = 'Такая подсеть уже есть'
+    return
+  }
+  list.push({
+    address: a,
+    mask: m,
+    description: (newExclusion.value.description || '').trim(),
+  })
+  newExclusion.value = { address: '', mask: '', description: '' }
+}
+
+function removeExclusion(i) {
+  exclusions().splice(i, 1)
+}
+
 onMounted(reload)
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="flex items-start justify-between">
-      <div>
+  <div class="space-y-4 pb-16">
+    <!--
+      Sticky header keeps Save + Reset visible regardless of how far the
+      operator has scrolled down through the form sections. Previously the
+      buttons sat at the top only, so editing "Дополнительно" (which is at
+      the bottom of a long page) left the operator searching for how to
+      commit their edits.
+    -->
+    <div class="sticky top-14 z-20 -mx-6 px-6 py-3 bg-background/95 backdrop-blur-sm border-b border-border flex items-start justify-between gap-3">
+      <div class="min-w-0">
         <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">
           Сервер
         </p>
@@ -98,7 +139,7 @@ onMounted(reload)
           часть требует перезапуска openvpn-процесса (port, proto, MTU, шифр, DCO).
         </p>
       </div>
-      <div class="flex gap-2">
+      <div class="flex gap-2 shrink-0">
         <Button
           variant="secondary"
           size="sm"
@@ -411,6 +452,66 @@ onMounted(reload)
             placeholder="route 10.0.0.0 255.0.0.0"
           />
         </div>
+      </SectionCard>
+
+      <SectionCard
+        title="Исключения для full-tunnel"
+        description="Подсети, которые идут МИМО VPN при включённом full-tunnel (домашняя LAN, корп. сети)."
+        :default-open="false"
+      >
+        <div
+          v-if="exclusions().length > 0"
+          class="flex flex-wrap gap-1.5"
+        >
+          <span
+            v-for="(e, i) in exclusions()"
+            :key="`${e.address}/${e.mask}/${i}`"
+            class="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-background border border-border text-xs"
+          >
+            <span class="font-mono">{{ e.address }}/{{ e.mask }}</span>
+            <span
+              v-if="e.description"
+              class="text-muted-foreground"
+            >· {{ e.description }}</span>
+            <button
+              type="button"
+              class="text-muted-foreground hover:text-foreground transition-colors"
+              :title="`Удалить ${e.address}/${e.mask}`"
+              @click="removeExclusion(i)"
+            >
+              <X :size="11" />
+            </button>
+          </span>
+        </div>
+        <div class="flex gap-1.5 flex-wrap items-center pt-2 border-t border-border">
+          <Input
+            v-model="newExclusion.address"
+            placeholder="192.168.0.0"
+            class="w-32 font-mono h-8 text-xs"
+          />
+          <Input
+            v-model="newExclusion.mask"
+            placeholder="255.255.0.0"
+            class="w-32 font-mono h-8 text-xs"
+          />
+          <Input
+            v-model="newExclusion.description"
+            placeholder="Описание"
+            class="flex-1 min-w-[120px] h-8 text-xs"
+          />
+          <Button
+            class="h-8"
+            @click="addExclusion"
+          >
+            <Plus :size="12" />
+          </Button>
+        </div>
+        <p
+          v-if="exclusionError"
+          class="text-xs text-destructive flex items-center gap-1"
+        >
+          <AlertTriangle :size="12" /> {{ exclusionError }}
+        </p>
       </SectionCard>
 
       <SectionCard

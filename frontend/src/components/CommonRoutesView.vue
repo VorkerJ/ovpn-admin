@@ -1,6 +1,6 @@
 <!-- frontend/src/components/CommonRoutesView.vue -->
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import Input from '@/components/ui/Input.vue'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
@@ -13,6 +13,8 @@ import {
 import {
   Globe, Network, RefreshCw, Plus, Pencil, Trash2,
   CheckCircle2, AlertTriangle, CornerDownRight,
+  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
+  Search, X,
 } from 'lucide-vue-next'
 
 const emit = defineEmits(['mfa-required'])
@@ -52,6 +54,56 @@ const newRoute = ref({ address: '', mask: '', domain: '', description: '' })
 const formError = ref('')
 
 const editing = ref(null) // route obj or null
+
+// Search filter — matches against domain, address/mask, and description so
+// the operator can find a route by whatever they remember.
+const search = ref('')
+const filteredRoutes = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return routes.value
+  return routes.value.filter(r => {
+    if (r.domain && r.domain.toLowerCase().includes(q)) return true
+    if (r.address && r.address.toLowerCase().includes(q)) return true
+    if (r.mask && r.mask.toLowerCase().includes(q)) return true
+    if (r.description && r.description.toLowerCase().includes(q)) return true
+    if (r.resolved_ips && r.resolved_ips.some(ip => ip.includes(q))) return true
+    return false
+  })
+})
+
+watch(search, () => { currentPage.value = 1 })
+
+// Pagination — same shape as the users table for visual consistency.
+// Page size lives in localStorage so the operator's preferred density
+// survives a reload. 25 rows is a sane desktop default.
+const pageSize = ref(parseInt(localStorage.getItem('commonRoutesPageSize')) || 25)
+const currentPage = ref(1)
+
+watch(pageSize, (v) => {
+  localStorage.setItem('commonRoutesPageSize', String(v))
+  currentPage.value = 1
+})
+
+const totalPages = computed(() =>
+  Math.max(1, Math.ceil(filteredRoutes.value.length / pageSize.value))
+)
+
+watch(totalPages, (tp) => {
+  if (currentPage.value > tp) currentPage.value = tp
+})
+
+const paginatedRoutes = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredRoutes.value.slice(start, start + pageSize.value)
+})
+
+const visibleRange = computed(() => {
+  const total = filteredRoutes.value.length
+  if (total === 0) return { start: 0, end: 0, total: 0 }
+  const start = (currentPage.value - 1) * pageSize.value + 1
+  const end = Math.min(start + pageSize.value - 1, total)
+  return { start, end, total }
+})
 
 const { toast: _toast } = useToast()
 function notify(title, variant = 'default') {
@@ -109,11 +161,24 @@ async function addRoute() {
       emit('mfa-required')
       resetForm()
     } else {
-      formError.value = msg
+      formError.value = translateError(msg)
     }
   } finally {
     submitting.value = false
   }
+}
+
+// translateError maps known English backend error strings to Russian for
+// the form-level inline message. Anything not in the map falls through
+// unchanged so we don't accidentally hide useful detail from new errors.
+function translateError(msg) {
+  const m = String(msg).toLowerCase()
+  if (m.includes('duplicate')) return 'Такой маршрут уже есть'
+  if (m.includes('invalid ip')) return 'Неверный формат IP'
+  if (m.includes('invalid mask')) return 'Неверный формат маски'
+  if (m.includes('invalid domain') || m.includes('not a valid hostname')) return 'Неверный формат домена'
+  if (m.includes('resolve')) return `Не удалось зарезолвить домен: ${msg}`
+  return msg
 }
 
 async function removeRoute(id) {
@@ -292,35 +357,44 @@ onMounted(reload)
     <!-- Add form -->
     <div class="rounded-lg border border-border bg-card p-4 space-y-3">
       <div class="flex items-center gap-3">
-        <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Тип маршрута:</span>
+        <span class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Тип:</span>
         <div class="inline-flex border border-border rounded-md overflow-hidden bg-background">
           <button
             type="button"
             :class="[
-              'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium transition-colors',
+              'inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium transition-colors',
               newKind === 'ip'
                 ? 'bg-primary text-primary-foreground'
                 : 'text-foreground hover:bg-accent'
             ]"
             @click="newKind = 'ip'"
           >
-            <Network :size="14" /> IP / маска
+            <Network :size="12" /> IP / маска
           </button>
           <button
             type="button"
             :class="[
-              'inline-flex items-center gap-2 h-8 px-3 text-sm font-medium border-l border-border transition-colors',
+              'inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium border-l border-border transition-colors',
               newKind === 'domain'
                 ? 'bg-primary text-primary-foreground'
                 : 'text-foreground hover:bg-accent'
             ]"
             @click="newKind = 'domain'"
           >
-            <Globe :size="14" /> Домен
+            <Globe :size="12" /> Домен
           </button>
         </div>
       </div>
-      <div class="flex gap-2 flex-wrap items-start">
+      <!-- items-center so the Add button baseline aligns with the input row
+           (items-start left the button visually "drifting" higher because the
+           inputs have an internal label-line offset). -->
+      <!-- @submit.prevent on the form so pressing Enter in any input commits
+           the add action without reloading the page. Native form submission
+           is also the cleanest accessibility story (keyboard-only operators). -->
+      <form
+        class="flex gap-2 flex-wrap items-center"
+        @submit.prevent="addRoute"
+      >
         <template v-if="newKind === 'ip'">
           <Input
             v-model="newRoute.address"
@@ -344,10 +418,14 @@ onMounted(reload)
           placeholder="Описание (опционально)"
           class="flex-1 min-w-[200px]"
         />
+        <!-- size="sm" maps to h-8; combined with the inputs (default h-9)
+             would still mismatch. The Button component honours an explicit
+             class override, so we pin h-9 + matching padding directly here. -->
         <Button
+          type="submit"
           :loading="submitting"
           :disabled="submitting"
-          @click="addRoute"
+          class="h-9 px-4 shrink-0"
         >
           <Plus
             v-if="!submitting"
@@ -355,7 +433,7 @@ onMounted(reload)
           />
           {{ submitting ? 'Добавляем' : 'Добавить' }}
         </Button>
-      </div>
+      </form>
       <div
         v-if="formError"
         class="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive"
@@ -364,11 +442,38 @@ onMounted(reload)
       </div>
     </div>
 
-    <!-- Table -->
-    <div class="rounded-lg border border-border bg-card overflow-hidden">
+    <!-- Search bar — filters by domain, address/mask, description, and any
+         resolved IP so the operator finds a route by whatever they recall. -->
+    <div class="flex justify-end">
+      <div class="relative">
+        <Search
+          :size="14"
+          class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+        />
+        <input
+          v-model="search"
+          placeholder="Поиск (домен, IP, описание)…"
+          class="h-9 w-72 rounded-md border border-border bg-background pl-9 pr-8 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring focus:border-ring transition-colors"
+        >
+        <button
+          v-if="search"
+          type="button"
+          class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          title="Очистить"
+          @click="search = ''"
+        >
+          <X :size="14" />
+        </button>
+      </div>
+    </div>
+
+    <!-- Table — sticky thead. top-14 matches the global AppHeader height so
+         the column headers pin directly under it during page scroll, the
+         same pattern used by UsersTable. -->
+    <div class="rounded-lg border border-border bg-card overflow-visible">
       <table class="w-full text-sm">
-        <thead>
-          <tr class="bg-muted/40 border-b border-border">
+        <thead class="sticky top-14 z-10">
+          <tr class="bg-muted/95 backdrop-blur-sm border-b border-border">
             <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-28">
               Тип
             </th>
@@ -401,8 +506,16 @@ onMounted(reload)
               Пока нет общих маршрутов. Добавьте первый, чтобы все пользователи могли к нему попасть.
             </td>
           </tr>
+          <tr v-else-if="filteredRoutes.length === 0">
+            <td
+              colspan="5"
+              class="px-4 py-12 text-center text-sm text-muted-foreground"
+            >
+              По запросу «{{ search }}» ничего не найдено
+            </td>
+          </tr>
           <tr
-            v-for="r in routes"
+            v-for="r in paginatedRoutes"
             :key="r.id"
             class="border-b border-border last:border-0 align-top hover:bg-muted/30 transition-colors"
           >
@@ -490,6 +603,82 @@ onMounted(reload)
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Pagination — page-size selector + visible-range counter on the left,
+         page navigation on the right. Same layout as the users table. -->
+    <div
+      v-if="routes.length > 0"
+      class="flex items-center justify-between gap-3 mt-3 flex-wrap"
+    >
+      <div class="flex items-center gap-3 text-xs text-muted-foreground tabular">
+        <div class="inline-flex items-center gap-2">
+          <span>На странице:</span>
+          <select
+            v-model.number="pageSize"
+            class="h-8 rounded-md border border-border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option :value="10">
+              10
+            </option>
+            <option :value="25">
+              25
+            </option>
+            <option :value="50">
+              50
+            </option>
+            <option :value="100">
+              100
+            </option>
+          </select>
+        </div>
+        <span class="text-muted-foreground/60">·</span>
+        <span>
+          Показано <span class="font-medium text-foreground">{{ visibleRange.start }}–{{ visibleRange.end }}</span>
+          из <span class="font-medium text-foreground">{{ visibleRange.total }}</span>
+        </span>
+      </div>
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          class="h-8 w-8 inline-flex items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-background"
+          :disabled="currentPage === 1"
+          title="Первая страница"
+          @click="currentPage = 1"
+        >
+          <ChevronsLeft :size="14" />
+        </button>
+        <button
+          type="button"
+          class="h-8 w-8 inline-flex items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-background"
+          :disabled="currentPage === 1"
+          title="Предыдущая страница"
+          @click="currentPage--"
+        >
+          <ChevronLeft :size="14" />
+        </button>
+        <span class="px-3 text-xs text-muted-foreground tabular">
+          Стр. <span class="font-medium text-foreground">{{ currentPage }}</span> из <span class="font-medium text-foreground">{{ totalPages }}</span>
+        </span>
+        <button
+          type="button"
+          class="h-8 w-8 inline-flex items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-background"
+          :disabled="currentPage >= totalPages"
+          title="Следующая страница"
+          @click="currentPage++"
+        >
+          <ChevronRight :size="14" />
+        </button>
+        <button
+          type="button"
+          class="h-8 w-8 inline-flex items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-background"
+          :disabled="currentPage >= totalPages"
+          title="Последняя страница"
+          @click="currentPage = totalPages"
+        >
+          <ChevronsRight :size="14" />
+        </button>
+      </div>
     </div>
 
     <CommonRouteModal
