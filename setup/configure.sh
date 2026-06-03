@@ -23,6 +23,41 @@ else
 fi
 easyrsa gen-crl
 
+# Wait for ovpn-admin to render the dynamic server.conf, then derive the VPN
+# subnet from it instead of trusting the env var. The env var is read once at
+# container start and never updated when the operator changes the subnet via
+# the admin UI; reading server.conf at apply time lets us stay correct across
+# restarts even when env and JSON config drift apart.
+ensure_masquerade() {
+  local conf="/etc/openvpn-dynamic/server.conf"
+  if [ ! -f "$conf" ]; then
+    return
+  fi
+  # Format: "server NETWORK NETMASK"
+  local line net mask
+  line=$(grep -E "^server [0-9]" "$conf" | head -1)
+  if [ -z "$line" ]; then
+    return
+  fi
+  net=$(echo "$line" | awk '{print $2}')
+  mask=$(echo "$line" | awk '{print $3}')
+  if [ -z "$net" ] || [ -z "$mask" ]; then
+    return
+  fi
+  # Strip any prior MASQUERADE rules matching our "-s X ! -d X" shape (so
+  # Docker bridge MASQUERADE stays untouched), then install the right one.
+  iptables-save -t nat 2>/dev/null | awk '/^-A POSTROUTING.*! -d.*-j MASQUERADE/ {gsub("^-A","-D"); print}' \
+    | while read -r rule; do
+        # shellcheck disable=SC2086
+        iptables -t nat $rule 2>/dev/null || true
+      done
+  iptables -t nat -A POSTROUTING -s "${net}/${mask}" ! -d "${net}/${mask}" -j MASQUERADE \
+    || echo "WARN: iptables MASQUERADE failed (Docker Desktop?). VPN clients won't have internet access."
+}
+
+# Fallback for the env-driven path (used before ovpn-admin renders server.conf
+# for the first time). Will be replaced by ensure_masquerade below as soon as
+# server.conf exists.
 iptables -t nat -D POSTROUTING -s ${OVPN_SRV_NET}/${OVPN_SRV_MASK} ! -d ${OVPN_SRV_NET}/${OVPN_SRV_MASK} -j MASQUERADE || true
 iptables -t nat -A POSTROUTING -s ${OVPN_SRV_NET}/${OVPN_SRV_MASK} ! -d ${OVPN_SRV_NET}/${OVPN_SRV_MASK} -j MASQUERADE || echo "WARN: iptables MASQUERADE failed (Docker Desktop?). VPN clients won't have internet access."
 
@@ -79,5 +114,11 @@ echo "Waiting for ovpn-admin to render server.conf..."
 until [ -f /etc/openvpn-dynamic/server.conf ]; do
   sleep 1
 done
+
+# Now that ovpn-admin has rendered server.conf, replace the env-derived
+# MASQUERADE with one matching whatever subnet the JSON config actually
+# specified. Idempotent — re-runs on next container restart pick up any
+# UI subnet change.
+ensure_masquerade
 
 exec openvpn --config /etc/openvpn-dynamic/server.conf

@@ -303,16 +303,11 @@ func main() {
 			log.Infof("server-config: rendered initial config to %s", *serverConfigPath)
 		}
 
-		// Reconcile MASQUERADE so the rule in iptables matches the VPN
-		// subnet we just rendered into server.conf. configure.sh in the
-		// openvpn-image installs MASQUERADE from OVPN_SERVER_NET env at
-		// container start, but env values lag behind UI saves — so on
-		// every ovpn-admin start we re-assert the rule for whatever
-		// subnet the persisted JSON config has, and let apply() handle
-		// future changes.
-		if err := reconcileMasquerade(initial.Network, initial.NetworkMask); err != nil {
-			log.Warnf("server-config: startup masquerade reconcile failed: %v", err)
-		}
+		// MASQUERADE reconcile lives in the openvpn-image configure.sh
+		// (ensure_masquerade derived from server.conf) — ovpn-admin runs
+		// non-root with no-new-privileges, so it can't drive iptables
+		// itself even with cap_add NET_ADMIN. The openvpn container picks
+		// up the right subnet at container start and on every restart.
 
 		// When the server-config asks OpenVPN to delegate auth to us via
 		// `management-client-auth`, we must actually answer the events.

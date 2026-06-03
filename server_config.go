@@ -656,18 +656,13 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 		log.Warnf("apply: persist failed: %v", err)
 	}
 
-	// If the VPN subnet changed (or even if it didn't but we want to
-	// guarantee a single correct MASQUERADE rule exists), reconcile
-	// iptables. Without this, clients in the new subnet egress with an
-	// unroutable private source address — the symptom is "VPN connected
-	// but no internet access".
-	//
-	// Safe to run on every save: the function is idempotent and only
-	// touches rules whose shape matches our own "-s X/Y ! -d X/Y -j
-	// MASQUERADE" emission, so Docker bridge MASQUERADE is left alone.
-	if err := reconcileMasquerade(newCfg.Network, newCfg.NetworkMask); err != nil {
-		log.Warnf("apply: masquerade reconcile failed: %v", err)
-	}
+	// MASQUERADE reconcile happens inside the openvpn container at
+	// (re)start (ensure_masquerade in configure.sh parses the rendered
+	// server.conf and updates iptables). ovpn-admin runs non-root with
+	// no-new-privileges and cannot manipulate nf_tables directly even
+	// with cap_add NET_ADMIN — file capabilities are blocked by the
+	// security_opt. The openvpn process restart that hard reload
+	// triggers below also re-runs configure.sh, so the rule follows.
 
 	switch kind {
 	case "soft":

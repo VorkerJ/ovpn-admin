@@ -42,16 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **MASQUERADE is now reconciled at startup**, not just after a UI
-  save. v2.0.14 added `reconcileMasquerade` in `apply()`, but on a
-  fresh container start the openvpn image's `configure.sh` still
-  installed MASQUERADE for the env-derived `OVPN_SERVER_NET` — which
-  lags behind any later UI change of the VPN subnet. The rule then
-  didn't match the persisted subnet until the next save in the UI.
-  Now ovpn-admin re-asserts the rule for the current
-  `Network/NetworkMask` from the JSON config right after the initial
-  `server.conf` render, so an upgrade or simple restart picks up the
-  correct subnet without operator intervention.
+- **MASQUERADE now follows the JSON-persisted subnet across openvpn
+  container restarts**, completing the fix v2.0.14 attempted. The
+  earlier attempt put the reconcile inside ovpn-admin, but
+  ovpn-admin runs non-root with `no-new-privileges: true`, which
+  blocks file capabilities on `iptables` even though the container
+  has `cap_add: NET_ADMIN`. Every call ended in
+  `Could not fetch rule set generation id: Permission denied`,
+  silently keeping the stale env-derived rule in place — so a
+  user-subnet change in the UI looked like it worked, openvpn
+  served clients in the new subnet, but their egress was still
+  natted only when packets matched the old subnet (i.e. never).
+  
+  Fix moved into the openvpn image where iptables actually has
+  root: `setup/configure.sh` gains `ensure_masquerade`, which
+  parses the rendered `/etc/openvpn-dynamic/server.conf` for the
+  `server NETWORK NETMASK` line and re-installs the MASQUERADE
+  rule for that subnet, removing any prior `-s X/Y ! -d X/Y -j
+  MASQUERADE` shaped rules (so Docker bridge MASQUERADE is left
+  alone). Runs once per openvpn container start, so any subsequent
+  hard reload triggered by a UI save picks up the new subnet
+  automatically (the SIGTERM → docker-restart → configure.sh chain
+  re-runs the parse). The ovpn-admin-side reconcile is removed
+  along with its dead `masquerade.go`.
 
 ## [2.0.15] — 2026-06-03
 
