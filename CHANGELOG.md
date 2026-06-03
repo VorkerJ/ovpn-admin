@@ -38,6 +38,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.15] — 2026-06-03
+
+### Fixed
+
+- **`DeleteClient` now also removes the user's CCD file.** Previously
+  it only wiped the PKI artefacts (`*.key`, `*.crt`, `*.req`) and the
+  per-user CCD persisted at `<ccdDir>/<CN>`. Recreating a user with the
+  same CN inherited the previous tenant's per-user routes and fixed
+  VPN IP — a real surprise for the operator and a policy hazard if
+  the routes were sensitive. The CCD file and the inline-private
+  artefact are now removed alongside the cert.
+- **`userCreate` seeds a fresh CCD with the current Common Routes**
+  immediately after `BuildClient` succeeds. Before this fix a newly-
+  created user had no `/etc/openvpn/ccd/<CN>` at all and received only
+  server-level push directives at first connect — Common Routes were
+  silently dropped until the next `rerenderAllCcds` (which fires only
+  on later admin actions, e.g. another Common Route change). With the
+  seed, the very first PUSH_REPLY already carries every common route.
+
 ## [2.0.14] — 2026-06-03
 
 ### Fixed

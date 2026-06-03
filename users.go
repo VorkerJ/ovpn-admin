@@ -401,6 +401,23 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 		log.Debug(o)
 	}
 
+	// Seed a clean CCD with the current Common Routes so the very first
+	// connect already carries the global push directives. Without this,
+	// a freshly-created user has no /etc/openvpn/ccd/<CN> file at all
+	// and receives ONLY server-level pushes — Common Routes silently
+	// skip them until the next rerenderAllCcds (which only fires on
+	// later admin actions). Also wipes any orphan CCD from a previous
+	// tenant that shared the same CN — preventing the new user from
+	// inheriting the previous owner's per-user routes / fixed IP.
+	freshCcd := Ccd{User: username, ClientAddress: "dynamic", CustomRoutes: []ccdRoute{}}
+	var commonExpanded []ccdCommonRoute
+	if oAdmin.commonRoutes != nil {
+		commonExpanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
+	}
+	if ok, msg := oAdmin.modifyCcd(freshCcd, commonExpanded); !ok {
+		log.Warnf("userCreate: seed CCD for %s failed: %s", username, msg)
+	}
+
 	log.Infof("Certificate for user %s issued", username)
 	oAdmin.updateClients()
 

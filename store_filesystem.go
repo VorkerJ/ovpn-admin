@@ -225,6 +225,12 @@ func (s *filesystemStore) DeleteClient(commonName string) error {
 		fmt.Sprintf("%s/pki/private/%s.key", s.easyrsaDirPath, commonName),
 		fmt.Sprintf("%s/pki/issued/%s.crt", s.easyrsaDirPath, commonName),
 		fmt.Sprintf("%s/pki/reqs/%s.req", s.easyrsaDirPath, commonName),
+		fmt.Sprintf("%s/pki/inline/private/%s.inline", s.easyrsaDirPath, commonName),
+		// CCD must die with the user. Without this, recreating a user with
+		// the same CN inherits the old per-user routes (and the old fixed
+		// VPN IP if it was set), which surprises operators and can route
+		// the new user's traffic in unexpected directions.
+		fmt.Sprintf("%s/%s", s.ccdDir, commonName),
 	} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			log.Warnf("delete: failed to remove %s: %v", path, err)
