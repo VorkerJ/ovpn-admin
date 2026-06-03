@@ -113,10 +113,11 @@ type ccdRoute struct {
 }
 
 type Ccd struct {
-	User          string           `json:"User"`
-	ClientAddress string           `json:"ClientAddress"`
-	CustomRoutes  []ccdRoute       `json:"CustomRoutes"`
-	CommonRoutes  []ccdCommonRoute `json:"-"` // not serialized over API, render-only
+	User             string           `json:"User"`
+	ClientAddress    string           `json:"ClientAddress"`
+	CustomRoutes     []ccdRoute       `json:"CustomRoutes"`
+	CommonRoutes     []ccdCommonRoute `json:"-"` // not serialized over API, render-only
+	MergedPushRoutes []pushRoute      `json:"-"` // computed at render time; unique by (Address, Mask)
 }
 
 type indexTxtLine struct {

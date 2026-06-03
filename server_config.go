@@ -656,6 +656,19 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 		log.Warnf("apply: persist failed: %v", err)
 	}
 
+	// If the VPN subnet changed (or even if it didn't but we want to
+	// guarantee a single correct MASQUERADE rule exists), reconcile
+	// iptables. Without this, clients in the new subnet egress with an
+	// unroutable private source address — the symptom is "VPN connected
+	// but no internet access".
+	//
+	// Safe to run on every save: the function is idempotent and only
+	// touches rules whose shape matches our own "-s X/Y ! -d X/Y -j
+	// MASQUERADE" emission, so Docker bridge MASQUERADE is left alone.
+	if err := reconcileMasquerade(newCfg.Network, newCfg.NetworkMask); err != nil {
+		log.Warnf("apply: masquerade reconcile failed: %v", err)
+	}
+
 	switch kind {
 	case "soft":
 		ovpnServerConfigReloads.WithLabelValues("soft").Inc()

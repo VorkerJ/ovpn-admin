@@ -38,6 +38,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.14] — 2026-06-03
+
+### Fixed
+
+- **MASQUERADE rule now follows the VPN subnet.** `configure.sh` set
+  up an initial MASQUERADE for the env-derived `OVPN_SERVER_NET` at
+  openvpn-container start. When the operator changed the VPN subnet
+  in the server-config UI, ovpn-admin re-rendered `server.conf` and
+  restarted openvpn, but the stale env-derived MASQUERADE stayed in
+  iptables. Clients in the new subnet then egressed with their
+  unroutable private source address and got dropped at the upstream
+  gateway — symptom: "VPN connected, route table correct, but no
+  internet". `apply()` now reconciles `nat POSTROUTING` after every
+  save, dropping any prior `-s X/Y ! -d X/Y -j MASQUERADE` rule
+  (the shape ovpn-admin emits, distinct from Docker bridge rules)
+  and installing one for the current subnet.
+- **Duplicate `push "route X 255.255.255.255"` lines deduped at
+  render time.** When several domain routes resolved to overlapping
+  CDN endpoints (google.com / youtube.com / googlevideo.com often
+  share Fastly front-ends), the rendered CCD repeated the same IP
+  on multiple lines. Windows OpenVPN GUI spammed
+  `route addition failed because route exists` for every dup, and
+  the bloated PUSH_REPLY threatened the 1024-byte default cap on
+  busy users. `modifyCcd` now builds a unique `(Address, Mask)` set
+  and emits each route exactly once; the trailing comment lists every
+  source (domain or common tag) that asked for the IP, so an operator
+  greping the file can still trace each line back to its origin.
+
 ## [2.0.13] — 2026-06-03
 
 ### Fixed

@@ -105,6 +105,13 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 	}
 
 	ccd.CommonRoutes = commonExpanded
+	// Dedupe so duplicate IPs (typical when several domains resolve to
+	// overlapping CDN endpoints — google.com, youtube.com, googlevideo.com
+	// often share the same Fastly/Google front-end IPs) emit a single
+	// "push route X Y" line. Without this the Windows OpenVPN GUI fills
+	// up with "route addition failed because route exists" spam and
+	// PUSH_REPLY grows past its 1k limit at scale.
+	ccd.MergedPushRoutes = mergePushRoutes(ccd.CustomRoutes, ccd.CommonRoutes)
 
 	t := oAdmin.getCcdTemplate()
 	var tmp bytes.Buffer
@@ -118,6 +125,64 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 		return false, "write failed"
 	}
 	return true, "ccd updated successfully"
+}
+
+// pushRoute is the unique row emitted into the rendered CCD. Source is
+// a human-readable comment composed of every (domain, tag) that asked
+// for this IP — useful when an operator greps the file for why a route
+// is there.
+type pushRoute struct {
+	Address string
+	Mask    string
+	Source  string
+}
+
+// mergePushRoutes walks every per-user route + every expanded common
+// route and returns one pushRoute per unique (Address, Mask) pair.
+// Domain routes expand to their resolved IP set; the original list
+// order is preserved so the file stays diff-friendly between renders.
+func mergePushRoutes(custom []ccdRoute, common []ccdCommonRoute) []pushRoute {
+	type srcKey struct{ a, m string }
+	seen := map[srcKey]int{} // key → index into out
+	out := []pushRoute{}
+	add := func(addr, mask, src string) {
+		if addr == "" || mask == "" {
+			return
+		}
+		k := srcKey{addr, mask}
+		if idx, ok := seen[k]; ok {
+			// Append the new source so the comment lists every domain /
+			// tag that referenced this IP.
+			if !strings.Contains(out[idx].Source, src) {
+				out[idx].Source += "," + src
+			}
+			return
+		}
+		seen[k] = len(out)
+		out = append(out, pushRoute{Address: addr, Mask: mask, Source: src})
+	}
+
+	withDesc := func(prefix, desc string) string {
+		desc = strings.TrimSpace(desc)
+		if desc == "" {
+			return prefix
+		}
+		return prefix + " " + desc
+	}
+	for _, r := range custom {
+		switch r.Kind {
+		case "domain":
+			for _, ip := range r.ResolvedIPs {
+				add(ip, "255.255.255.255", withDesc("__user_domain__:"+r.Domain, r.Description))
+			}
+		default: // "ip" (legacy: empty Kind also means ip)
+			add(r.Address, r.Mask, r.Description)
+		}
+	}
+	for _, r := range common {
+		add(r.Address, r.Mask, withDesc("__common__:"+r.Tag, r.Description))
+	}
+	return out
 }
 
 func (oAdmin *OvpnAdmin) rerenderAllCcds(commonExpanded []ccdCommonRoute) {
