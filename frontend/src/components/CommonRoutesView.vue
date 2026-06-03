@@ -8,7 +8,7 @@ import CommonRouteModal from '@/components/modals/CommonRouteModal.vue'
 import { useToast } from '@/composables/useToast'
 import {
   fetchCommonRoutes, createCommonRoute, updateCommonRoute,
-  deleteCommonRoute, refreshCommonRoutesDns,
+  deleteCommonRoute, refreshCommonRoutesDns, importCommonRoutes,
 } from '@/api.js'
 import {
   Globe, Network, RefreshCw, Plus, Pencil, Trash2,
@@ -21,6 +21,29 @@ const routes = ref([])
 const refreshIntervalHours = ref(24)
 const loading = ref(false)
 const refreshing = ref(false)
+const showImport = ref(false)
+const importText = ref('')
+const importing = ref(false)
+const importReport = ref(null)
+function onImportFile(e) {
+  const f = e.target.files?.[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = (ev) => { importText.value = ev.target.result || '' }
+  reader.readAsText(f)
+}
+async function doImport() {
+  importing.value = true
+  try {
+    const r = await importCommonRoutes(importText.value)
+    importReport.value = r
+    await reload()
+  } catch (e) {
+    importReport.value = { errors: [{ reason: e.response?.data?.error || e.message }] }
+  } finally {
+    importing.value = false
+  }
+}
 const submitting = ref(false)
 const editSubmitting = ref(false)
 
@@ -179,19 +202,91 @@ onMounted(reload)
           Применяются ко всем активным пользователям. Изменения вступают в силу после переподключения клиента.
         </p>
       </div>
-      <Button
-        variant="secondary"
-        size="sm"
-        :loading="refreshing"
-        :disabled="refreshing"
-        @click="refreshDns"
+      <div class="flex gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          :disabled="refreshing || importing"
+          @click="showImport = !showImport"
+        >
+          Импорт
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          :loading="refreshing"
+          :disabled="refreshing"
+          @click="refreshDns"
+        >
+          <RefreshCw
+            v-if="!refreshing"
+            :size="14"
+          />
+          {{ refreshing ? 'Обновляем' : 'Обновить DNS' }}
+        </Button>
+      </div>
+    </div>
+
+    <!-- Bulk import block -->
+    <div
+      v-if="showImport"
+      class="rounded-lg border border-border bg-muted/20 p-3 space-y-2"
+    >
+      <div class="text-sm font-medium">
+        Импорт общих маршрутов
+      </div>
+      <textarea
+        v-model="importText"
+        rows="6"
+        placeholder="example.com&#10;10.0.0.0/24&#10;1.2.3.4 255.255.255.255&#10;1.1.1.1"
+        class="w-full font-mono text-xs rounded-md border border-border bg-background px-2 py-1.5"
+      />
+      <div class="flex gap-2 items-center">
+        <input
+          type="file"
+          accept=".txt,.csv,.list,text/plain"
+          class="text-xs"
+          @change="onImportFile"
+        >
+        <Button
+          size="sm"
+          variant="secondary"
+          :loading="importing"
+          :disabled="!importText.trim() || importing"
+          @click="doImport"
+        >
+          Импортировать
+        </Button>
+      </div>
+      <div
+        v-if="importReport"
+        class="text-xs space-y-1"
       >
-        <RefreshCw
-          v-if="!refreshing"
-          :size="14"
-        />
-        {{ refreshing ? 'Обновляем' : 'Обновить DNS' }}
-      </Button>
+        <div class="text-green-600">
+          Добавлено: {{ importReport.added?.length || 0 }}
+        </div>
+        <div
+          v-if="importReport.skipped?.length"
+          class="text-yellow-600"
+        >
+          Пропущено (дубль): {{ importReport.skipped.length }}
+        </div>
+        <div
+          v-if="importReport.errors?.length"
+          class="text-destructive"
+        >
+          Ошибки: {{ importReport.errors.length }}
+          <ul class="ml-3 list-disc">
+            <li
+              v-for="(e, idx) in importReport.errors.slice(0, 10)"
+              :key="idx"
+              class="font-mono"
+            >
+              {{ e.line ? `строка ${e.line}: ` : '' }}{{ e.source || '?' }} — {{ e.reason }}
+            </li>
+          </ul>
+        </div>
+      </div>
     </div>
 
     <!-- Add form -->

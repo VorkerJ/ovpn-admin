@@ -288,6 +288,100 @@ func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.
 	}
 }
 
+// commonRoutesImportHandler POST /api/common-routes/import.
+// Body: { "text": "<file contents — one route per line>" }.
+// Parses every line; valid entries are appended to common routes;
+// duplicates (vs. existing routes AND vs. each other within the same
+// payload) are skipped; parse errors are returned with line numbers
+// so the user can fix and retry. Always commits the partial result —
+// the user can see what went in.
+func (oAdmin *OvpnAdmin) commonRoutesImportHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	parsed, errs := parseImportText(req.Text)
+
+	current := oAdmin.commonRoutes.snapshot()
+	// Build dedup set against existing common routes.
+	existing := map[string]struct{}{}
+	for _, e := range current.Routes {
+		var k string
+		if e.Kind == "domain" {
+			k = "d:" + strings.ToLower(strings.TrimSpace(e.Domain))
+		} else {
+			k = "i:" + e.Address + "/" + e.Mask
+		}
+		existing[k] = struct{}{}
+	}
+
+	added := []ImportedRoute{}
+	skipped := []ImportedRoute{}
+	for _, p := range parsed {
+		key := routeDedupKey(p)
+		if _, dup := existing[key]; dup {
+			skipped = append(skipped, p)
+			continue
+		}
+		entry := CommonRouteEntry{
+			ID:     uuid.New().String(),
+			Kind:   p.Kind,
+			Domain: p.Domain,
+		}
+		if p.Kind == "ip" {
+			entry.Address = p.Address
+			entry.Mask = p.Mask
+		}
+		if err := validateCommonRoute(entry); err != nil {
+			errs = append(errs, ImportLineError{Source: importDescribe(p), Reason: err.Error()})
+			continue
+		}
+		// Resolve domain synchronously so the first connect after import
+		// already has the IPs.
+		if entry.Kind == "domain" {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			ips, derr := domainResolver(ctx, entry.Domain)
+			cancel()
+			entry.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+			if derr != nil {
+				entry.LastResolveErr = derr.Error()
+			} else {
+				entry.ResolvedIPs = ips
+			}
+		}
+		current.Routes = append(current.Routes, entry)
+		existing[key] = struct{}{}
+		added = append(added, p)
+	}
+
+	oAdmin.commonRoutes.replace(current)
+	if err := oAdmin.persistCommonRoutes(current); err != nil {
+		log.Errorf("commonRoutesImport: persist: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "persist failed")
+		return
+	}
+	expanded := expandCommonRoutes(current)
+	go oAdmin.rerenderAllCcds(expanded)
+	if oAdmin.firewall != nil {
+		oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
+	}
+
+	writeJSON(w, http.StatusOK, ImportResult{Added: added, Skipped: skipped, Errors: errs})
+}
+
+// importDescribe formats a parsed route for error-message context.
+func importDescribe(r ImportedRoute) string {
+	if r.Kind == "domain" {
+		return r.Domain
+	}
+	return r.Address + " " + r.Mask
+}
+
 // commonRoutesRefreshHandler POST /api/common-routes/refresh.
 // Method check is enforced by middleware at route registration.
 func (oAdmin *OvpnAdmin) commonRoutesRefreshHandler(w http.ResponseWriter, r *http.Request) {

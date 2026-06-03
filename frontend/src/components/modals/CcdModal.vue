@@ -18,7 +18,24 @@ const props = defineProps({
   submitting: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['close', 'submit', 'refresh-dns'])
+const emit = defineEmits(['close', 'submit', 'refresh-dns', 'import-routes'])
+
+const importText = ref('')
+const importFileRef = ref(null)
+const importReport = ref(null)
+function onImportFile(e) {
+  const f = e.target.files?.[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = (ev) => {
+    importText.value = ev.target.result || ''
+  }
+  reader.readAsText(f)
+}
+function setImportReport(r) {
+  importReport.value = r
+}
+defineExpose({ setImportReport })
 
 let routeId = 0
 function withIds(routes) {
@@ -363,6 +380,67 @@ function formatRelativeTime(iso) {
           </tbody>
         </table>
       </div>
+
+      <!-- Bulk import: one entry per line; comments (#) and empty lines ignored -->
+      <details class="rounded-lg border border-border bg-muted/20 p-3">
+        <summary class="cursor-pointer text-sm font-medium select-none">
+          Импорт из файла (по строке на запись)
+        </summary>
+        <div class="mt-2 space-y-2">
+          <textarea
+            v-model="importText"
+            rows="6"
+            placeholder="example.com&#10;10.0.0.0/24&#10;1.2.3.4 255.255.255.255&#10;1.1.1.1"
+            class="w-full font-mono text-xs rounded-md border border-border bg-background px-2 py-1.5"
+          />
+          <div class="flex gap-2 items-center">
+            <input
+              ref="importFileRef"
+              type="file"
+              accept=".txt,.csv,.list,text/plain"
+              class="text-xs"
+              @change="onImportFile"
+            >
+            <Button
+              size="sm"
+              variant="secondary"
+              :disabled="!importText.trim() || submitting"
+              @click="emit('import-routes', { username, text: importText })"
+            >
+              Импортировать
+            </Button>
+          </div>
+          <div
+            v-if="importReport"
+            class="text-xs space-y-1 pt-1"
+          >
+            <div class="text-green-600">
+              Добавлено: {{ importReport.added?.length || 0 }}
+            </div>
+            <div
+              v-if="importReport.skipped?.length"
+              class="text-yellow-600"
+            >
+              Пропущено (дубль): {{ importReport.skipped.length }}
+            </div>
+            <div
+              v-if="importReport.errors?.length"
+              class="text-destructive"
+            >
+              Ошибки: {{ importReport.errors.length }}
+              <ul class="ml-3 list-disc">
+                <li
+                  v-for="(e, idx) in importReport.errors.slice(0, 10)"
+                  :key="idx"
+                  class="font-mono"
+                >
+                  {{ e.line ? `строка ${e.line}: ` : '' }}{{ e.source || '?' }} — {{ e.reason }}
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </details>
 
       <div
         v-if="validationError"

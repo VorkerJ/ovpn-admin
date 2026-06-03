@@ -38,6 +38,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.10] — 2026-06-03
+
+### Added
+
+- **Bulk route import** for both Common Routes and per-user CCD.
+  Paste text or upload a file with one entry per line. Each line can
+  be a domain (`example.com`), a CIDR (`10.0.0.0/24`), an IP +
+  dotted-decimal mask (`1.2.3.4 255.255.255.0`), or a bare IP
+  (treated as `/32`). Lines starting with `#` and empty lines are
+  ignored.
+  - Validates every line; rejects with a precise reason and 1-based
+    line number, so a noisy import file can be fixed and retried.
+  - Deduplicates against existing routes (per-user OR common, depending
+    on the endpoint) AND within the same payload — same domain or same
+    Address/Mask shows up at most once.
+  - Domains are resolved synchronously at import time so the first
+    PUSH_REPLY after the kick already carries the IPs.
+  - Reports `{ added, skipped, errors }` so the UI can show what
+    actually landed and what was dropped.
+  - New endpoints: `POST /api/common-routes/import`,
+    `POST /api/user/ccd/import`. Same `auth(mfa(...))` gate as every
+    other mutation.
+- UI: collapsible **«Импорт из файла»** block in `CcdModal` and
+  **«Импорт»** toggle in `CommonRoutesView`, with a textarea, a
+  file picker and an inline report of the import result.
+
 ## [2.0.9] — 2026-06-03
 
 ### Added

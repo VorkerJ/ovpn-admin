@@ -453,6 +453,92 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 	}
 }
 
+// userCcdImportHandler POST /api/user/ccd/import.
+// Body: { "username": "...", "text": "<lines>" }.
+// Parses every line, appends valid ones to the user's CCD, skips
+// duplicates against existing per-user routes AND within the payload,
+// returns parse errors with line numbers.
+func (oAdmin *OvpnAdmin) userCcdImportHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	var req struct {
+		Username string `json:"username"`
+		Text     string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid username")
+		return
+	}
+
+	parsed, errs := parseImportText(req.Text)
+
+	ccd := oAdmin.getCcd(req.Username)
+	// Dedup vs existing per-user routes.
+	existing := map[string]struct{}{}
+	for _, e := range ccd.CustomRoutes {
+		var k string
+		if e.Kind == "domain" {
+			k = "d:" + strings.ToLower(strings.TrimSpace(e.Domain))
+		} else {
+			k = "i:" + e.Address + "/" + e.Mask
+		}
+		existing[k] = struct{}{}
+	}
+
+	added := []ImportedRoute{}
+	skipped := []ImportedRoute{}
+	for _, p := range parsed {
+		key := routeDedupKey(p)
+		if _, dup := existing[key]; dup {
+			skipped = append(skipped, p)
+			continue
+		}
+		entry := ccdRoute{Kind: p.Kind, Domain: p.Domain}
+		if p.Kind == "ip" {
+			entry.Address = p.Address
+			entry.Mask = p.Mask
+		} else {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			ips, derr := domainResolver(ctx, entry.Domain)
+			cancel()
+			entry.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+			if derr != nil {
+				entry.LastResolveErr = derr.Error()
+			} else {
+				entry.ResolvedIPs = ips
+			}
+		}
+		ccd.CustomRoutes = append(ccd.CustomRoutes, entry)
+		existing[key] = struct{}{}
+		added = append(added, p)
+	}
+
+	if len(added) == 0 {
+		writeJSON(w, http.StatusOK, ImportResult{Added: added, Skipped: skipped, Errors: errs})
+		return
+	}
+
+	var expanded []ccdCommonRoute
+	if oAdmin.commonRoutes != nil {
+		expanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
+	}
+	if ok, msg := oAdmin.modifyCcd(ccd, expanded); !ok {
+		// modifyCcd ran the per-route validators and refused the merged
+		// set — return what we tried so the user can see and retry.
+		errs = append(errs, ImportLineError{Reason: "ccd validation failed: " + msg})
+		writeJSON(w, http.StatusUnprocessableEntity, ImportResult{Added: nil, Skipped: skipped, Errors: errs})
+		return
+	}
+	if oAdmin.firewall != nil {
+		oAdmin.firewall.push(fwEvent{Kind: EvUserChanged, CN: req.Username})
+	}
+	oAdmin.kickUsersAfterCcdChange([]string{req.Username})
+	writeJSON(w, http.StatusOK, ImportResult{Added: added, Skipped: skipped, Errors: errs})
+}
+
 // userCcdRefreshHandler re-resolves every domain route in the named user's
 // CCD with the current resolver, rewrites the CCD if any IP set changed,
 // and kicks the user so their next reconnect carries the refreshed push

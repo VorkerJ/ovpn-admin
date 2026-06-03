@@ -108,6 +108,20 @@ export async function refreshUserCcdDns(username) {
   return data // { changed, resolved, failed }
 }
 
+export async function importCommonRoutes(text) {
+  const { data } = await axios.post('api/common-routes/import', JSON.stringify({ text }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data // { added: [...], skipped: [...], errors: [...] }
+}
+
+export async function importUserCcd(username, text) {
+  const { data } = await axios.post('api/user/ccd/import', JSON.stringify({ username, text }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data
+}
+
 export async function fetchServerConfig() {
   const { data } = await axios.get('api/server-config')
   return data // { config, dco_available }

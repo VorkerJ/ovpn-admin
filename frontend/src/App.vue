@@ -22,7 +22,7 @@ import ServerConfigView from '@/components/ServerConfigView.vue'
 import {
   fetchUsers, fetchServerSettings,
   createUser, revokeUser, unrevokeUser, rotateUser, deleteUser,
-  changePassword, fetchUserConfig, fetchUserCcd, applyCcd, refreshUserCcdDns
+  changePassword, fetchUserConfig, fetchUserCcd, applyCcd, refreshUserCcdDns, importUserCcd
 } from '@/api.js'
 
 // ── Auth ───────────────────────────────────────────────────────────
@@ -298,6 +298,28 @@ async function submitCcd(ccd) {
   }
 }
 
+const ccdModalRef = ref(null)
+
+async function importUserRoutes({ username, text }) {
+  modalSubmitting.value.ccd = true
+  try {
+    const res = await importUserCcd(username, text)
+    ccdModalRef.value?.setImportReport(res)
+    const added = res?.added?.length || 0
+    const skipped = res?.skipped?.length || 0
+    const errs = res?.errors?.length || 0
+    notify(`Импорт: добавлено ${added}, пропущено ${skipped}, ошибок ${errs}`, errs ? 'default' : 'success')
+    // Reload CCD so the table reflects the newly imported routes.
+    ccdData.value = await fetchUserCcd(username)
+  } catch (e) {
+    if (!handleMfa412(e)) {
+      notify(e.response?.data?.error || e.message || 'Ошибка импорта', 'error')
+    }
+  } finally {
+    modalSubmitting.value.ccd = false
+  }
+}
+
 async function refreshUserDns(username) {
   modalSubmitting.value.ccd = true
   try {
@@ -489,6 +511,7 @@ async function safeUnrevoke(username) {
         @submit="submitChangePassword"
       />
       <CcdModal
+        ref="ccdModalRef"
         :open="modals.ccd"
         :username="activeUser"
         :submitting="modalSubmitting.ccd"
@@ -497,6 +520,7 @@ async function safeUnrevoke(username) {
         @close="closeModal('ccd')"
         @submit="submitCcd"
         @refresh-dns="refreshUserDns"
+        @import-routes="importUserRoutes"
       />
 
       <MfaSetupModal
