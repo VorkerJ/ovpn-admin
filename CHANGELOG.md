@@ -38,6 +38,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.16] — 2026-06-03
+
+### Fixed
+
+- **MASQUERADE is now reconciled at startup**, not just after a UI
+  save. v2.0.14 added `reconcileMasquerade` in `apply()`, but on a
+  fresh container start the openvpn image's `configure.sh` still
+  installed MASQUERADE for the env-derived `OVPN_SERVER_NET` — which
+  lags behind any later UI change of the VPN subnet. The rule then
+  didn't match the persisted subnet until the next save in the UI.
+  Now ovpn-admin re-asserts the rule for the current
+  `Network/NetworkMask` from the JSON config right after the initial
+  `server.conf` render, so an upgrade or simple restart picks up the
+  correct subnet without operator intervention.
+
 ## [2.0.15] — 2026-06-03
 
 ### Fixed
