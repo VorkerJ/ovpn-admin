@@ -38,6 +38,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.12] — 2026-06-03
+
+### Fixed
+
+- **`userDelete` now actually revokes the certificate.** The previous
+  flow only renamed the user's row in `index.txt` to `REVOKED-<CN>-<uuid>`
+  and removed the on-disk `.crt`/`.key`/`.req` files. But the entry
+  kept status `V`, so `easyrsa gen-crl` produced a CRL that did NOT
+  include the cert's serial. A client holding their previously
+  downloaded `.ovpn` could reconnect after deletion and the server
+  happily accepted them — defeating the entire point of the operation.
+  
+  `DeleteClient` now runs `easyrsa --batch revoke <CN>` BEFORE the
+  rename/file cleanup, so the serial lands in the CRL and OpenVPN
+  rejects any reconnect attempt with `TLS Error: certificate is in
+  the CRL`. Combined with the v2.0.11 mgmt-kill, deletion now ends
+  both the active session AND the ability to come back.
+
 ## [2.0.11] — 2026-06-03
 
 ### Fixed

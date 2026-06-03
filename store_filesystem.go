@@ -191,6 +191,22 @@ func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 }
 
 func (s *filesystemStore) DeleteClient(commonName string) error {
+	// CRITICAL: revoke the cert FIRST so its serial lands in CRL. Without
+	// this step the rename below leaves status=V in index.txt, gen-crl
+	// generates an empty CRL, and a client holding the cert + key files
+	// (which they may have downloaded earlier) can still authenticate
+	// and tunnel traffic after the "delete" — defeating the whole point
+	// of the operation.
+	//
+	// Errors during revoke are logged but not fatal: if the cert was
+	// somehow already revoked or missing from issued/, we still want to
+	// finish the housekeeping (rename + file cleanup + CRL refresh) so
+	// the operator's intent — "user gone" — is honoured.
+	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "revoke", commonName)
+	if err != nil {
+		log.Warnf("delete: easyrsa revoke %s: %v: %s", commonName, err, out)
+	}
+
 	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 
 	usersFromIndexTxt := indexTxtParser(fRead(s.indexTxtPath))
