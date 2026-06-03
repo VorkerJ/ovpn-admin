@@ -22,7 +22,25 @@
 
 - Имя только латиницей, без пробелов и спецсимволов (разрешены `_`, `.`, `-`, `@`, до 63 символов).
 - Сертификат выпускается автоматически.
-- Скачай `.ovpn`-файл (зелёная иконка скачивания) → импортируй в **OpenVPN Connect** на устройстве клиента.
+- Скачай `.ovpn`-файл (зелёная иконка скачивания) → передай юзеру → импорт в клиент.
+
+### Клиентские приложения
+
+Что качать пользователю в зависимости от устройства:
+
+| ОС | Рекомендую | Альтернатива |
+|---|---|---|
+| **macOS** | [OpenVPN Connect](https://openvpn.net/client/client-connect-vpn-for-mac-os/) — официальный, проще для нетехнических | [Tunnelblick](https://tunnelblick.net/) — open-source, больше настроек |
+| **Windows** | [OpenVPN Connect](https://openvpn.net/client/client-connect-vpn-for-windows/) — официальный | [OpenVPN Community](https://openvpn.net/community-downloads/) — open-source, без UI-обёртки |
+| **iPhone / iPad** | [OpenVPN Connect (App Store)](https://apps.apple.com/app/openvpn-connect/id590379981) — единственный нормальный вариант | — |
+| **Android** | [OpenVPN Connect (Google Play)](https://play.google.com/store/apps/details?id=net.openvpn.openvpn) | [OpenVPN for Android (Arne Schwabe)](https://play.google.com/store/apps/details?id=de.blinkt.openvpn) — open-source |
+| **Linux** | Системный `openvpn` пакет (`apt install openvpn` / `dnf install openvpn`) + NetworkManager-OpenVPN GUI | — |
+
+**Импорт `.ovpn` файла**:
+- OpenVPN Connect: drag-and-drop файл в приложение, либо «Import → File»
+- Tunnelblick: двойной клик на `.ovpn` файле, согласиться установить
+- iPhone/iPad: открыть `.ovpn` через AirDrop/Mail/Files → «Открыть в OpenVPN»
+- Android: открыть из файлового менеджера → выбрать OpenVPN Connect
 
 ---
 
