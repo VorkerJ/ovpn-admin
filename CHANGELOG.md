@@ -38,6 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using the server's `data-ciphers` list; the hardcoded value was
   misleading (the actual cipher is the first AEAD in `data-ciphers`).
 
+## [2.0.13] — 2026-06-03
+
+### Fixed
+
+- `setup/configure.sh` no longer locks the easyrsa `pki/` directory to
+  `755` at every openvpn-container start. ovpn-admin runs as a
+  non-root user belonging to group `2000` (ovpnshared); 755 leaves the
+  group with `r-x` and easyrsa fails with
+  `Failed to create lock-file (permissions?)` on the next user-create,
+  revoke, or CRL regeneration. The script now sets `2775` (setgid +
+  rwxrwxr-x), so future files and dirs created under `pki/` inherit
+  the right group automatically.
+
 ## [2.0.12] — 2026-06-03
 
 ### Fixed

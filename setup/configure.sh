@@ -46,7 +46,20 @@ if [ ${OVPN_PASSWD_AUTH} = "true" ]; then
   openvpn-user db-init --db.path=$EASY_RSA_LOC/pki/users.db && openvpn-user db-migrate --db.path=$EASY_RSA_LOC/pki/users.db
 fi
 
-[ -d $EASY_RSA_LOC/pki ] && chmod 755 $EASY_RSA_LOC/pki
+# easyrsa creates pki/.lock-easyrsa-* during build-client-full, revoke,
+# gen-crl, etc. It needs WRITE in pki/ itself, not just on existing files.
+# ovpn-admin runs as a non-root user inside its container and belongs to
+# group 2000 (ovpnshared); 755 leaves that group with r-x and easyrsa
+# fails with "Failed to create lock-file (permissions?)" — easy to mistake
+# for an SELinux issue.
+#
+# 2775 = setgid + rwxrwxr-x. The setgid bit makes every NEW file created
+# under pki/ inherit group 2000 automatically, so subsequent revokes and
+# CRL regenerations don't drift back into "wrong group" territory.
+if [ -d $EASY_RSA_LOC/pki ]; then
+  chgrp 2000 $EASY_RSA_LOC/pki 2>/dev/null || true
+  chmod 2775 $EASY_RSA_LOC/pki
+fi
 [ -f $EASY_RSA_LOC/pki/crl.pem ] && chmod 644 $EASY_RSA_LOC/pki/crl.pem
 
 # The rendered server.conf references /etc/openvpn/pki — point it at easyrsa's pki
