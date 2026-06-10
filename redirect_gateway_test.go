@@ -533,3 +533,53 @@ func TestValidateCcd_RejectsReservedMarkerInRouteDescription(t *testing.T) {
 		t.Errorf("expected reserved-marker error, got %q", msg)
 	}
 }
+
+// TestParseCcd_MergedSharedIPDomains is the regression test for the telegram
+// round-trip bug: when several domains resolve to the same IP, mergePushRoutes
+// emits one push line whose comment is a comma-joined list of
+// __user_domain__:DOMAIN segments. parseCcd must split that back out and
+// register the IP under EVERY domain, not collapse it into one bogus hostname.
+func TestParseCcd_MergedSharedIPDomains(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// One shared IP across 3 telegram domains (the prod shape), plus a second
+	// line giving api.telegram.org its own IP.
+	content := `push "route 149.154.167.99 255.255.255.255" # __user_domain__:t.me,__user_domain__:telegram.org,__user_domain__:core.telegram.org
+push "route 149.154.166.110 255.255.255.255" # __user_domain__:api.telegram.org
+`
+	if err := os.WriteFile(dir+"/tg", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &OvpnAdmin{store: testFilesystemStore(dir)}
+	ccd := app.parseCcd("tg")
+
+	byDomain := map[string]*ccdRoute{}
+	for i := range ccd.CustomRoutes {
+		r := &ccd.CustomRoutes[i]
+		if r.Kind != "domain" {
+			t.Errorf("unexpected non-domain route: %+v", r)
+			continue
+		}
+		byDomain[r.Domain] = r
+	}
+	// All four domains must be recovered as distinct valid hostnames.
+	for _, d := range []string{"t.me", "telegram.org", "core.telegram.org", "api.telegram.org"} {
+		if byDomain[d] == nil {
+			t.Fatalf("domain %q must be recovered from the merged line", d)
+		}
+		if !domainRegexp.MatchString(byDomain[d].Domain) {
+			t.Errorf("recovered domain %q must be a valid hostname (no comma garbage)", byDomain[d].Domain)
+		}
+	}
+	// The three shared-IP domains each carry 149.154.167.99.
+	for _, d := range []string{"t.me", "telegram.org", "core.telegram.org"} {
+		ips := byDomain[d].ResolvedIPs
+		if len(ips) != 1 || ips[0] != "149.154.167.99" {
+			t.Errorf("domain %q should have the shared IP 149.154.167.99, got %v", d, ips)
+		}
+	}
+	// And the whole thing must now survive validateCcd (the bug made it fail).
+	if ok, msg := app.validateCcd(ccd); !ok {
+		t.Fatalf("re-validation after parse must pass, got: %s", msg)
+	}
+}

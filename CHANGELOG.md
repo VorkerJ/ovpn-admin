@@ -5,6 +5,25 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.19] — 2026-06-10
+
+### Fixed
+
+- **Domain routes that share an IP now round-trip correctly.** When several
+  domains resolved to the same address (e.g. nine `*.telegram.org` /
+  `t.me` / `telesco.pe` domains → one Telegram front-end IP), `mergePushRoutes`
+  collapsed them onto a single push line with a comma-joined source comment
+  (`# __user_domain__:t.me,__user_domain__:telegram.org,…`). `parseCcd` then
+  read the whole comma string back as one bogus "hostname", which failed
+  validation on the next re-render — so the periodic DNS refresh for those
+  users was silently skipped (`CustomRoute.Domain "…" is not a valid
+  hostname`). Their existing routes kept working (the failed re-render left
+  the CCD file untouched), but the domains could not get fresh IPs over time.
+  `parseCcd` now splits the merged source on `,` and registers the IP under
+  every listed domain. Pre-existing bug (the prior parser had the same
+  single-domain logic); surfaced during the v2.0.18 deploy. Regression test
+  added with the real Telegram shape.
+
 ## [2.0.18] — 2026-06-09
 
 Security hardening release following a full audit (auth, injection, CVEs,

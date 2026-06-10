@@ -147,26 +147,42 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 			}
 
 			// Per-user domain routes: collapse the multiple resolved-IP push
-			// lines back into a single domain entry.
+			// lines back into per-domain entries. When several domains resolve
+			// to the SAME IP, mergePushRoutes collapses them onto one push line
+			// with a comma-joined source:
+			//   __user_domain__:a.com[ desc],__user_domain__:b.com,__user_domain__:c.com
+			// We must split that back out and register this IP under EVERY
+			// listed domain — otherwise all domains but the first are lost, and
+			// the leftover "a.com,__user_domain__:b.com,…" string becomes a bogus
+			// single domain that fails hostname validation on the next
+			// re-render (blocking refresh for that user). Splitting on "," is
+			// safe: a hostname can't contain a comma, and each real segment
+			// re-starts with the "__user_domain__:" marker.
 			if strings.HasPrefix(comment, "__user_domain__:") {
-				rest := strings.TrimSpace(strings.TrimPrefix(comment, "__user_domain__:"))
-				fields := strings.Fields(rest)
-				if len(fields) == 0 {
-					continue
-				}
-				domain := fields[0]
-				description := strings.TrimSpace(strings.Join(fields[1:], " "))
-				entry, exists := domainEntries[domain]
-				if !exists {
-					entry = &ccdRoute{
-						Kind:        "domain",
-						Domain:      domain,
-						Description: description,
+				for _, seg := range strings.Split(comment, ",") {
+					seg = strings.TrimSpace(seg)
+					if !strings.HasPrefix(seg, "__user_domain__:") {
+						continue // description fragment after a comma — ignore
 					}
-					domainEntries[domain] = entry
-					domainOrder = append(domainOrder, domain)
+					rest := strings.TrimSpace(strings.TrimPrefix(seg, "__user_domain__:"))
+					fields := strings.Fields(rest)
+					if len(fields) == 0 {
+						continue
+					}
+					domain := fields[0]
+					description := strings.TrimSpace(strings.Join(fields[1:], " "))
+					entry, exists := domainEntries[domain]
+					if !exists {
+						entry = &ccdRoute{
+							Kind:        "domain",
+							Domain:      domain,
+							Description: description,
+						}
+						domainEntries[domain] = entry
+						domainOrder = append(domainOrder, domain)
+					}
+					entry.ResolvedIPs = append(entry.ResolvedIPs, addr)
 				}
-				entry.ResolvedIPs = append(entry.ResolvedIPs, addr)
 				continue
 			}
 
