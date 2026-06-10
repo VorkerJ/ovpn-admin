@@ -51,6 +51,11 @@ func validateCommonRoute(e CommonRouteEntry) error {
 	if strings.Contains(e.Description, `"`) {
 		return fmt.Errorf("description must not contain double-quote characters")
 	}
+	// Reserved CCD markers in a description would let a crafted route be
+	// re-parsed as a control directive on round-trip. See parseCcd.
+	if descriptionHasReservedMarker(e.Description) {
+		return fmt.Errorf("description must not contain reserved markers (__redirect_gateway__, __exclusion_*, __common__, __user_domain__)")
+	}
 	switch e.Kind {
 	case "ip":
 		if e.Domain != "" {

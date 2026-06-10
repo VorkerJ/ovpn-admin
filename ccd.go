@@ -27,6 +27,46 @@ func (oAdmin *OvpnAdmin) getCcdTemplate() *template.Template {
 	}
 }
 
+// reservedCcdMarkers are the comment tokens parseCcd uses to classify push
+// lines. They must never appear in a user-supplied description, otherwise a
+// crafted description could be confused for control state on round-trip.
+// Validation rejects them at write time; parseCcd additionally anchors on the
+// directive shape so even a pre-existing file can't forge state.
+var reservedCcdMarkers = []string{
+	"__redirect_gateway__", "__exclusion_user__", "__exclusion_global__",
+	"__common__", "__user_domain__",
+}
+
+func descriptionHasReservedMarker(desc string) bool {
+	for _, m := range reservedCcdMarkers {
+		if strings.Contains(desc, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitDirectiveComment splits a CCD line into the directive part (before the
+// first " # ") and the comment (after it, leading "# " stripped). When there
+// is no comment, comment is "".
+func splitDirectiveComment(line string) (directive, comment string) {
+	if i := strings.Index(line, " # "); i >= 0 {
+		return strings.TrimSpace(line[:i]), strings.TrimSpace(line[i+3:])
+	}
+	return strings.TrimSpace(line), ""
+}
+
+// quotedPayload returns the text between the first and last double-quote of s
+// — i.e. the body of a `push "..."` directive. Returns "" when s isn't quoted.
+func quotedPayload(s string) string {
+	first := strings.Index(s, "\"")
+	last := strings.LastIndex(s, "\"")
+	if first < 0 || last <= first {
+		return ""
+	}
+	return s[first+1 : last]
+}
+
 func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 	ccd := Ccd{}
 	ccd.User = username
@@ -55,45 +95,67 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 		case strings.HasPrefix(str[0], "ifconfig-push"):
 			ccd.ClientAddress = str[1]
 		case strings.HasPrefix(str[0], "push"):
-			// Order of marker checks matters: redirect-gateway and exclusion
-			// markers must be detected BEFORE the generic route parse below,
-			// otherwise "route X Y net_gateway" lines would be mis-stored as
-			// CustomRoutes (with "net_gateway" as their description!).
-			if strings.Contains(v, "# __redirect_gateway__") {
+			// Split the directive from its trailing "# ..." comment and trust a
+			// marker ONLY when the DIRECTIVE itself has the matching shape.
+			// Substring-scanning the whole line (the old approach) let a
+			// user-supplied route description containing a marker string (e.g.
+			// "__redirect_gateway__" or "__exclusion_user__ ...") forge control
+			// state on round-trip: parseCcd would misclassify the route, drop
+			// it, and persist the forged exclusion / full-tunnel flag on the
+			// next write. The directive shape (`redirect-gateway` vs `route`
+			// vs `route ... net_gateway`) can only come from our own renderer,
+			// so anchoring on it closes that confusion. Legit lines are
+			// unchanged — they already have the correct shape.
+			directive, comment := splitDirectiveComment(v)
+			pf := strings.Fields(quotedPayload(directive))
+			if len(pf) == 0 {
+				continue
+			}
+
+			// `redirect-gateway def1` — only when the directive literally is it.
+			if pf[0] == "redirect-gateway" && strings.HasPrefix(comment, "__redirect_gateway__") {
 				ccd.RedirectGateway = true
 				continue
 			}
-			// Global exclusions live only in ServerConfig — we re-merge them
-			// at render time, so swallow the marker on round-trip rather than
-			// duplicating them into the per-user list.
-			if strings.Contains(v, "# __exclusion_global__") {
-				continue
+			// Everything else we recognise is a `route ...` directive.
+			if pf[0] != "route" || len(pf) < 3 {
+				continue // unknown / unsupported push directive — ignore
 			}
-			if idx := strings.Index(v, "# __exclusion_user__"); idx >= 0 {
-				// Format: push "route ADDR MASK net_gateway" # __exclusion_user__ Description...
-				// We need at least 5 fields after `push` to have ADDR + MASK + net_gateway.
-				if len(str) >= 5 {
-					addr := strings.Trim(str[2], "\"")
-					mask := strings.Trim(str[3], "\"")
-					desc := strings.TrimSpace(v[idx+len("# __exclusion_user__"):])
+			addr, mask := pf[1], pf[2]
+			isNetGateway := len(pf) >= 4 && pf[3] == "net_gateway"
+
+			// Exclusions: `route ADDR MASK net_gateway`. Global ones are rebuilt
+			// from ServerConfig at render time (swallow on round-trip); per-user
+			// ones round-trip into the editable list. A net_gateway route with
+			// no recognised marker is also dropped — it can only have come from
+			// our own render and exclusions are always rebuilt, so we never keep
+			// it as a CustomRoute.
+			if isNetGateway {
+				if strings.HasPrefix(comment, "__exclusion_user__") {
+					desc := strings.TrimSpace(strings.TrimPrefix(comment, "__exclusion_user__"))
 					ccd.RedirectGatewayExclusions = append(ccd.RedirectGatewayExclusions, Subnet{
 						Address: addr, Mask: mask, Description: desc,
 					})
 				}
 				continue
 			}
-			if strings.Contains(v, "# __common__:") {
+
+			// Common routes are rebuilt from the Common Routes store at render
+			// time — swallow on round-trip.
+			if strings.HasPrefix(comment, "__common__:") {
 				continue
 			}
-			if idx := strings.Index(v, "# __user_domain__:"); idx >= 0 {
-				comment := strings.TrimSpace(v[idx+len("# __user_domain__:"):])
-				fields := strings.Fields(comment)
+
+			// Per-user domain routes: collapse the multiple resolved-IP push
+			// lines back into a single domain entry.
+			if strings.HasPrefix(comment, "__user_domain__:") {
+				rest := strings.TrimSpace(strings.TrimPrefix(comment, "__user_domain__:"))
+				fields := strings.Fields(rest)
 				if len(fields) == 0 {
 					continue
 				}
 				domain := fields[0]
 				description := strings.TrimSpace(strings.Join(fields[1:], " "))
-				ip := strings.Trim(str[2], "\"")
 				entry, exists := domainEntries[domain]
 				if !exists {
 					entry = &ccdRoute{
@@ -104,14 +166,16 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 					domainEntries[domain] = entry
 					domainOrder = append(domainOrder, domain)
 				}
-				entry.ResolvedIPs = append(entry.ResolvedIPs, ip)
+				entry.ResolvedIPs = append(entry.ResolvedIPs, addr)
 				continue
 			}
+
+			// Plain per-user IP route. The comment is its free-text description.
 			ipRoutes = append(ipRoutes, ccdRoute{
 				Kind:        "ip",
-				Address:     strings.Trim(str[2], "\""),
-				Mask:        strings.Trim(str[3], "\""),
-				Description: strings.Trim(strings.Join(str[4:], ""), "#"),
+				Address:     addr,
+				Mask:        mask,
+				Description: comment,
 			})
 		}
 	}
@@ -464,6 +528,9 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 		}
 		if strings.Contains(route.Description, `"`) {
 			return false, "route description must not contain double quotes"
+		}
+		if descriptionHasReservedMarker(route.Description) {
+			return false, "route description must not contain reserved markers (__redirect_gateway__, __exclusion_*, __common__, __user_domain__)"
 		}
 		if len(route.Description) > 200 {
 			return false, "route description too long (max 200 chars)"

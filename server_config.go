@@ -386,6 +386,15 @@ func validateSubnet(s Subnet) error {
 	if bits == 0 {
 		return fmt.Errorf("mask %q is not a contiguous network mask", s.Mask)
 	}
+	// A /0 exclusion (mask 0.0.0.0) renders as `route 0.0.0.0 0.0.0.0
+	// net_gateway`, which sends the entire default route back to the client's
+	// gateway and SILENTLY cancels redirect-gateway def1 — i.e. it turns
+	// full-tunnel off for whoever the exclusion applies to, with no warning.
+	// An exclusion is meant to carve out a LAN, never the whole internet; use
+	// the redirect-gateway toggle to disable full-tunnel instead.
+	if ones == 0 {
+		return fmt.Errorf("mask %q (/0) is not allowed as an exclusion — it would disable full-tunnel entirely; turn off the redirect-gateway toggle instead", s.Mask)
+	}
 	// Reject host bits in Address: 192.168.0.5/16 → must be 192.168.0.0/16.
 	// This catches a common operator mistake that OpenVPN itself silently
 	// ignores (it ANDs with the mask), making debugging easier later.
@@ -408,6 +417,12 @@ func validateSubnet(s Subnet) error {
 	// human-readable label.
 	if strings.ContainsAny(s.Description, "\x00") {
 		return fmt.Errorf("description must not contain NUL bytes")
+	}
+	// Reserved CCD markers in a description would let a crafted exclusion be
+	// re-parsed as a different control directive on round-trip. See
+	// descriptionHasReservedMarker / parseCcd.
+	if descriptionHasReservedMarker(s.Description) {
+		return fmt.Errorf("description must not contain reserved markers (__redirect_gateway__, __exclusion_*, __common__, __user_domain__)")
 	}
 	if len(s.Description) > 200 {
 		return fmt.Errorf("description too long (max 200 chars)")

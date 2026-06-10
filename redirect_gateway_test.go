@@ -23,7 +23,8 @@ func TestValidateSubnet(t *testing.T) {
 		{"valid /16", Subnet{"192.168.0.0", "255.255.0.0", "Home LAN"}, false, ""},
 		{"valid /8", Subnet{"10.0.0.0", "255.0.0.0", "Private 10/8"}, false, ""},
 		{"valid /32 single host", Subnet{"1.1.1.1", "255.255.255.255", ""}, false, ""},
-		{"valid /0 (defensive — wide-open mask is technically valid)", Subnet{"0.0.0.0", "0.0.0.0", ""}, false, ""},
+		// /0 is now REJECTED for exclusions: it would silently disable full-tunnel.
+		{"slash-zero exclusion rejected", Subnet{"0.0.0.0", "0.0.0.0", ""}, true, "/0"},
 		{"empty address", Subnet{"", "255.255.0.0", ""}, true, "valid IP"},
 		{"empty mask", Subnet{"10.0.0.0", "", ""}, true, "valid IP"},
 		{"garbage address", Subnet{"not-an-ip", "255.0.0.0", ""}, true, "valid IP"},
@@ -377,4 +378,158 @@ push "route {{ $e.Address }} {{ $e.Mask }} net_gateway" # {{ $e.Source }}
 push "route {{ $r.Address }} {{ $r.Mask }}" # {{ $r.Source }}
 {{- end }}
 `
+}
+
+// TestParseCcd_MarkerConfusionDefense is the regression test for the HIGH
+// finding: a user-supplied route description that contains a reserved marker
+// must NOT be able to forge control state (redirect-gateway flag or an
+// exclusion) on round-trip. parseCcd anchors on the directive SHAPE, so a
+// normal `route` line (no net_gateway, not the redirect-gateway directive) is
+// always read back as a plain route regardless of what its comment says.
+func TestParseCcd_MarkerConfusionDefense(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Every line below is a PLAIN route whose description contains a marker.
+	// None of them has the directive shape of a real control line, so none
+	// may flip RedirectGateway or create an exclusion.
+	content := `push "route 8.8.8.8 255.255.255.255" # __redirect_gateway__
+push "route 9.9.9.9 255.255.255.255" # __exclusion_user__ 10.0.0.0 255.0.0.0 pwn
+push "route 1.2.3.4 255.255.255.255" # __exclusion_global__ sneaky
+push "route 5.6.7.8 255.255.255.255" # __common__: nope
+`
+	if err := os.WriteFile(dir+"/victim", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &OvpnAdmin{store: testFilesystemStore(dir)}
+	ccd := app.parseCcd("victim")
+
+	if ccd.RedirectGateway {
+		t.Error("forged __redirect_gateway__ in a route description must NOT enable full-tunnel")
+	}
+	if len(ccd.RedirectGatewayExclusions) != 0 {
+		t.Errorf("forged exclusion markers must NOT create exclusions, got %+v", ccd.RedirectGatewayExclusions)
+	}
+	// __redirect_gateway__, __exclusion_user__, __exclusion_global__ lines are
+	// plain routes and must survive as CustomRoutes. The __common__: line is
+	// swallowed (common routes are rebuilt from the store) — that's expected
+	// since a real operator can't set a __common__: description anyway (the
+	// validator rejects it). So we expect the 3 non-common routes to remain.
+	if len(ccd.CustomRoutes) != 3 {
+		t.Fatalf("expected 3 plain routes preserved, got %d: %+v", len(ccd.CustomRoutes), ccd.CustomRoutes)
+	}
+	addrs := map[string]bool{}
+	for _, r := range ccd.CustomRoutes {
+		addrs[r.Address] = true
+	}
+	for _, want := range []string{"8.8.8.8", "9.9.9.9", "1.2.3.4"} {
+		if !addrs[want] {
+			t.Errorf("route %s should have survived as a plain route", want)
+		}
+	}
+}
+
+// TestParseCcd_LegitLinesStillParse is the backwards-compatibility guard: every
+// line shape our renderer actually produces (and that exists in deployed CCD
+// files today) must still classify correctly after the parse rewrite.
+func TestParseCcd_LegitLinesStillParse(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := `ifconfig-push 10.30.0.7 255.255.255.0
+push "redirect-gateway def1" # __redirect_gateway__
+push "route 192.168.0.0 255.255.0.0 net_gateway" # __exclusion_global__ Home/office LAN
+push "route 10.42.0.0 255.255.0.0 net_gateway" # __exclusion_user__ Work VPN
+push "route 142.250.0.0 255.254.0.0" # __common__:google
+push "route 1.1.1.1 255.255.255.255" # __user_domain__:youtube.com yt
+push "route 2.2.2.2 255.255.255.255" # __user_domain__:youtube.com yt
+push "route 192.168.1.0 255.255.255.0" # corp net
+`
+	if err := os.WriteFile(dir+"/legit", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &OvpnAdmin{store: testFilesystemStore(dir)}
+	ccd := app.parseCcd("legit")
+
+	if ccd.ClientAddress != "10.30.0.7" {
+		t.Errorf("ClientAddress: got %q, want 10.30.0.7", ccd.ClientAddress)
+	}
+	if !ccd.RedirectGateway {
+		t.Error("legit __redirect_gateway__ line must enable RedirectGateway")
+	}
+	// Only the per-user exclusion round-trips; global is swallowed.
+	if len(ccd.RedirectGatewayExclusions) != 1 {
+		t.Fatalf("want 1 per-user exclusion, got %d: %+v", len(ccd.RedirectGatewayExclusions), ccd.RedirectGatewayExclusions)
+	}
+	ex := ccd.RedirectGatewayExclusions[0]
+	if ex.Address != "10.42.0.0" || ex.Mask != "255.255.0.0" || ex.Description != "Work VPN" {
+		t.Errorf("per-user exclusion round-trip wrong: %+v", ex)
+	}
+	// CustomRoutes: 1 domain (youtube.com, 2 IPs collapsed) + 1 plain IP route.
+	// Common route is swallowed.
+	var domain, ipRoute *ccdRoute
+	for i := range ccd.CustomRoutes {
+		switch ccd.CustomRoutes[i].Kind {
+		case "domain":
+			domain = &ccd.CustomRoutes[i]
+		case "ip":
+			ipRoute = &ccd.CustomRoutes[i]
+		}
+	}
+	if domain == nil || domain.Domain != "youtube.com" || len(domain.ResolvedIPs) != 2 {
+		t.Errorf("domain route not collapsed correctly: %+v", domain)
+	}
+	if ipRoute == nil || ipRoute.Address != "192.168.1.0" || ipRoute.Description != "corp net" {
+		t.Errorf("plain IP route wrong (multi-word description must survive): %+v", ipRoute)
+	}
+}
+
+// TestValidateSubnet_RejectsReservedMarkerAndSlashZero covers the two new
+// validation rules: /0 exclusions and reserved markers in descriptions.
+func TestValidateSubnet_RejectsReservedMarkerAndSlashZero(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		in     Subnet
+		errSub string
+	}{
+		{"slash-zero exclusion", Subnet{"0.0.0.0", "0.0.0.0", ""}, "/0"},
+		{"marker in description", Subnet{"10.0.0.0", "255.0.0.0", "ok __exclusion_user__ x"}, "reserved markers"},
+		{"redirect marker in description", Subnet{"10.0.0.0", "255.0.0.0", "__redirect_gateway__"}, "reserved markers"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSubnet(tc.in)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.errSub)
+			}
+			if !strings.Contains(err.Error(), tc.errSub) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.errSub)
+			}
+		})
+	}
+	// And a normal /16 LAN exclusion must still pass.
+	if err := validateSubnet(Subnet{"192.168.0.0", "255.255.0.0", "Home LAN"}); err != nil {
+		t.Fatalf("legit /16 exclusion must validate, got %v", err)
+	}
+}
+
+// TestValidateCcd_RejectsReservedMarkerInRouteDescription guards the write-time
+// rejection on the per-user route path.
+func TestValidateCcd_RejectsReservedMarkerInRouteDescription(t *testing.T) {
+	t.Parallel()
+	app := &OvpnAdmin{}
+	ccd := Ccd{
+		User:          "alice",
+		ClientAddress: "dynamic",
+		CustomRoutes: []ccdRoute{
+			{Kind: "ip", Address: "8.8.8.8", Mask: "255.255.255.255", Description: "__redirect_gateway__"},
+		},
+	}
+	ok, msg := app.validateCcd(ccd)
+	if ok {
+		t.Fatal("a route description with a reserved marker must be rejected")
+	}
+	if !strings.Contains(msg, "reserved markers") {
+		t.Errorf("expected reserved-marker error, got %q", msg)
+	}
 }

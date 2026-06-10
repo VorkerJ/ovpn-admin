@@ -5,6 +5,62 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.18] — 2026-06-09
+
+Security hardening release following a full audit (auth, injection, CVEs,
+container, full-tunnel/CCD). Backwards-compatible: existing CCD files and
+server configs are unaffected — verified by parsing real production CCDs
+through the rewritten parser (no spurious full-tunnel, no spurious
+exclusions, all per-user routes preserved). No migration or client
+reconfiguration required.
+
+### Fixed
+
+- **HIGH — CCD marker confusion.** `parseCcd` classified push lines by
+  substring-scanning the whole line for control markers
+  (`__redirect_gateway__`, `__exclusion_user__`, …), but a route's free-text
+  description renders into that same trailing comment. A description such as
+  `__redirect_gateway__` or `__exclusion_user__ …` was therefore re-read as
+  control state on the next round-trip (apply / import / 24h scheduler /
+  rerenderAllCcds), silently dropping the route and persisting a forged
+  full-tunnel flag or exclusion — letting anyone with route-edit/import
+  rights bypass the VPN for chosen traffic. Fixed two ways: (1) `parseCcd`
+  now splits each line into directive + comment and trusts a marker ONLY
+  when the directive SHAPE matches (`redirect-gateway` vs `route` vs
+  `route … net_gateway`), which only our own renderer produces; (2) the
+  three description validators reject the reserved marker substrings at
+  write time. Regression-tested against forged descriptions and against
+  every legitimate line shape for backwards compatibility.
+- **MEDIUM — `0.0.0.0/0` accepted as a full-tunnel exclusion** silently
+  cancelled `redirect-gateway def1` for affected users. `validateSubnet`
+  now rejects a `/0` mask with a clear message pointing to the
+  redirect-gateway toggle instead.
+
+### Security
+
+- **Go build toolchain bumped 1.25 → 1.26** in `Dockerfile.ovpn-admin`.
+  `govulncheck` flagged 13 reachable Go stdlib CVEs against the 1.25 base,
+  including the HTTP/2 transport infinite-loop (GO-2026-4918) and the
+  TLS 1.3 KeyUpdate connection-retention DoS (GO-2026-4870), both remotely
+  reachable from the admin HTTP server and the k8s client. The `golang:1.26`
+  rolling tag pulls the latest patched 1.26.x at build time.
+- Removed a stale, unused `OVPN_MASTER_TOKEN` secret left in the local
+  `.env` (leftover from the removed master/slave feature; gitignored but a
+  plaintext-secret hygiene risk).
+
+### Audit notes (no code change — documented as accepted / deferred)
+
+- TOTP replay guard tracks only the last-used code (90s) rather than the
+  consumed time-step counter — narrow replay window, deferred.
+- Kubernetes storage backend lacks the defense-in-depth `validateUsername`
+  the filesystem backend has (not reachable today; handlers validate first).
+- Common Routes domain resolution has no cap on A-record count (availability
+  risk if a domain returns thousands of records — can overflow PUSH_REPLY).
+- Helm `init-sysctl` runs `privileged: true` for a single sysctl.
+- Auth layer reviewed and found well-hardened (HMAC-signed sessions,
+  secure-by-default cookies, enumeration timing closed, two-phase MFA with
+  AES-GCM secret storage, every write endpoint MFA-gated).
+
 ## [Unreleased]
 
 ### Removed

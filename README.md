@@ -12,16 +12,20 @@ Simple web UI to manage OpenVPN users, their certificates & routes in Kubernetes
 ## Features
 
 * **Web UI authentication** — htpasswd-based login with bcrypt passwords; supports multiple admin users; auto-generates a random password on first start if no htpasswd file is provided
+* **TOTP (2FA) for the admin UI** — RFC-6238 with 8 backup codes; can be enforced as a gate on every write endpoint via `OVPN_MFA_REQUIRED`
 * Adding, deleting OpenVPN users (generating certificates for them)
 * Revoking / restoring / rotating user certificates
 * Generating ready-to-use `.ovpn` config files
 * Providing metrics for Prometheus, including certificate expiration dates, number of connected/total users, and per-user connection info
-* (optionally) Specifying CCD (`client-config-dir`) per user — static IP address and custom push routes with IP validation
-* (optionally) Specifying/changing password for additional OpenVPN auth
+* **Per-user CCD** (`client-config-dir`) — static IP, custom push routes (by IP/mask or domain with automatic DNS refresh), bulk import from text/file
+* **Per-user full-tunnel with LAN exclusions** — a "Полный туннель" toggle per user that pushes `redirect-gateway def1` plus a configurable list of subnets that bypass the VPN (home LAN, work VPN, Docker bridges). Global defaults are merged with per-user extras. See [Per-user full-tunnel](#per-user-full-tunnel) below.
+* **Common Routes** — a global list of push routes applied to every active user. Supports both static IP/mask entries and domain-based entries (the server periodically re-resolves and pushes the current IPs). Search, pagination, bulk import.
+* **Per-user OpenVPN password auth** — separate from the cert; can be enabled per user
 * (optionally) Specifying a Kubernetes LoadBalancer in front of the OpenVPN server (auto-defined `remote` in `client.conf.tpl`)
 * (optionally) Storing certificates and other files in Kubernetes Secrets
 * **Server-side route enforcement** — when enabled (default in Helm), ovpn-admin installs per-client iptables rules so that each VPN client can only reach destinations explicitly allowed via per-user CCD routes or global Common Routes. Requires `NET_ADMIN` capability.
 * **Editable server config** — proto, port, MTU, cipher, DCO, DNS push, custom directives через web UI без `helm upgrade`. Hybrid reload (SIGHUP soft / SIGTERM hard) с автоматическим rollback при невалидной конфигурации.
+* **Auto-kick on policy change** — when a CCD or server-config edit affects what gets pushed to clients, ovpn-admin disconnects the affected sessions via the management interface so they reconnect and pick up the new directives immediately (no waiting for the operator to ping the user).
 
 ## Screenshots
 
@@ -318,6 +322,70 @@ Or set `OVPN_FIREWALL=false` via env if running in compose.
 - IPv4 only (no `ip6tables` support in v1)
 - CIDR-level rules only (no per-port or per-protocol filtering in v1)
 - **Docker Desktop on Mac/Windows cannot run the firewall end-to-end**: Docker Desktop's Linux VM does not load the `iptable_filter` / `nf_tables` kernel modules, so any iptables invocation from inside a container returns "Failed to initialize" / "table doesn't exist". The feature works correctly on real Linux hosts (CI runners, Kubernetes nodes). For local development you can still iterate on the Go code and run unit tests; full end-to-end smoke needs a Linux VM or actual cluster.
+
+## Per-user full-tunnel
+
+`redirect-gateway def1` (push **all** client traffic through the VPN) used to
+be a single global server-config flag — either on for everyone or off. As of
+v2.0.17 the flag also lives **per user**, with a configurable list of subnets
+that bypass the tunnel so the user's local network (home router, NAS, printer,
+work LAN) keeps working.
+
+### How to use it
+
+1. Open a user → **Настройки** → tab **Подключение** → check **Полный туннель**
+2. Save. The user's CCD is re-rendered and the user is auto-kicked so the next
+   reconnect picks up the new push directives — no `.ovpn` file regeneration.
+
+### What gets pushed
+
+For a user with full-tunnel on, ovpn-admin renders into the CCD:
+
+```
+push "redirect-gateway def1"
+push "route 192.168.0.0 255.255.0.0 net_gateway"     # Default LAN
+push "route 10.0.0.0 255.0.0.0 net_gateway"          # Private 10/8
+push "route 172.16.0.0 255.240.0.0 net_gateway"      # Private 172.16/12 + Docker
+push "route 169.254.0.0 255.255.0.0 net_gateway"     # Link-local / mDNS
+# ...plus any per-user extras and the user's existing per-user/common routes
+```
+
+`net_gateway` is OpenVPN's keyword for "use the client's original default
+gateway" — so traffic to these subnets stays on the LAN side instead of being
+sent through the tunnel, even though `redirect-gateway def1` would otherwise
+catch it.
+
+### Two layers of exclusions
+
+* **Global defaults** — managed in **Настройки сервера** → **Исключения для
+  full-tunnel**. Ship out of the box with the four RFC1918 + link-local
+  ranges above; the operator can add, edit, or remove them. Apply to every
+  full-tunnel user.
+* **Per-user extras** — managed in the user's settings modal under the
+  **Исключения** tab. Layered on top of globals (deduped by `Address`/`Mask`).
+  Useful for one-off cases (a particular user's corporate VPN subnet, a
+  non-standard home network like `192.168.88.0/24` on MikroTik routers, etc.)
+  without touching the global defaults.
+
+### Upgrade safety
+
+On upgrade from a pre-v2.0.17 version, `deserializeServerConfig` backfills the
+default exclusions list if the field was missing from the saved JSON. This is
+distinguished from "operator explicitly set an empty list" via a raw-JSON peek,
+so a deliberately-cleared list is respected. Without this an operator's first
+full-tunnel toggle after upgrade would silently kill home-LAN access for that
+user.
+
+### Validation
+
+The `Subnet` type used in both layers rejects, at the API boundary:
+
+* malformed or non-IPv4 addresses (IPv6 is not supported here)
+* non-contiguous netmasks (`255.0.255.0`)
+* addresses with host bits set under their mask (`192.168.0.5/16` →
+  canonical form would be `192.168.0.0/16`; the operator probably typo'd)
+* descriptions containing newlines, double quotes, NUL bytes, or longer
+  than 200 chars — all CCD-injection vectors
 
 ## Editable server configuration
 
