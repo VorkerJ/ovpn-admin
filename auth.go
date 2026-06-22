@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -282,9 +283,20 @@ func initAuth() {
 		// Reuse a previously self-changed password if it survived (e.g. the
 		// state dir is on a mounted volume) so we don't regenerate a temp
 		// password — and don't re-trigger the forced change — on every restart.
-		if err := loadHtpasswd(adminHtpasswdPersistPath); err == nil && len(htpasswdUsers) > 0 {
-			log.Infof("Авторизация: загружен ранее сохранённый пароль admin из %s", adminHtpasswdPersistPath)
-		} else {
+		//
+		// SECURITY: the default persist dir is /tmp (world-writable, sticky).
+		// Only trust the file if it is a regular file, owned by our uid, and
+		// not group/world-accessible — otherwise a local user could plant a
+		// htpasswd with an attacker-known hash and we'd silently adopt it (and
+		// skip the forced change). On any mismatch we ignore it and regenerate.
+		loaded := false
+		if isOwnerOnlyCredFile(adminHtpasswdPersistPath) {
+			if err := loadHtpasswd(adminHtpasswdPersistPath); err == nil && len(htpasswdUsers) > 0 {
+				log.Infof("Авторизация: загружен ранее сохранённый пароль admin из %s", adminHtpasswdPersistPath)
+				loaded = true
+			}
+		}
+		if !loaded {
 			htpasswdUsers = make(map[string]string)
 			// Файл не задан — генерируем временный пароль для admin
 			pass := generatePassword(16)
@@ -755,6 +767,29 @@ func validateAdminPassword(p string) error {
 		return fmt.Errorf("пароль слишком короткий: минимум %d символов", adminPasswordMinLength)
 	}
 	return nil
+}
+
+// isOwnerOnlyCredFile reports whether path is safe to load admin credentials
+// from: a regular file, owned by our effective uid, with no group/world
+// permission bits. Guards the /tmp persist path against a planted-file attack.
+func isOwnerOnlyCredFile(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false // missing/unreadable — treat as "no persisted password"
+	}
+	if !fi.Mode().IsRegular() {
+		log.Warnf("persisted admin cred %s is not a regular file — ignoring", path)
+		return false
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		log.Warnf("persisted admin cred %s is group/world-accessible (%#o) — ignoring and regenerating temp password", path, fi.Mode().Perm())
+		return false
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
+		log.Warnf("persisted admin cred %s not owned by current uid — ignoring and regenerating temp password", path)
+		return false
+	}
+	return true
 }
 
 // saveAdminHtpasswd persists the current htpasswd map to disk atomically with

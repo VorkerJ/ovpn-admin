@@ -5,6 +5,20 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.21] — 2026-06-22
+
+### Security
+
+- **Harden the self-changed-password persist path against a planted-file
+  attack.** v2.0.20 persists a runtime admin password change to
+  `/tmp/.ovpn-admin-admin.htpasswd` when no `ADMIN_HTPASSWD_FILE` is set, and
+  loads it on startup. `/tmp` is world-writable, so a local user could plant a
+  htpasswd with an attacker-known hash and ovpn-admin would silently adopt it
+  (and skip the forced change). Startup now loads that file only if it is a
+  regular file, owned by the current uid, with no group/world permission bits
+  (`isOwnerOnlyCredFile`); on any mismatch it logs and regenerates a temporary
+  password instead. Our own writes are atomic 0600, so they always pass.
+
 ## [2.0.20] — 2026-06-22
 
 ### Security

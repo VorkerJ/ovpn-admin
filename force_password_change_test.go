@@ -3,12 +3,37 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+func TestIsOwnerOnlyCredFile(t *testing.T) {
+	dir := t.TempDir()
+
+	if isOwnerOnlyCredFile(filepath.Join(dir, "missing")) {
+		t.Error("missing file must not be trusted")
+	}
+
+	good := filepath.Join(dir, "good.htpasswd")
+	if err := os.WriteFile(good, []byte("admin:x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !isOwnerOnlyCredFile(good) {
+		t.Error("0600 owner-owned file must be trusted")
+	}
+
+	bad := filepath.Join(dir, "bad.htpasswd")
+	if err := os.WriteFile(bad, []byte("admin:x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isOwnerOnlyCredFile(bad) {
+		t.Error("group/world-readable file must NOT be trusted (planted-file guard)")
+	}
+}
 
 func ensureSigningKey() {
 	if sessionSigningKey == nil {
