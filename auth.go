@@ -36,6 +36,25 @@ const (
 // htpasswdUsers хранит распарсенные записи: username -> bcrypt hash
 var htpasswdUsers map[string]string
 
+// adminAuthMu guards htpasswdUsers and adminPasswordMustChange. Needed because
+// the runtime admin-password-change path mutates the map while
+// validateCredentials reads it concurrently on every login.
+var adminAuthMu sync.RWMutex
+
+// adminPasswordMustChange is true when the admin is authenticated with an
+// auto-generated temporary password. Until it is changed, requireAuth blocks
+// every endpoint except the change-password / auth-check / settings allowlist,
+// so a temp password leaked via logs can't be used to actually operate the
+// portal (and the legit admin is forced to rotate it on first login).
+var adminPasswordMustChange bool
+
+// adminHtpasswdPersistPath is where a runtime admin-password change is written.
+// When ADMIN_HTPASSWD_FILE is set it points at that file; otherwise at a
+// sibling of the session-state dir for best-effort durability across restarts.
+var adminHtpasswdPersistPath string
+
+const adminPasswordMinLength = 12
+
 // revokedTokens — blacklist токенов после логаута (hmac → expiry)
 var revokedTokens = map[string]int64{}
 var revokedTokensMu sync.Mutex
@@ -254,17 +273,31 @@ func initAuth() {
 		}
 		log.Infof("Авторизация: загружено %d пользователей из %s", len(htpasswdUsers), *adminHtpasswdFile)
 		revokedTokensFile = filepath.Join(filepath.Dir(*adminHtpasswdFile), ".session_blacklist.json")
+		// Operator chose the password — no forced rotation; persist changes back
+		// to the same file.
+		adminHtpasswdPersistPath = *adminHtpasswdFile
 	} else {
-		// Файл не задан — генерируем временный пароль для admin
-		pass := generatePassword(16)
-		hash, err := bcrypt.GenerateFromPassword([]byte(pass), adminBcryptCost)
-		if err != nil {
-			log.Fatalf("Ошибка генерации пароля: %v", err)
-		}
-		htpasswdUsers["admin"] = string(hash)
-		log.Warnf("ADMIN_HTPASSWD_FILE не задан. Временный пароль для admin: %s", pass)
-		log.Warn("Для постоянных учётных данных создайте htpasswd-файл и задайте ADMIN_HTPASSWD_FILE.")
 		revokedTokensFile = "/tmp/.ovpn-admin-session-blacklist.json"
+		adminHtpasswdPersistPath = filepath.Join(filepath.Dir(revokedTokensFile), ".ovpn-admin-admin.htpasswd")
+		// Reuse a previously self-changed password if it survived (e.g. the
+		// state dir is on a mounted volume) so we don't regenerate a temp
+		// password — and don't re-trigger the forced change — on every restart.
+		if err := loadHtpasswd(adminHtpasswdPersistPath); err == nil && len(htpasswdUsers) > 0 {
+			log.Infof("Авторизация: загружен ранее сохранённый пароль admin из %s", adminHtpasswdPersistPath)
+		} else {
+			htpasswdUsers = make(map[string]string)
+			// Файл не задан — генерируем временный пароль для admin
+			pass := generatePassword(16)
+			hash, err := bcrypt.GenerateFromPassword([]byte(pass), adminBcryptCost)
+			if err != nil {
+				log.Fatalf("Ошибка генерации пароля: %v", err)
+			}
+			htpasswdUsers["admin"] = string(hash)
+			adminPasswordMustChange = true
+			log.Warnf("ADMIN_HTPASSWD_FILE не задан. Временный пароль для admin: %s", pass)
+			log.Warn("ВАЖНО: при первом входе пароль нужно будет сразу сменить — до смены остальные действия заблокированы.")
+			log.Warn("Для постоянных учётных данных создайте htpasswd-файл и задайте ADMIN_HTPASSWD_FILE.")
+		}
 	}
 
 	// Persistent session signing key — survives restarts and password changes,
@@ -410,7 +443,9 @@ var dummyBcryptHash = func() string {
 }()
 
 func validateCredentials(username, password string) bool {
+	adminAuthMu.RLock()
 	hash, ok := htpasswdUsers[username]
+	adminAuthMu.RUnlock()
 	if !ok {
 		// Run bcrypt against a dummy hash so the timing of the "unknown user"
 		// path matches the "wrong password" path. Result discarded.
@@ -624,8 +659,123 @@ func (oAdmin *OvpnAdmin) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
+		// Forced-password-change gate: while the admin is on a temporary
+		// password, only the change-password flow (plus auth-check/settings so
+		// the UI can render that screen) is reachable. Everything else — and
+		// /metrics — is held until the password is rotated.
+		if adminPasswordChangeRequired() && !passwordChangeAllowed(r.URL.Path) {
+			writeJSONError(w, http.StatusPreconditionFailed, "password change required")
+			return
+		}
 		next(w, r)
 	}
+}
+
+// adminPasswordChangeRequired reports whether the admin must rotate a temporary
+// password before any other action is allowed.
+func adminPasswordChangeRequired() bool {
+	adminAuthMu.RLock()
+	defer adminAuthMu.RUnlock()
+	return adminPasswordMustChange
+}
+
+// passwordChangeAllowed is the allowlist of endpoints reachable while the
+// forced-password-change gate is active. Matched by suffix so the base-URL
+// prefix doesn't matter.
+func passwordChangeAllowed(path string) bool {
+	for _, suffix := range []string{
+		"api/admin/change-password",
+		"api/auth/check",
+		"api/server/settings",
+		"api/logout",
+	} {
+		if strings.HasSuffix(path, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// adminChangePasswordHandler POST /api/admin/change-password — rotates the
+// admin's own password. Requires the current password (so a hijacked session
+// alone can't lock the real admin out) and clears the forced-change gate.
+//
+// Method check is enforced by the requireMethod middleware; the session is
+// verified by requireAuth.
+func (oAdmin *OvpnAdmin) adminChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	user := oAdmin.sessionUser(r)
+	if user == "" {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if !validateCredentials(user, req.CurrentPassword) {
+		time.Sleep(500 * time.Millisecond) // замедление перебора текущего пароля
+		writeJSONError(w, http.StatusUnauthorized, "неверный текущий пароль")
+		return
+	}
+	if err := validateAdminPassword(req.NewPassword); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.NewPassword == req.CurrentPassword {
+		writeJSONError(w, http.StatusBadRequest, "новый пароль должен отличаться от текущего")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), adminBcryptCost)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "не удалось захешировать пароль")
+		return
+	}
+	adminAuthMu.Lock()
+	htpasswdUsers[user] = string(hash)
+	adminPasswordMustChange = false
+	adminAuthMu.Unlock()
+
+	if err := saveAdminHtpasswd(adminHtpasswdPersistPath); err != nil {
+		// Non-fatal: the change is live in memory for this process. Surface it
+		// so the operator knows it won't survive a restart.
+		log.Warnf("admin password changed in memory but failed to persist to %s: %v", adminHtpasswdPersistPath, err)
+	} else {
+		log.Infof("admin password changed and persisted to %s", adminHtpasswdPersistPath)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
+// validateAdminPassword enforces a minimum length for the admin UI password.
+func validateAdminPassword(p string) error {
+	if len([]rune(p)) < adminPasswordMinLength {
+		return fmt.Errorf("пароль слишком короткий: минимум %d символов", adminPasswordMinLength)
+	}
+	return nil
+}
+
+// saveAdminHtpasswd persists the current htpasswd map to disk atomically with
+// 0600 perms, so a self-changed admin password survives a restart.
+func saveAdminHtpasswd(path string) error {
+	if path == "" {
+		return fmt.Errorf("персист-путь не сконфигурирован")
+	}
+	adminAuthMu.RLock()
+	var b strings.Builder
+	for u, h := range htpasswdUsers {
+		b.WriteString(u)
+		b.WriteByte(':')
+		b.WriteString(h)
+		b.WriteByte('\n')
+	}
+	adminAuthMu.RUnlock()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomicSecret(path, []byte(b.String()))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

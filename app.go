@@ -436,6 +436,9 @@ type serverSettingsResponse struct {
 	ServerInitialized bool     `json:"serverInitialized"`
 	AdminMfaEnabled   bool     `json:"adminMfaEnabled"`
 	AdminMfaRequired  bool     `json:"adminMfaRequired"`
+	// AdminPasswordChangeRequired — admin is on a temporary password and must
+	// rotate it before any other action; the UI shows a forced change screen.
+	AdminPasswordChangeRequired bool `json:"adminPasswordChangeRequired"`
 }
 
 // adminHasMfa returns true if the current admin has MFA enabled.
@@ -480,11 +483,12 @@ func (oAdmin *OvpnAdmin) serverSettingsHandler(w http.ResponseWriter, r *http.Re
 	adminMfaEnabled := oAdmin.adminHasMfa(r)
 
 	writeJSON(w, http.StatusOK, serverSettingsResponse{
-		Status:            "ok",
-		Modules:           modules,
-		ServerInitialized: initialized,
-		AdminMfaEnabled:   adminMfaEnabled,
-		AdminMfaRequired:  adminMfaRequired,
+		Status:                      "ok",
+		Modules:                     modules,
+		ServerInitialized:           initialized,
+		AdminMfaEnabled:             adminMfaEnabled,
+		AdminMfaRequired:            adminMfaRequired,
+		AdminPasswordChangeRequired: adminPasswordChangeRequired(),
 	})
 }
 
@@ -493,9 +497,14 @@ func getOvpnCaCertExpireDate() time.Time {
 	caCert, err := ioutil.ReadFile(caCertPath)
 	if err != nil {
 		log.Errorf("error read file %s: %s", caCertPath, err.Error())
+		return time.Now()
 	}
 
 	certPem, _ := pem.Decode(caCert)
+	if certPem == nil {
+		log.Errorf("error decode certificate ca.crt: no PEM block found in %s", caCertPath)
+		return time.Now()
+	}
 	certPemBytes := certPem.Bytes
 
 	cert, err := x509.ParseCertificate(certPemBytes)

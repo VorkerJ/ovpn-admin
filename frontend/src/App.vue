@@ -14,6 +14,7 @@ import RotateUserModal from '@/components/modals/RotateUserModal.vue'
 import ChangePasswordModal from '@/components/modals/ChangePasswordModal.vue'
 import CcdModal from '@/components/modals/CcdModal.vue'
 import MfaSetupModal from '@/components/modals/MfaSetupModal.vue'
+import ForceChangePasswordModal from '@/components/modals/ForceChangePasswordModal.vue'
 import LoginPage from '@/components/LoginPage.vue'
 import TabBar from '@/components/TabBar.vue'
 import CommonRoutesView from '@/components/CommonRoutesView.vue'
@@ -65,6 +66,10 @@ const serverInitialized = ref(true)
 // а UI показывает баннер и блокирует кнопку «Добавить пользователя».
 const adminMfaEnabled = ref(true)
 const adminMfaRequired = ref(false)
+// adminPasswordChangeRequired — admin вошёл с временным паролем. Пока true,
+// бэкенд блокирует все эндпоинты кроме смены пароля (412), а UI показывает
+// неснимаемую модалку смены пароля.
+const adminPasswordChangeRequired = ref(false)
 
 const activeTab = ref('users')
 
@@ -140,6 +145,16 @@ async function loadSettings() {
   // during a partial rollout.
   adminMfaEnabled.value = settings.adminMfaEnabled !== false
   adminMfaRequired.value = !!settings.adminMfaRequired
+  adminPasswordChangeRequired.value = !!settings.adminPasswordChangeRequired
+}
+
+// Called after the forced password change succeeds — drop the gate flag and
+// refresh state now that the rest of the API is reachable again.
+async function onPasswordChanged() {
+  adminPasswordChangeRequired.value = false
+  notify('Пароль изменён', 'success')
+  await loadSettings()
+  await loadUsers()
 }
 
 // Called after the MFA modal emits status-change (enable/disable). Refetch
@@ -527,6 +542,13 @@ async function safeUnrevoke(username) {
         :open="mfaModalOpen"
         @close="mfaModalOpen = false"
         @status-change="onMfaStatusChange"
+      />
+
+      <!-- Forced (non-dismissable) temp-password rotation. Backend blocks every
+           other endpoint with 412 until this completes. -->
+      <ForceChangePasswordModal
+        :open="adminPasswordChangeRequired"
+        @changed="onPasswordChanged"
       />
 
       <!-- Toast notifications -->

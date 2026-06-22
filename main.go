@@ -68,7 +68,7 @@ var (
 	// instead of the container's /etc/resolv.conf, which inside Docker
 	// is the embedded 127.0.0.11 forwarder and can be flaky.
 	domainResolverAddr = kingpin.Flag("domain-resolver", "DNS server (host or host:port) for resolving domain routes; default uses system /etc/resolv.conf").Default("").Envar("OVPN_DOMAIN_RESOLVER").String()
-	insecureCookies          = kingpin.Flag("insecure-cookies", "disable Secure flag on session cookies (DEV ONLY — never use in production)").Default("false").Envar("OVPN_INSECURE_COOKIES").Bool()
+	insecureCookies    = kingpin.Flag("insecure-cookies", "disable Secure flag on session cookies (DEV ONLY — never use in production)").Default("false").Envar("OVPN_INSECURE_COOKIES").Bool()
 
 	serverConfigEnabled = kingpin.Flag("server-config",
 		"enable editable server config UI feature").
@@ -79,9 +79,9 @@ var (
 		Default("/etc/openvpn/server.conf").Envar("OVPN_SERVER_CONFIG_PATH").String()
 
 	mfaEnabled = kingpin.Flag("mfa", "enable TOTP two-factor authentication for admin UI").
-		Default("true").Envar("OVPN_MFA").Bool()
+			Default("true").Envar("OVPN_MFA").Bool()
 	mfaDBPath = kingpin.Flag("mfa.db-path", "path to MFA secrets JSON file").
-		Default("").Envar("OVPN_MFA_DB_PATH").String()
+			Default("").Envar("OVPN_MFA_DB_PATH").String()
 	mfaRequired = kingpin.Flag("mfa.required",
 		"require admins to enable MFA before performing write operations").
 		Default("true").Envar("OVPN_MFA_REQUIRED").Bool()
@@ -382,6 +382,7 @@ func main() {
 	// Logout is public so a stale/invalid cookie can still be cleared.
 	http.HandleFunc(*listenBaseUrl+"api/logout", post(ovpnAdmin.logoutHandler))
 	http.HandleFunc(*listenBaseUrl+"api/auth/check", auth(get(ovpnAdmin.authCheckHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/admin/change-password", auth(post(ovpnAdmin.adminChangePasswordHandler)))
 
 	// MFA endpoints
 	http.HandleFunc(*listenBaseUrl+"api/login/mfa", post(ovpnAdmin.mfaLoginHandler))

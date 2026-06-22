@@ -638,7 +638,10 @@ func (openVPNPKI *OpenVPNPKI) updateCRLOnDisk() (err error) {
 
 func (openVPNPKI *OpenVPNPKI) secretGenTaKeyAndDHParam() (err error) {
 	taKeyPath := "/tmp/ta.key"
-	cmd := exec.Command("bash", "-c", fmt.Sprintf("/usr/sbin/openvpn --genkey --secret %s", taKeyPath))
+	// argv-based exec (no shell) — defensive: even though these paths are fixed
+	// constants today, a shell pipeline here would become command injection the
+	// moment any arg turns user-derived.
+	cmd := exec.Command("/usr/sbin/openvpn", "--genkey", "--secret", taKeyPath)
 	stdout, err := cmd.CombinedOutput()
 	log.Info(fmt.Sprintf("/usr/sbin/openvpn --genkey --secret %s: %s", taKeyPath, string(stdout)))
 	if err != nil {
@@ -650,7 +653,7 @@ func (openVPNPKI *OpenVPNPKI) secretGenTaKeyAndDHParam() (err error) {
 	}
 
 	dhparamPath := "/tmp/dh.pem"
-	cmd = exec.Command("bash", "-c", fmt.Sprintf("openssl dhparam -out %s 2048", dhparamPath))
+	cmd = exec.Command("openssl", "dhparam", "-out", dhparamPath, "2048")
 	_, err = cmd.CombinedOutput()
 	if err != nil {
 		return

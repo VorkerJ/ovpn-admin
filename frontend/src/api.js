@@ -146,6 +146,15 @@ export async function fetchServerConfigDefaults() {
   return data
 }
 
+export async function adminChangePassword(currentPassword, newPassword) {
+  const { data } = await axios.post(
+    'api/admin/change-password',
+    JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    { headers: { 'Content-Type': 'application/json' } },
+  )
+  return data
+}
+
 export async function loginMfa(mfaToken, code) {
   const { data } = await axios.post('api/login/mfa', JSON.stringify({ mfa_token: mfaToken, code }), {
     headers: { 'Content-Type': 'application/json' },

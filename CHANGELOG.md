@@ -5,6 +5,31 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.20] — 2026-06-22
+
+### Security
+
+- **Forced password change on first login.** When no `ADMIN_HTPASSWD_FILE` is
+  configured, ovpn-admin generates a temporary admin password and prints it to
+  the logs. Anyone with log access could previously use it directly — and,
+  because admin MFA is *required-but-not-yet-enrolled* on a fresh deploy, a
+  first-mover could self-enroll MFA and lock the real admin out. The admin is
+  now flagged `must-change`: after logging in with the temporary password,
+  `requireAuth` returns `412 password change required` for **every** endpoint
+  (including `/metrics`) except the change-password flow, until a new password
+  (min 12 chars) is set via `POST /api/admin/change-password`. The change
+  requires the current password (a hijacked session alone can't rotate it) and
+  is persisted (atomic, 0600) so it survives restarts without re-triggering the
+  prompt. A non-dismissable modal drives this in the UI.
+- **`getOvpnCaCertExpireDate` no longer panics on an unreadable/garbage
+  `ca.crt`.** A read error was logged but execution continued into
+  `pem.Decode(nil)` → `certPem.Bytes` nil-deref → `SIGSEGV` crash loop. It now
+  returns early on read failure and on a missing PEM block.
+- **`secretGenTaKeyAndDHParam` (k8s PKI bootstrap) switched from `bash -c` +
+  `fmt.Sprintf` to argv-based `exec.Command`.** The paths are fixed constants
+  today (no injection), but the shell form would become command injection the
+  moment any argument turned user-derived. Defensive hardening.
+
 ## [2.0.19] — 2026-06-10
 
 ### Fixed
