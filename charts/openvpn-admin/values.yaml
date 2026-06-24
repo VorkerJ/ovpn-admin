@@ -53,6 +53,28 @@ ovpnAdmin:
     reconcileInterval: "5m"
 
 # ----------------------------------------------------------------
+# Persistent auth state
+# ----------------------------------------------------------------
+# Durable storage for the session signing key, MFA (TOTP) secrets, the logout
+# blacklist, and — when no adminHtpasswdSecret is set — the self-changed admin
+# password. Mounted at /var/lib/ovpn-admin and passed to ovpn-admin via
+# --session.state-dir / --mfa.db-path.
+#
+# When disabled, this state lives on an emptyDir (pod-lifetime only): every pod
+# restart invalidates all admin sessions, requires MFA re-enrollment, and (in
+# no-htpasswd mode) re-triggers the forced first-login password change.
+# Enable for production.
+persistence:
+  enabled: false
+  # existingClaim: ""          # use a pre-created PVC instead of creating one
+  storageClass: ""             # "" = cluster default StorageClass
+  accessMode: ReadWriteOnce
+  size: 64Mi
+  # fsGroup of the "ovpnshared" group baked into the image; ovpnadmin is a
+  # member, so the volume becomes writable without knowing the uid.
+  fsGroup: 2000
+
+# ----------------------------------------------------------------
 # OpenVPN server
 # ----------------------------------------------------------------
 openvpn:

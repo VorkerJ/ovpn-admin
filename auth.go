@@ -268,23 +268,34 @@ func saveRevokedTokens() {
 func initAuth() {
 	htpasswdUsers = make(map[string]string)
 
+	// stateDir holds the session signing key, the logout blacklist and (in
+	// no-htpasswd mode) the persisted admin password. An explicit
+	// --session.state-dir (e.g. a writable PVC in k8s) decouples this from the
+	// htpasswd directory, which is typically a read-only Secret mount — writing
+	// the signing key there would otherwise crash the process on startup.
+	stateDir := *sessionStateDir
+
 	if *adminHtpasswdFile != "" {
 		if err := loadHtpasswd(*adminHtpasswdFile); err != nil {
 			log.Fatalf("Не удалось загрузить htpasswd-файл %s: %v", *adminHtpasswdFile, err)
 		}
 		log.Infof("Авторизация: загружено %d пользователей из %s", len(htpasswdUsers), *adminHtpasswdFile)
-		revokedTokensFile = filepath.Join(filepath.Dir(*adminHtpasswdFile), ".session_blacklist.json")
 		// Operator chose the password — no forced rotation; persist changes back
 		// to the same file.
 		adminHtpasswdPersistPath = *adminHtpasswdFile
+		if stateDir == "" {
+			stateDir = filepath.Dir(*adminHtpasswdFile)
+		}
 	} else {
-		revokedTokensFile = "/tmp/.ovpn-admin-session-blacklist.json"
-		adminHtpasswdPersistPath = filepath.Join(filepath.Dir(revokedTokensFile), ".ovpn-admin-admin.htpasswd")
+		if stateDir == "" {
+			stateDir = "/tmp"
+		}
+		adminHtpasswdPersistPath = filepath.Join(stateDir, ".ovpn-admin-admin.htpasswd")
 		// Reuse a previously self-changed password if it survived (e.g. the
-		// state dir is on a mounted volume) so we don't regenerate a temp
-		// password — and don't re-trigger the forced change — on every restart.
+		// state dir is on a mounted PVC) so we don't regenerate a temp password
+		// — and don't re-trigger the forced change — on every restart.
 		//
-		// SECURITY: the default persist dir is /tmp (world-writable, sticky).
+		// SECURITY: the default state dir is /tmp (world-writable, sticky).
 		// Only trust the file if it is a regular file, owned by our uid, and
 		// not group/world-accessible — otherwise a local user could plant a
 		// htpasswd with an attacker-known hash and we'd silently adopt it (and
@@ -312,9 +323,11 @@ func initAuth() {
 		}
 	}
 
+	revokedTokensFile = filepath.Join(stateDir, ".session_blacklist.json")
+
 	// Persistent session signing key — survives restarts and password changes,
 	// rotates only when the file is deleted by the operator.
-	sessionSigningKeyFile = filepath.Join(filepath.Dir(revokedTokensFile), ".session_signing_key")
+	sessionSigningKeyFile = filepath.Join(stateDir, ".session_signing_key")
 	if err := loadOrGenerateSigningKey(); err != nil {
 		log.Fatalf("Failed to init session signing key: %v", err)
 	}

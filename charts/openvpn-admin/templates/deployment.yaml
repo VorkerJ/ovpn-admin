@@ -20,6 +20,13 @@ spec:
     spec:
       serviceAccountName: {{ .Values.rbac.serviceAccountName }}
 
+      {{- if .Values.persistence.enabled }}
+      # fsGroup makes the state PVC writable by the non-root ovpnadmin user
+      # (member of the "ovpnshared" group baked into the image).
+      securityContext:
+        fsGroup: {{ .Values.persistence.fsGroup }}
+      {{- end }}
+
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -135,6 +142,10 @@ spec:
             - --storage.backend={{ .Values.ovpnAdmin.storageBackend }}
             - --mgmt=main=127.0.0.1:8989
             - --server-config.conf-path=/etc/openvpn-dynamic/server.conf
+            # Durable auth state (signing key, MFA secrets, logout blacklist,
+            # self-changed admin password) — see "persistence" in values.yaml.
+            - --session.state-dir=/var/lib/ovpn-admin
+            - --mfa.db-path=/var/lib/ovpn-admin/_mfa_secrets.json
             {{- if .Values.ovpnAdmin.ccdEnabled }}
             - --ccd
             - --ccd.path=/etc/openvpn/ccd
@@ -181,6 +192,8 @@ spec:
               mountPath: /etc/openvpn/pki
             - name: openvpn-ccd
               mountPath: /etc/openvpn/ccd
+            - name: ovpn-admin-state
+              mountPath: /var/lib/ovpn-admin
             {{- if .Values.ovpnAdmin.dco.enabled }}
             - name: lib-modules
               mountPath: /lib/modules
@@ -196,6 +209,15 @@ spec:
         # ── server.conf rendered at runtime by ovpn-admin ───────────────
         - name: ovpn-dynamic-conf
           emptyDir: {}
+
+        # ── durable auth state (signing key, MFA, blacklist, admin pw) ──
+        - name: ovpn-admin-state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-state" (include "openvpn-admin.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
 
         {{- if .Values.ovpnAdmin.dco.enabled }}
         # ── /lib/modules from host (DCO kernel-module detection) ────────

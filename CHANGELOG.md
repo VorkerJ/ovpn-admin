@@ -5,6 +5,26 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.22] — 2026-06-24
+
+### Added
+
+- **Durable auth state via `--session.state-dir` + an optional chart PVC.** The
+  session signing key, logout blacklist, MFA (TOTP) secrets and the
+  self-changed admin password previously landed on ephemeral paths (`/tmp`,
+  CWD) or — worse, with a mounted htpasswd Secret — under the **read-only**
+  `/etc/ovpn-admin/auth` mount, which crashed the pod on the signing-key write.
+  A new `--session.state-dir` flag (`OVPN_SESSION_STATE_DIR`) points all of that
+  at one writable directory; when set, the MFA secrets path defaults under it
+  too (no second flag needed).
+- **Helm chart `persistence` block.** When `persistence.enabled=true` the chart
+  provisions a PVC, mounts it at `/var/lib/ovpn-admin`, passes
+  `--session.state-dir` / `--mfa.db-path`, and sets `fsGroup` (default `2000`,
+  the image's `ovpnshared` group) so the non-root `ovpnadmin` user can write it.
+  Result: admin sessions, MFA enrollment and the forced-password-change state
+  survive pod restarts. Defaults to an `emptyDir` (pod-lifetime) when disabled,
+  so existing installs are unaffected until they opt in.
+
 ## [2.0.21] — 2026-06-22
 
 ### Security

@@ -86,6 +86,10 @@ var (
 		"require admins to enable MFA before performing write operations").
 		Default("true").Envar("OVPN_MFA_REQUIRED").Bool()
 
+	sessionStateDir = kingpin.Flag("session.state-dir",
+		"writable dir for session signing key, logout blacklist and persisted admin password; defaults to the htpasswd dir or /tmp").
+		Default("").Envar("OVPN_SESSION_STATE_DIR").String()
+
 	trustedProxiesFlag = kingpin.Flag("trusted-proxies",
 		"comma-separated CIDRs or IPs of trusted reverse proxies (X-Forwarded-For honored)").
 		Default("").Envar("OVPN_TRUSTED_PROXIES").String()
@@ -183,7 +187,12 @@ func main() {
 		mfaPath := *mfaDBPath
 		fallbackToCwd := false
 		if mfaPath == "" {
-			if *adminHtpasswdFile != "" {
+			if *sessionStateDir != "" {
+				// Co-locate MFA secrets with the rest of the durable auth
+				// state so a single --session.state-dir (e.g. a PVC) covers
+				// everything without a second flag.
+				mfaPath = filepath.Join(*sessionStateDir, "_mfa_secrets.json")
+			} else if *adminHtpasswdFile != "" {
 				mfaPath = filepath.Join(filepath.Dir(*adminHtpasswdFile), "_mfa_secrets.json")
 			} else {
 				// CWD-relative is unpredictable: where ovpn-admin is started
