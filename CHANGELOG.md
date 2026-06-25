@@ -5,6 +5,19 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.25] — 2026-06-25
+
+### Fixed
+
+- **CI is green again, so the image/chart release actually runs.** Two CI jobs
+  were failing, and the image builds + chart release `needs` them — so the
+  v2.0.23 (native openvpn-user) and v2.0.24 (govulncheck) tags built no images.
+  Fixed: (1) `errcheck` flagged unchecked `*sql.DB`/`*sql.Rows` `Close()` in the
+  new `internal/ovpnuser` (the lint config only excludes `io.Closer.Close` on
+  the interface type); (2) the `govulncheck` job resolved Go from the `go`
+  directive (1.25.0, unpatched) — it now sets up the patched toolchain (1.26.4)
+  explicitly. This release carries the full v2.0.23–v2.0.25 set into images.
+
 ## [2.0.24] — 2026-06-25
 
 ### Security

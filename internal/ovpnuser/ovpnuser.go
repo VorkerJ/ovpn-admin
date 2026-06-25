@@ -124,7 +124,7 @@ func RunCLI(args []string) int {
 		fmt.Fprintf(os.Stderr, "%s: error: %v\n", BinName, err)
 		return 1
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := &store{db: db}
 
 	switch parsed {
@@ -323,7 +323,7 @@ func (s *store) printUsers(all bool) {
 		fmt.Println(err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var lines []string
 	for rows.Next() {
 		var id, revoked, deleted, appConf int

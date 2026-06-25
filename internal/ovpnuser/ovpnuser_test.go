@@ -12,7 +12,7 @@ func newTestStore(t *testing.T) *store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	s := &store{db: db}
 	if rc := s.initDB(); rc != 0 {
 		t.Fatalf("initDB rc=%d", rc)
