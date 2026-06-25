@@ -5,6 +5,20 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.26] — 2026-06-25
+
+### Fixed
+
+- **Chart no longer passes a non-existent `--firewall.startup-timeout` flag.**
+  The deployment template rendered `--firewall.startup-timeout=...` whenever the
+  firewall was enabled, but the binary has no such flag — and the firewall
+  defaults to ON. So a fresh `helm install` of this chart would have
+  CrashLoopBackOff'd on an "unknown flag" at startup (no in-cluster deployment
+  used this chart yet, so nothing in production was affected). Removed the
+  orphan flag and its `firewall.startupTimeout` value; the firewall's
+  reconnect/retry backoffs are internal constants, not a configurable startup
+  timeout.
+
 ## [2.0.25] — 2026-06-25
 
 ### Fixed

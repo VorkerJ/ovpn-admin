@@ -163,7 +163,6 @@ spec:
             - --firewall
             - --firewall.chain-name={{ .Values.ovpnAdmin.firewall.chainName }}
             - --firewall.iptables-bin={{ .Values.ovpnAdmin.firewall.iptablesBin }}
-            - --firewall.startup-timeout={{ .Values.ovpnAdmin.firewall.startupTimeout }}
             - --firewall.reconcile-interval={{ .Values.ovpnAdmin.firewall.reconcileInterval }}
             {{- end }}
           ports:

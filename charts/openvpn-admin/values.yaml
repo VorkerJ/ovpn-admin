@@ -49,7 +49,6 @@ ovpnAdmin:
     enabled: true               # default ON for new installs; existing users see CHANGELOG
     chainName: "OVPN_FW"
     iptablesBin: "/usr/sbin/iptables"
-    startupTimeout: "30s"
     reconcileInterval: "5m"
 
 # ----------------------------------------------------------------
