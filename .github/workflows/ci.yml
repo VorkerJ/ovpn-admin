@@ -51,6 +51,22 @@ jobs:
           version: v2.11.4
           args: --timeout=10m
 
+  # ── Vulnerability scan ────────────────────────────────────────────────────
+  # Fails the build on known CVEs in the Go stdlib or any imported/required
+  # module that our code actually reaches. Keep the toolchain (go.mod) on a
+  # patched Go release so stdlib findings stay clean.
+  govulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+
   # ── Frontend Lint ───────────────────────────────────────────────────────────
   lint-frontend:
     name: Lint Frontend

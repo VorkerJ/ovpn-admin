@@ -5,6 +5,19 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.24] — 2026-06-25
+
+### Security
+
+- **`govulncheck` now gates CI**, failing the build on any known CVE in the Go
+  stdlib or an imported/required module that our code actually reaches. A
+  `toolchain go1.26.4` directive pins the build to a patched Go release so the
+  13 stdlib advisories `govulncheck` flagged against an older 1.26.0 toolchain
+  (reachable via the HTTP server / crypto/x509 / net/url / os) stay resolved.
+  The release images already built on `golang:1.26-bookworm` (go1.26.4), so the
+  published artifacts were not affected; this makes it deterministic and
+  enforced.
+
 ## [2.0.23] — 2026-06-25
 
 ### Changed
