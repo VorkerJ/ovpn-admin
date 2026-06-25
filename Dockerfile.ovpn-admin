@@ -29,18 +29,12 @@ FROM alpine:3.23
 WORKDIR /app
 COPY --from=backend-builder /app/ovpn-admin ./
 
-# Pin openvpn-user version and verify SHA256 of the downloaded tarball.
-# When bumping OPENVPN_USER_VERSION, recompute the SHA256:
-#   curl -sL https://github.com/pashcovich/openvpn-user/releases/download/<ver>/openvpn-user-linux-amd64.tar.gz | sha256sum
-ENV OPENVPN_USER_VERSION=v1.0.4
-ENV OPENVPN_USER_SHA256=7abdd875142db72dcb985c1a7ec59b68a4bf40dea6aeb26ee37f582ee752e5d3
-
+# openvpn-user is provided by the ovpn-admin binary itself: invoked via the
+# symlink below (argv[0] == "openvpn-user") it runs the native openvpn-user CLI
+# (internal/ovpnuser). No third-party prebuilt binary is downloaded.
 RUN apk add --update bash easy-rsa openssl openvpn coreutils iptables iptables-legacy libcap && \
     ln -s /usr/share/easy-rsa/easyrsa /usr/local/bin && \
-    wget -q "https://github.com/pashcovich/openvpn-user/releases/download/${OPENVPN_USER_VERSION}/openvpn-user-linux-amd64.tar.gz" -O /tmp/ou.tgz && \
-    echo "${OPENVPN_USER_SHA256}  /tmp/ou.tgz" | sha256sum -c - && \
-    tar xz -C /usr/local/bin -f /tmp/ou.tgz && \
-    rm /tmp/ou.tgz && \
+    ln -s /app/ovpn-admin /usr/local/bin/openvpn-user && \
     rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 RUN addgroup -S ovpnadmin && \
     addgroup -g 2000 ovpnshared && \

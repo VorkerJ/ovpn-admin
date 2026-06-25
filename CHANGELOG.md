@@ -5,6 +5,27 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.23] — 2026-06-25
+
+### Changed
+
+- **`openvpn-user` is now built from our own source — no third-party binary
+  download.** Both images previously `wget`-ed a prebuilt `openvpn-user` binary
+  from a personal GitHub release (`pashcovich/openvpn-user`). For an
+  infrastructure component that is a supply-chain risk: a compromised upstream
+  release (or a version bump that re-pins its hash to a poisoned artifact) would
+  be baked straight into the image on the next rebuild. `openvpn-user` is now a
+  native Go reimplementation (`internal/ovpnuser`, pure-Go `modernc.org/sqlite`,
+  Apache-2.0 like the original) that is **wire-compatible** with existing
+  `users.db` files — verified bidirectionally against the upstream binary
+  (identical schema, stdout messages and exit codes; OpenVPN's `auth` contract
+  of exit 0 = allow / non-zero = deny is preserved). The ovpn-admin binary
+  serves the CLI itself when invoked as `openvpn-user` (argv[0] symlink), so the
+  admin image ships a single binary; the OpenVPN server image builds a tiny
+  standalone `cmd/openvpn-user` from the same source. New password hashes use
+  bcrypt DefaultCost (10) instead of the upstream MinCost (4); existing hashes
+  still verify. TOTP-secret generation uses `crypto/rand`.
+
 ## [2.0.22] — 2026-06-24
 
 ### Added

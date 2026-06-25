@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"gopkg.in/alecthomas/kingpin.v2"
 
+	"ovpn-admin/internal/ovpnuser"
 	"ovpn-admin/internal/storage"
 )
 
@@ -129,6 +131,13 @@ var logFormats = map[string]log.Formatter{
 var app OpenVPNPKI
 
 func main() {
+	// When invoked via the /usr/local/bin/openvpn-user symlink, act as the
+	// native openvpn-user CLI (password-auth user DB) instead of the admin
+	// server — one binary serves both roles, no third-party download.
+	if filepath.Base(os.Args[0]) == ovpnuser.BinName {
+		os.Exit(ovpnuser.RunCLI(os.Args[1:]))
+	}
+
 	kingpin.Version(version)
 	kingpin.Parse()
 

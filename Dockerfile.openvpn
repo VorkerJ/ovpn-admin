@@ -1,3 +1,17 @@
+# ── openvpn-user builder ───────────────────────────────────────────────────
+# Builds our native openvpn-user CLI (internal/ovpnuser) from source instead of
+# downloading a third-party prebuilt binary. Pure-Go SQLite (modernc) → CGO off
+# → a static binary that drops straight into the runtime image.
+FROM golang:1.26-bookworm AS ou-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG TARGETARCH
+RUN env CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
+    go build -ldflags '-s -w' -o /openvpn-user ./cmd/openvpn-user
+
+# ── runtime ────────────────────────────────────────────────────────────────
 FROM debian:trixie-slim
 ARG TARGETARCH
 
@@ -7,33 +21,15 @@ ARG TARGETARCH
 # Alpine's package is built WITHOUT DCO, which is why we used to default
 # DCOEnabled=false. With this image, operators can flip DCO on in the UI.
 
-# Pin openvpn-user version and verify SHA256 of the downloaded tarball.
-# When bumping OPENVPN_USER_VERSION, recompute the per-arch SHA256:
-#   curl -sL https://github.com/pashcovich/openvpn-user/releases/download/<ver>/openvpn-user-linux-<arch>.tar.gz | sha256sum
-ENV OPENVPN_USER_VERSION=v1.0.4
-ENV OPENVPN_USER_SHA256_AMD64=7abdd875142db72dcb985c1a7ec59b68a4bf40dea6aeb26ee37f582ee752e5d3
-ENV OPENVPN_USER_SHA256_ARM64=0bd080287c8e213b686a1db4d9981a648310914ab2e9e46309259b7b7d63561b
-ENV OPENVPN_USER_SHA256_ARM=38c61b3f5883af9796f74b8de3949968fb5e3084f2dc4e93bec82f79d9902642
-
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bash openvpn easy-rsa iptables iproute2 ca-certificates wget && \
+        bash openvpn easy-rsa iptables iproute2 ca-certificates && \
     ln -sf /usr/share/easy-rsa/easyrsa /usr/local/bin/easyrsa && \
-    case "${TARGETARCH}" in \
-      amd64) EXPECTED_SHA="${OPENVPN_USER_SHA256_AMD64}" ;; \
-      arm64) EXPECTED_SHA="${OPENVPN_USER_SHA256_ARM64}" ;; \
-      arm)   EXPECTED_SHA="${OPENVPN_USER_SHA256_ARM}"   ;; \
-      *)     echo "unsupported TARGETARCH=${TARGETARCH}" >&2 && exit 1 ;; \
-    esac && \
-    wget -q "https://github.com/pashcovich/openvpn-user/releases/download/${OPENVPN_USER_VERSION}/openvpn-user-linux-${TARGETARCH}.tar.gz" -O /tmp/ou.tgz && \
-    echo "${EXPECTED_SHA}  /tmp/ou.tgz" | sha256sum -c - && \
-    tar xz -C /usr/local/bin -f /tmp/ou.tgz && \
-    rm /tmp/ou.tgz && \
-    apt-get remove -y --purge wget && \
-    apt-get autoremove -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-RUN if [ -f "/usr/local/bin/openvpn-user-${TARGETARCH}" ]; then ln -s /usr/local/bin/openvpn-user-${TARGETARCH} /usr/local/bin/openvpn-user; fi
+# Our openvpn-user (same source as the ovpn-admin binary's openvpn-user mode).
+COPY --from=ou-builder /openvpn-user /usr/local/bin/openvpn-user
+
 COPY setup/ /etc/openvpn/setup
 RUN chmod +x /etc/openvpn/setup/configure.sh
