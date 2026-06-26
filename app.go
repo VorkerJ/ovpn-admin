@@ -52,6 +52,7 @@ type OvpnAdmin struct {
 	serverManager        *serverManager
 	store                storage.Store
 	mfaStore             *mfaStore
+	traffic              *trafficAccountant
 }
 
 // updateClients refreshes the cached clients slice under clientsMu.
@@ -183,6 +184,10 @@ type clientStatus struct {
 
 func (oAdmin *OvpnAdmin) setState() {
 	oAdmin.activeClients = oAdmin.mgmtGetActiveClients()
+	if oAdmin.traffic != nil {
+		oAdmin.traffic.update(oAdmin.activeClients)
+		oAdmin.traffic.persist()
+	}
 	oAdmin.updateClients()
 
 	ovpnServerCaCertExpire.Set(float64((getOvpnCaCertExpireDate().Unix() - time.Now().Unix()) / 3600 / 24))

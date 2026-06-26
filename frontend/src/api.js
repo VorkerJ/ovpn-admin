@@ -5,6 +5,11 @@ export async function fetchUsers() {
   return Array.isArray(data) ? data : []
 }
 
+export async function fetchTraffic() {
+  const { data } = await axios.get('api/traffic')
+  return Array.isArray(data) ? data : []
+}
+
 export async function fetchServerSettings() {
   const { data } = await axios.get('api/server/settings')
   return data // { modules, serverInitialized, adminMfaEnabled, adminMfaRequired }

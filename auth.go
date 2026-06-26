@@ -49,6 +49,11 @@ var adminAuthMu sync.RWMutex
 // portal (and the legit admin is forced to rotate it on first login).
 var adminPasswordMustChange bool
 
+// authStateDir is the resolved writable dir for persistent state (signing key,
+// blacklist, admin password, traffic totals). Set by initAuth; reused by other
+// subsystems (e.g. traffic accounting) that need durable storage on the PVC.
+var authStateDir string
+
 // adminHtpasswdPersistPath is where a runtime admin-password change is written.
 // When ADMIN_HTPASSWD_FILE is set it points at that file; otherwise at a
 // sibling of the session-state dir for best-effort durability across restarts.
@@ -323,6 +328,7 @@ func initAuth() {
 		}
 	}
 
+	authStateDir = stateDir
 	revokedTokensFile = filepath.Join(stateDir, ".session_blacklist.json")
 
 	// Persistent session signing key — survives restarts and password changes,

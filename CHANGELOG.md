@@ -5,6 +5,23 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.27] — 2026-06-26
+
+### Added
+
+- **Per-user cumulative traffic, with a new "Трафик" tab.** OpenVPN's mgmt
+  `status` only reports *current-session* byte counters (they reset on every
+  reconnect), so the UI had no "how much has each user used" view. A new
+  `trafficAccountant` folds each mgmt poll into lifetime totals — adding the
+  full counter on a new session (detected via `ConnectedSince`) and only the
+  positive delta within an ongoing session — and persists them as JSON in the
+  auth state dir (`<state-dir>/traffic.json`, on the PVC when enabled), so
+  totals survive reconnects and restarts. New `GET /api/traffic` (auth-gated)
+  returns per-user RX/TX/total plus live-connection status, sorted by volume.
+  The frontend adds a sortable, searchable **Трафик** tab with summary cards.
+  Note: without a PVC the totals live on the pod's ephemeral fs and reset on
+  restart (same tradeoff as the other auth state).
+
 ## [2.0.26] — 2026-06-25
 
 ### Fixed

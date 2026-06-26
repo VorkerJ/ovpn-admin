@@ -19,6 +19,7 @@ import LoginPage from '@/components/LoginPage.vue'
 import TabBar from '@/components/TabBar.vue'
 import CommonRoutesView from '@/components/CommonRoutesView.vue'
 import ServerConfigView from '@/components/ServerConfigView.vue'
+import TrafficView from '@/components/TrafficView.vue'
 
 import {
   fetchUsers, fetchServerSettings,
@@ -74,7 +75,7 @@ const adminPasswordChangeRequired = ref(false)
 const activeTab = ref('users')
 
 const visibleTabs = computed(() => {
-  const tabs = [{ key: 'users', label: 'Пользователи' }]
+  const tabs = [{ key: 'users', label: 'Пользователи' }, { key: 'traffic', label: 'Трафик' }]
   if (modulesEnabled.value.includes('common-routes')) {
     tabs.push({ key: 'common-routes', label: 'Общие маршруты' })
   }
@@ -479,6 +480,9 @@ async function safeUnrevoke(username) {
               @change-password="(u) => openModal('changePassword', u)"
             />
           </div>
+        </template>
+        <template v-else-if="activeTab === 'traffic'">
+          <TrafficView />
         </template>
         <template v-else-if="activeTab === 'common-routes'">
           <CommonRoutesView @mfa-required="onMfaRequired" />

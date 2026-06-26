@@ -191,6 +191,10 @@ func main() {
 	ovpnAdmin.mgmtInterfaces = make(map[string]string)
 	ovpnAdmin.commonRoutes = &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}
 	ovpnAdmin.store = store
+	// Cumulative per-user traffic — persisted alongside the rest of the auth
+	// state (on the PVC when --session.state-dir is set), so totals survive
+	// restarts and reconnects.
+	ovpnAdmin.traffic = newTrafficAccountant(filepath.Join(authStateDir, "traffic.json"))
 
 	if *mfaEnabled {
 		mfaPath := *mfaDBPath
@@ -412,6 +416,7 @@ func main() {
 	// Protected API endpoints — read-only
 	http.HandleFunc(*listenBaseUrl+"api/server/settings", auth(get(ovpnAdmin.serverSettingsHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/users/list", auth(get(ovpnAdmin.userListHandler)))
+	http.HandleFunc(*listenBaseUrl+"api/traffic", auth(get(ovpnAdmin.trafficHandler)))
 	// Downloads embedded client private key — must require the same MFA
 	// gate as user-write endpoints; otherwise a stolen session cookie
 	// gives away every client cert without the second factor.
