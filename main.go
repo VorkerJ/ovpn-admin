@@ -195,6 +195,9 @@ func main() {
 	// state (on the PVC when --session.state-dir is set), so totals survive
 	// restarts and reconnects.
 	ovpnAdmin.traffic = newTrafficAccountant(filepath.Join(authStateDir, "traffic.json"))
+	// Service-account API tokens for non-interactive integrations (create users
+	// / set routes via API). Persisted alongside the rest of the auth state.
+	ovpnAdmin.apiTokens = newAPITokenStore(filepath.Join(authStateDir, "api_tokens.json"))
 
 	if *mfaEnabled {
 		mfaPath := *mfaDBPath
@@ -405,6 +408,11 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/logout", post(ovpnAdmin.logoutHandler))
 	http.HandleFunc(*listenBaseUrl+"api/auth/check", auth(get(ovpnAdmin.authCheckHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/admin/change-password", auth(post(ovpnAdmin.adminChangePasswordHandler)))
+
+	// Service-account API tokens (session + MFA gated; tokens themselves cannot
+	// reach these — apiTokenPathAllowed denies /api/api-tokens).
+	http.HandleFunc(*listenBaseUrl+"api/api-tokens", auth(ovpnAdmin.apiTokensHandler))
+	http.HandleFunc(*listenBaseUrl+"api/api-tokens/", auth(ovpnAdmin.apiTokenItemHandler))
 
 	// MFA endpoints
 	http.HandleFunc(*listenBaseUrl+"api/login/mfa", post(ovpnAdmin.mfaLoginHandler))

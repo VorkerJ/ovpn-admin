@@ -5,6 +5,24 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.30] — 2026-06-29
+
+### Added
+
+- **Service-account API tokens for non-interactive integrations.** External
+  systems (e.g. an access-management/Teleport-style tool) can now manage VPN
+  users and routes over the API without the interactive session/MFA flow. A
+  token is presented as `Authorization: Bearer <token>` (or `X-API-Token`);
+  it bypasses the MFA and forced-password-change gates (a service can do
+  neither) but is **scope-limited** to user- and route-management endpoints —
+  it cannot touch server config, MFA, the admin password, or token management
+  (those return `403`). Tokens are random, stored only as SHA-256, persisted on
+  the auth state dir (PVC), and managed from a new **API-токены** screen in the
+  admin UI (create — shown once — and revoke). Creating/revoking a token still
+  requires an MFA-enabled admin session. Verified end-to-end: a token reads
+  users/traffic (`200`), writes a common route (`201`, MFA bypassed), is denied
+  out-of-scope (`403`), and stops working immediately on revoke (`401`).
+
 ## [2.0.29] — 2026-06-29
 
 ### Fixed

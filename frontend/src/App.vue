@@ -15,6 +15,7 @@ import RotateUserModal from '@/components/modals/RotateUserModal.vue'
 import ChangePasswordModal from '@/components/modals/ChangePasswordModal.vue'
 import CcdModal from '@/components/modals/CcdModal.vue'
 import MfaSetupModal from '@/components/modals/MfaSetupModal.vue'
+import ApiTokensModal from '@/components/modals/ApiTokensModal.vue'
 import ForceChangePasswordModal from '@/components/modals/ForceChangePasswordModal.vue'
 import LoginPage from '@/components/LoginPage.vue'
 import TabBar from '@/components/TabBar.vue'
@@ -134,6 +135,7 @@ const modalSubmitting = ref({
 })
 
 const mfaModalOpen = ref(false)
+const apiTokensModalOpen = ref(false)
 const ccdData = ref({ Name: '', ClientAddress: '', CustomRoutes: [] })
 
 function openModal(name, username = '') {
@@ -411,6 +413,7 @@ async function safeUnrevoke(username) {
         :admin-mfa-enabled="adminMfaEnabled"
         @add-user="openModal('addUser')"
         @open-mfa="mfaModalOpen = true"
+        @open-api-tokens="apiTokensModalOpen = true"
         @logout="handleLogout"
       />
 
@@ -556,6 +559,11 @@ async function safeUnrevoke(username) {
         @submit="submitCcd"
         @refresh-dns="refreshUserDns"
         @import-routes="importUserRoutes"
+      />
+
+      <ApiTokensModal
+        :open="apiTokensModalOpen"
+        @close="apiTokensModalOpen = false"
       />
 
       <MfaSetupModal

@@ -53,6 +53,7 @@ type OvpnAdmin struct {
 	store                storage.Store
 	mfaStore             *mfaStore
 	traffic              *trafficAccountant
+	apiTokens            *apiTokenStore
 }
 
 // updateClients refreshes the cached clients slice under clientsMu.
@@ -461,6 +462,9 @@ type serverSettingsResponse struct {
 // or when --mfa.required=false, so we don't break dev environments where
 // MFA is off entirely.
 func (oAdmin *OvpnAdmin) adminHasMfa(r *http.Request) bool {
+	if isServiceAccount(r) {
+		return true // API tokens are a non-interactive credential; MFA N/A
+	}
 	if oAdmin.mfaStore == nil {
 		return true // MFA disabled server-side
 	}

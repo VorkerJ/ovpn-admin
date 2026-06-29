@@ -2,7 +2,7 @@
 <script setup>
 import { useTheme } from '@/composables/useTheme'
 import Button from '@/components/ui/Button.vue'
-import { Sun, Moon, Plus, LogOut, ShieldCheck } from 'lucide-vue-next'
+import { Sun, Moon, Plus, LogOut, ShieldCheck, KeyRound } from 'lucide-vue-next'
 
 defineProps({
   // serverInitialized=false блокирует кнопку «Добавить пользователя» (бэкенд
@@ -13,7 +13,7 @@ defineProps({
   adminMfaEnabled: { type: Boolean, default: true },
 })
 
-defineEmits(['add-user', 'logout', 'open-mfa'])
+defineEmits(['add-user', 'logout', 'open-mfa', 'open-api-tokens'])
 
 const { isDark, toggle } = useTheme()
 </script>
@@ -67,6 +67,15 @@ const { isDark, toggle } = useTheme()
             class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-orange-500 ring-2 ring-background animate-pulse"
             data-testid="admin-mfa-dot"
           />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="API-токены (сервис-аккаунты)"
+          @click="$emit('open-api-tokens')"
+        >
+          <KeyRound :size="16" />
         </Button>
 
         <Button

@@ -681,6 +681,28 @@ func (oAdmin *OvpnAdmin) authCheckHandler(w http.ResponseWriter, r *http.Request
 // requireAuth middleware — проверяет сессионную cookie.
 func (oAdmin *OvpnAdmin) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Service-account API token (non-interactive integrations). It bypasses
+		// the MFA and forced-password-change gates — a service can do neither —
+		// but is restricted to user/route management by apiTokenPathAllowed.
+		if tok := bearerToken(r); tok != "" {
+			if oAdmin.apiTokens == nil {
+				writeJSONError(w, http.StatusUnauthorized, "invalid API token")
+				return
+			}
+			at, ok := oAdmin.apiTokens.verify(tok)
+			if !ok {
+				writeJSONError(w, http.StatusUnauthorized, "invalid API token")
+				return
+			}
+			if !apiTokenPathAllowed(r.URL.Path) {
+				writeJSONError(w, http.StatusForbidden, "this API token is limited to user and route management")
+				return
+			}
+			oAdmin.apiTokens.touch(at.ID)
+			next(w, withServiceAccount(r, at.Name))
+			return
+		}
+
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil {
 			writeJSONError(w, http.StatusUnauthorized, "unauthorized")

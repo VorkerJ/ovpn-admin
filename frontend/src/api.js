@@ -160,6 +160,22 @@ export async function adminChangePassword(currentPassword, newPassword) {
   return data
 }
 
+export async function fetchApiTokens() {
+  const { data } = await axios.get('api/api-tokens')
+  return Array.isArray(data) ? data : []
+}
+
+export async function createApiToken(name) {
+  const { data } = await axios.post('api/api-tokens', JSON.stringify({ name }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data // { id, name, token, hint, created_at }
+}
+
+export async function revokeApiToken(id) {
+  await axios.delete(`api/api-tokens/${id}`)
+}
+
 export async function loginMfa(mfaToken, code) {
   const { data } = await axios.post('api/login/mfa', JSON.stringify({ mfa_token: mfaToken, code }), {
     headers: { 'Content-Type': 'application/json' },
