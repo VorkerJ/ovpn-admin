@@ -20,13 +20,24 @@ const creating = ref(false)
 const created = ref(null) // { name, token } — shown once
 const copied = ref(false)
 
+// Map backend errors to friendly Russian text. Creating/revoking a token needs
+// an MFA-enabled admin session; the backend returns an English 412 — translate
+// it and point the operator at the 2FA toggle.
+function friendlyErr(e, fallback) {
+  const msg = e?.response?.data?.error || ''
+  if (e?.response?.status === 412 && msg.includes('MFA')) {
+    return 'Сначала включите двухфакторную аутентификацию (значок-щит в шапке) — без неё управлять токенами нельзя.'
+  }
+  return msg || fallback
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
     tokens.value = await fetchApiTokens()
   } catch (e) {
-    error.value = e?.response?.data?.error || 'Не удалось загрузить токены'
+    error.value = friendlyErr(e, 'Не удалось загрузить токены')
   } finally {
     loading.value = false
   }
@@ -51,7 +62,7 @@ async function create() {
     copied.value = false
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.error || 'Не удалось создать токен'
+    error.value = friendlyErr(e, 'Не удалось создать токен')
   } finally {
     creating.value = false
   }
@@ -62,7 +73,7 @@ async function revoke(id) {
     await revokeApiToken(id)
     await load()
   } catch (e) {
-    error.value = e?.response?.data?.error || 'Не удалось отозвать токен'
+    error.value = friendlyErr(e, 'Не удалось отозвать токен')
   }
 }
 

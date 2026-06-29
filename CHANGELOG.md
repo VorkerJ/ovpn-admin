@@ -5,6 +5,16 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.32] — 2026-06-29
+
+### Fixed
+
+- **The API-tokens screen no longer shows a raw English "MFA must be enabled to
+  perform this action".** Creating or revoking a token requires an MFA-enabled
+  admin session; the modal now translates that 412 into Russian and points the
+  operator at the 2FA toggle: "Сначала включите двухфакторную аутентификацию
+  (значок-щит в шапке) — без неё управлять токенами нельзя."
+
 ## [2.0.31] — 2026-06-29
 
 ### Security
