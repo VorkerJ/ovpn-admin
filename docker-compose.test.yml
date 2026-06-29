@@ -45,6 +45,11 @@ services:
       EASYRSA_PATH: "/mnt/easyrsa"
       OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"
       LOG_LEVEL: "debug"
+      # Test stack is served over plain HTTP (and often reached by LAN IP, not
+      # localhost). Drop the Secure flag so the session cookie is actually sent
+      # — otherwise the browser withholds it and every request is 401. NEVER set
+      # this in production; put TLS in front instead.
+      OVPN_INSECURE_COOKIES: "true"
     volumes:
       - pki_data:/mnt/easyrsa
       - ccd_data:/mnt/ccd
