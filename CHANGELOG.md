@@ -5,6 +5,21 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.31] — 2026-06-29
+
+### Security
+
+- **API-token scope matching is now anchored to whole path segments.** The
+  v2.0.30 scope check used `strings.Contains`, so a lookalike path like
+  `/api/user-admin` or `/api/userspace` would have been treated as an in-scope
+  `/api/user*` route. No such endpoint exists today (not exploitable), but the
+  match is now `== seg || HasPrefix(seg+"/")` against the base-URL-stripped
+  path, so lookalikes are denied. Adversarially verified live: a token is held
+  to 403 on server-config / MFA / admin-password / token-management / metrics
+  and on every bypass attempt (path traversal, `%2f`/`%2e%2e` encoding, query
+  injection, double slash), while in-scope user/route calls still work. Tokens
+  remain SHA-256-at-rest (0600), constant-time compared, and never logged.
+
 ## [2.0.30] — 2026-06-29
 
 ### Added

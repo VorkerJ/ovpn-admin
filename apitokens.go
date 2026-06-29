@@ -212,9 +212,14 @@ func isServiceAccount(r *http.Request) bool { return serviceAccountName(r) != ""
 
 // apiTokenPathAllowed enforces the fixed scope: tokens may only manage VPN
 // users and routes (and read traffic). Everything else is session-only.
+//
+// Matching is anchored to whole path segments (== prefix, or prefix+"/...") so
+// a lookalike like /api/user-admin or /api/userspace is NOT mistaken for an
+// in-scope /api/user* route.
 func apiTokenPathAllowed(path string) bool {
-	for _, seg := range []string{"/api/user", "/api/common-routes", "/api/traffic"} {
-		if strings.Contains(path, seg) {
+	p := strings.TrimPrefix(path, strings.TrimRight(*listenBaseUrl, "/"))
+	for _, seg := range []string{"/api/user", "/api/users", "/api/common-routes", "/api/traffic"} {
+		if p == seg || strings.HasPrefix(p, seg+"/") {
 			return true
 		}
 	}

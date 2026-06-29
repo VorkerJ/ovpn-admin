@@ -76,6 +76,10 @@ func TestAPITokenScope(t *testing.T) {
 	denied := []string{
 		"/api/server-config", "/api/mfa/setup", "/api/admin/change-password",
 		"/api/api-tokens", "/api/server/settings", "/metrics",
+		// lookalikes that an unanchored substring match would wrongly allow
+		"/api/user-admin", "/api/userspace", "/api/users-export",
+		"/api/common-routes-secret", "/api/traffic-admin",
+		"/api/server-config/api/user", // substring of an in-scope path elsewhere
 	}
 	for _, p := range denied {
 		if apiTokenPathAllowed(p) {
