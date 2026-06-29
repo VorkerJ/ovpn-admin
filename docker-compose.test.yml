@@ -24,6 +24,8 @@ services:
         EASYRSA_BATCH=1 easyrsa gen-req charlie nopass &&
         EASYRSA_BATCH=1 easyrsa sign-req client charlie &&
         mkdir -p /ccd &&
+        chgrp -R 2000 /pki /ccd &&
+        chmod -R g+rwX /pki /ccd &&
         echo 'PKI initialized'
       "
 
