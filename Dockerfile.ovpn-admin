@@ -41,5 +41,11 @@ RUN addgroup -S ovpnadmin && \
     adduser -S -G ovpnadmin ovpnadmin && \
     adduser ovpnadmin ovpnshared && \
     chown -R ovpnadmin:ovpnadmin /app && \
+    # Durable auth-state dir (OVPN_SESSION_STATE_DIR). Owned by ovpnadmin so a
+    # fresh named volume mounted here inherits that ownership and the non-root
+    # process can write signing key / MFA / password / traffic.
+    mkdir -p /var/lib/ovpn-admin && \
+    chown ovpnadmin:ovpnadmin /var/lib/ovpn-admin && \
+    chmod 700 /var/lib/ovpn-admin && \
     setcap cap_net_admin+ep /usr/sbin/xtables-nft-multi 2>/dev/null || true
 USER ovpnadmin

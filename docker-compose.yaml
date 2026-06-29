@@ -33,6 +33,11 @@ services:
       - NET_ADMIN
       - NET_RAW
       - MKNOD
+      # CHOWN: configure.sh chgrp's the shared /etc/openvpn-dynamic volume to
+      # group 2000 so ovpn-admin (non-root) can render server.conf there.
+      # Without it the chgrp fails silently and the openvpn container waits for
+      # a server.conf that never appears — the VPN never starts.
+      - CHOWN
       # DAC_OVERRIDE: read CCD files written by ovpn-admin (different uid)
       # after OpenVPN drops privs to `nobody`.
       - DAC_OVERRIDE
@@ -82,6 +87,10 @@ services:
       # Pin admin password by mounting ./htpasswd → /mnt/auth/htpasswd (read-only)
       # When unset, ovpn-admin auto-generates a temporary password printed in logs.
       ADMIN_HTPASSWD_FILE: "${ADMIN_HTPASSWD_FILE:-}"
+      # Durable auth state (session key, MFA secrets, self-changed admin
+      # password, cumulative per-user traffic) on a named volume — survives
+      # `down`/`up`, and keeps these writes off the read-only htpasswd mount.
+      OVPN_SESSION_STATE_DIR: "/var/lib/ovpn-admin"
     cap_drop:
       - ALL
     cap_add:
@@ -103,9 +112,11 @@ services:
       - ${OVPN_EASYRSA_PATH:-./easyrsa_master}:/mnt/easyrsa
       - ${OVPN_CCD_PATH:-./ccd_master}:/mnt/ccd
       - ovpn_dynamic_conf:/etc/openvpn-dynamic
+      - ovpn_admin_state:/var/lib/ovpn-admin
       # Uncomment to pin admin UI password via htpasswd file:
       # - ./htpasswd:/mnt/auth/htpasswd:ro
       # Then set ADMIN_HTPASSWD_FILE=/mnt/auth/htpasswd in .env
 
 volumes:
   ovpn_dynamic_conf:
+  ovpn_admin_state:

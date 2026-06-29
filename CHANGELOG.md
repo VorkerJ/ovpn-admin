@@ -5,6 +5,29 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.28] — 2026-06-29
+
+### Fixed
+
+- **docker-compose now brings up a working VPN on a fresh deploy.** End-to-end
+  testing of the production `docker-compose.yaml` surfaced two issues:
+  - **The openvpn container never started.** ovpn-admin (non-root) renders
+    `server.conf` into the shared `/etc/openvpn-dynamic` volume, but the openvpn
+    container's `configure.sh` `chgrp`'d that volume to group 2000 *without* the
+    `CHOWN` capability (it had `cap_drop: ALL` and a narrow `cap_add`), so the
+    chgrp failed silently, ovpn-admin couldn't write `server.conf`, and openvpn
+    waited for it forever. Added `CHOWN` to the openvpn `cap_add`.
+  - **Durable auth state was missing.** Added an `OVPN_SESSION_STATE_DIR`
+    (`/var/lib/ovpn-admin`) backed by a named `ovpn_admin_state` volume, so the
+    session key, MFA secrets, self-changed admin password and cumulative traffic
+    survive `down`/`up` — and don't land on the read-only htpasswd mount (which
+    would otherwise crash startup). The ovpn-admin image pre-creates the dir
+    owned by `ovpnadmin` so the named volume inherits writable ownership.
+
+  Verified end-to-end locally: both containers up, server.conf rendered, openvpn
+  reaches "Initialization Sequence Completed", mgmt interface connected. The
+  Helm chart already handled both via its PVC + securityContext.
+
 ## [2.0.27] — 2026-06-26
 
 ### Added
