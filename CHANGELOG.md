@@ -5,6 +5,23 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.29] — 2026-06-29
+
+### Fixed
+
+- **An expired/invalidated session no longer shows a raw "unauthorized" stuck in
+  a view (notably the new Трафик tab, whose periodic auto-refresh surfaced it
+  first).** Added a global axios response interceptor: any `401` from an API
+  call after login drops the app back to the login screen with a "session
+  expired" toast, instead of each view rendering the backend error. Verified in
+  a browser: breaking the session and refreshing Traffic now returns to login.
+- **The SPA `index.html` is no longer cached for 30 days.** `CacheControlWrapper`
+  set `max-age=2592000` on *everything*, so after an upgrade browsers kept
+  serving the old `index.html` (and thus the old asset bundle) — frontend
+  changes silently didn't appear until the cache expired. Now content-hashed
+  `/assets/*` are cached `immutable` (they're safe to), while `index.html` and
+  the rest are served `no-cache` so updates take effect on the next reload.
+
 ## [2.0.28] — 2026-06-29
 
 ### Fixed

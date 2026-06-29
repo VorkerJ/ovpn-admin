@@ -430,7 +430,17 @@ func securityMiddleware(next http.Handler) http.Handler {
 
 func CacheControlWrapper(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "max-age=2592000") // 30 days
+		// Vite emits content-hashed assets under /assets/ (e.g.
+		// index-A9TBuVyj.js) — their content can never change for a given URL,
+		// so cache them hard. index.html and everything else must NOT be
+		// long-cached: it references the current asset hashes, so a stale copy
+		// keeps a client on an old frontend after an upgrade (the cause of
+		// "I deployed but the UI didn't change"). no-cache forces revalidation.
+		if strings.Contains(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		h.ServeHTTP(w, r)
 	})
 }

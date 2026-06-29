@@ -1,6 +1,7 @@
 <!-- frontend/src/App.vue -->
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import AppHeader from '@/components/AppHeader.vue'
 import StatCards from '@/components/StatCards.vue'
@@ -89,6 +90,21 @@ const { toast: _toast } = useToast()
 function notify(title, variant = 'default') {
   _toast({ title, variant })
 }
+
+// Global 401 handler: any API call coming back unauthorized means the session
+// expired or was invalidated. Drop straight back to the login screen instead of
+// surfacing a raw "unauthorized" inside a view (e.g. the Traffic tab's periodic
+// auto-refresh, which would otherwise just print the error and look broken).
+axios.interceptors.response.use(
+  (r) => r,
+  (e) => {
+    if (e?.response?.status === 401 && authenticated.value) {
+      authenticated.value = false
+      notify('Сессия истекла — войдите снова', 'destructive')
+    }
+    return Promise.reject(e)
+  },
+)
 
 // ── Modal state ────────────────────────────────────────────────────
 const activeUser = ref('')
