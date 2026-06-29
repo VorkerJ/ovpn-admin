@@ -3,7 +3,7 @@
 import { ref, computed, watch } from 'vue'
 import Badge from '@/components/ui/Badge.vue'
 import ActionsMenu from '@/components/ActionsMenu.vue'
-import { Search, Eye, EyeOff, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-vue-next'
+import { Search, Eye, EyeOff, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown } from 'lucide-vue-next'
 
 const props = defineProps({
   users: { type: Array, default: () => [] },
@@ -40,6 +40,39 @@ const filteredUsers = computed(() => {
   return list
 })
 
+// Column sorting. '' = server/default order. Numeric columns compare as
+// numbers; the rest as strings with empty/'—' pushed to the end.
+const sortKey = ref('')
+const sortDir = ref('asc')
+const NUMERIC_KEYS = new Set(['Connections'])
+
+function setSort(key) {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortKey.value = key
+    sortDir.value = 'asc'
+  }
+}
+
+const sortedUsers = computed(() => {
+  if (!sortKey.value) return filteredUsers.value
+  const k = sortKey.value
+  const dir = sortDir.value === 'asc' ? 1 : -1
+  const arr = filteredUsers.value.slice()
+  arr.sort((a, b) => {
+    if (NUMERIC_KEYS.has(k)) return ((Number(a[k]) || 0) - (Number(b[k]) || 0)) * dir
+    const av = (a[k] ?? '').toString()
+    const bv = (b[k] ?? '').toString()
+    const ae = av === '' || av === '—'
+    const be = bv === '' || bv === '—'
+    if (ae && !be) return 1 // empties always last
+    if (!ae && be) return -1
+    return av.localeCompare(bv) * dir
+  })
+  return arr
+})
+
 // Pagination. Page size is persisted so the operator's preferred density
 // survives reload; 25 is a sensible default for an admin desktop table.
 const pageSize = ref(parseInt(localStorage.getItem('usersPageSize')) || 25)
@@ -52,7 +85,7 @@ watch(pageSize, (v) => {
 
 // Reset page when the filter changes — otherwise a search that returns
 // 3 results while the operator was on page 5 shows an empty table.
-watch([search, hideRevoked], () => { currentPage.value = 1 })
+watch([search, hideRevoked, sortKey, sortDir], () => { currentPage.value = 1 })
 
 const totalPages = computed(() =>
   Math.max(1, Math.ceil(filteredUsers.value.length / pageSize.value))
@@ -66,7 +99,7 @@ watch(totalPages, (tp) => {
 
 const paginatedUsers = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value
-  return filteredUsers.value.slice(start, start + pageSize.value)
+  return sortedUsers.value.slice(start, start + pageSize.value)
 })
 
 const visibleRange = computed(() => {
@@ -135,7 +168,9 @@ function badgeLabel(status) {
     <!-- Table — sticky thead. top-14 = AppHeader (h-14) height; the entire
          users page scrolls in the window context, so the thead pins directly
          under the global app header rather than under the page-internal toolbar. -->
-    <div class="rounded-lg border border-border bg-card overflow-visible">
+    <!-- Desktop table (md+). On phones a 7-column table can't fit, so it is
+         hidden and replaced by the card list below. -->
+    <div class="hidden md:block rounded-lg border border-border bg-card overflow-visible">
       <!-- Auto-sized columns. The fix here is alignment-only: each header's
            text-* class matches the same text-* on its body cells, so an
            operator's eye reads "label above its values" instead of catching
@@ -146,20 +181,65 @@ function badgeLabel(status) {
             <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground w-12">
               #
             </th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Имя
+            <th
+              class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground cursor-pointer select-none hover:text-foreground"
+              @click="setSort('Identity')"
+            >
+              <span class="inline-flex items-center gap-1">Имя <ChevronUp
+                v-if="sortKey === 'Identity' && sortDir === 'asc'"
+                :size="12"
+              /><ChevronDown
+                v-else-if="sortKey === 'Identity'"
+                :size="12"
+              /></span>
             </th>
-            <th class="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Статус
+            <th
+              class="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-muted-foreground cursor-pointer select-none hover:text-foreground"
+              @click="setSort('AccountStatus')"
+            >
+              <span class="inline-flex items-center gap-1">Статус <ChevronUp
+                v-if="sortKey === 'AccountStatus' && sortDir === 'asc'"
+                :size="12"
+              /><ChevronDown
+                v-else-if="sortKey === 'AccountStatus'"
+                :size="12"
+              /></span>
             </th>
-            <th class="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Подключений
+            <th
+              class="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-muted-foreground cursor-pointer select-none hover:text-foreground"
+              @click="setSort('Connections')"
+            >
+              <span class="inline-flex items-center gap-1">Подключений <ChevronUp
+                v-if="sortKey === 'Connections' && sortDir === 'asc'"
+                :size="12"
+              /><ChevronDown
+                v-else-if="sortKey === 'Connections'"
+                :size="12"
+              /></span>
             </th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Дата истечения
+            <th
+              class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground cursor-pointer select-none hover:text-foreground"
+              @click="setSort('ExpirationDate')"
+            >
+              <span class="inline-flex items-center gap-1">Дата истечения <ChevronUp
+                v-if="sortKey === 'ExpirationDate' && sortDir === 'asc'"
+                :size="12"
+              /><ChevronDown
+                v-else-if="sortKey === 'ExpirationDate'"
+                :size="12"
+              /></span>
             </th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Дата отзыва
+            <th
+              class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground cursor-pointer select-none hover:text-foreground"
+              @click="setSort('RevocationDate')"
+            >
+              <span class="inline-flex items-center gap-1">Дата отзыва <ChevronUp
+                v-if="sortKey === 'RevocationDate' && sortDir === 'asc'"
+                :size="12"
+              /><ChevronDown
+                v-else-if="sortKey === 'RevocationDate'"
+                :size="12"
+              /></span>
             </th>
             <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Действия
@@ -225,6 +305,81 @@ function badgeLabel(status) {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Mobile card list (below md) — one card per user, fields stacked, so
+         nothing is clipped and the whole page scrolls normally. -->
+    <div class="md:hidden space-y-3">
+      <div
+        v-if="paginatedUsers.length === 0"
+        class="rounded-lg border border-border bg-card px-4 py-12 text-center text-sm text-muted-foreground"
+      >
+        Пользователи не найдены
+      </div>
+      <div
+        v-for="(user, index) in paginatedUsers"
+        :key="user.Identity"
+        :class="['rounded-lg border border-border bg-card p-4 space-y-3', rowClass(user)]"
+      >
+        <!-- header: # + name + connected dot + status -->
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="text-muted-foreground font-mono text-xs tabular shrink-0">#{{ (currentPage - 1) * pageSize + index + 1 }}</span>
+            <span class="font-medium text-[15px] truncate">{{ user.Identity }}</span>
+            <span
+              v-if="user.ConnectionStatus === 'Connected'"
+              class="inline-block w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_theme(colors.green.500)] shrink-0"
+              title="Подключён"
+            />
+          </div>
+          <Badge :variant="badgeVariant(user.AccountStatus)">
+            {{ badgeLabel(user.AccountStatus) }}
+          </Badge>
+        </div>
+
+        <!-- fields -->
+        <dl class="grid grid-cols-3 gap-x-4 gap-y-2">
+          <div>
+            <dt class="text-[11px] uppercase tracking-wider text-muted-foreground">
+              Подключений
+            </dt>
+            <dd class="font-mono text-sm tabular">
+              {{ user.Connections || 0 }}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-[11px] uppercase tracking-wider text-muted-foreground">
+              Истечение
+            </dt>
+            <dd class="font-mono text-sm tabular text-muted-foreground">
+              {{ user.ExpirationDate || '—' }}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-[11px] uppercase tracking-wider text-muted-foreground">
+              Отзыв
+            </dt>
+            <dd class="font-mono text-sm tabular text-muted-foreground">
+              {{ user.RevocationDate || '—' }}
+            </dd>
+          </div>
+        </dl>
+
+        <!-- actions -->
+        <div class="flex justify-end pt-3 border-t border-border/60">
+          <ActionsMenu
+            :user="user"
+            :modules-enabled="modulesEnabled"
+            @revoke="emit('revoke', $event)"
+            @unrevoke="emit('unrevoke', $event)"
+            @rotate="emit('rotate', $event)"
+            @delete="emit('delete', $event)"
+            @download-config="emit('download-config', $event)"
+            @edit-ccd="emit('edit-ccd', $event)"
+            @change-password="emit('change-password', $event)"
+          />
+        </div>
+      </div>
     </div>
 
     <!-- Pagination bar -->

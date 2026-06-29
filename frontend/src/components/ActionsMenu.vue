@@ -31,6 +31,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
       v-if="isActive()"
       size="sm"
       variant="secondary"
+      title="Скачать конфиг"
       @click="emit('download-config', user.Identity)"
     >
       <Download :size="13" />
@@ -40,6 +41,7 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
       v-else-if="isRevoked()"
       size="sm"
       variant="secondary"
+      title="Восстановить"
       @click="emit('unrevoke', user.Identity)"
     >
       <RotateCcw :size="13" />

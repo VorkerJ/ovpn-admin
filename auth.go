@@ -525,9 +525,13 @@ func verifySession(token string) (string, bool) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return "", false
 	}
-	// Reject tokens with a non-session purpose (e.g. intermediate mfa tokens).
-	// Tokens minted before this field existed have Purpose == "" and remain valid.
-	if p.Purpose != "" && p.Purpose != "session" {
+	// Require an explicit session purpose. An intermediate MFA token serializes
+	// its purpose under a different JSON key ("purpose" vs our "p"), so it parses
+	// here as Purpose=="" — accepting empty would let that token (issued after
+	// only the first factor) pass as a full session and defeat MFA entirely.
+	// Legacy empty-purpose tokens (pre-dating this field) are intentionally no
+	// longer accepted; their holders simply re-login.
+	if p.Purpose != "session" {
 		return "", false
 	}
 	if time.Now().Unix() > p.Exp {
@@ -584,6 +588,15 @@ func computeHMAC(data, secret string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+}
+
+// mfaTokenSecret derives a key distinct from the session-signing secret, so an
+// intermediate MFA token is signed under a different key than a session cookie.
+// This is domain separation: even if a purpose check were bypassed, an MFA
+// token's MAC cannot validate in verifySession (and vice-versa), because the
+// keys differ. Both derive from the same root signing key.
+func mfaTokenSecret() string {
+	return computeHMAC("ovpn-admin/mfa-token/v1", sessionSecret())
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

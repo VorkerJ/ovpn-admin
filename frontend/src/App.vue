@@ -1,6 +1,6 @@
 <!-- frontend/src/App.vue -->
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import AppHeader from '@/components/AppHeader.vue'
@@ -74,7 +74,9 @@ const adminMfaRequired = ref(false)
 // неснимаемую модалку смены пароля.
 const adminPasswordChangeRequired = ref(false)
 
-const activeTab = ref('users')
+// Persist the selected tab so a page reload keeps the operator where they were.
+const activeTab = ref(localStorage.getItem('activeTab') || 'users')
+watch(activeTab, (v) => localStorage.setItem('activeTab', v))
 
 const visibleTabs = computed(() => {
   const tabs = [{ key: 'users', label: 'Пользователи' }, { key: 'traffic', label: 'Трафик' }]
@@ -85,6 +87,12 @@ const visibleTabs = computed(() => {
     tabs.push({ key: 'server-config', label: 'Сервер' })
   }
   return tabs
+})
+
+// If the restored tab is no longer available (its module got disabled), fall
+// back to the users tab so we never sit on a blank, unselectable tab.
+watch(visibleTabs, (tabs) => {
+  if (!tabs.some((t) => t.key === activeTab.value)) activeTab.value = 'users'
 })
 
 const { toast: _toast } = useToast()

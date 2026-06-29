@@ -5,9 +5,11 @@ export async function fetchUsers() {
   return Array.isArray(data) ? data : []
 }
 
-export async function fetchTraffic() {
-  const { data } = await axios.get('api/traffic')
-  return Array.isArray(data) ? data : []
+export async function fetchTraffic(month) {
+  const { data } = await axios.get('api/traffic', { params: month ? { month } : {} })
+  // New shape: { month, months, rows }. Tolerate the old array shape too.
+  if (Array.isArray(data)) return { month: '', months: [], rows: data }
+  return { month: data?.month || '', months: data?.months || [], rows: data?.rows || [] }
 }
 
 export async function fetchServerSettings() {

@@ -302,7 +302,7 @@ type mfaTokenPayload struct {
 // to authenticate the second-factor request. Single-use (jti tracked), short
 // TTL (mfaTokenTTL). NOT a session token — verifySession rejects this purpose.
 func signMfaToken(user string) string {
-	secret := sessionSecret()
+	secret := mfaTokenSecret()
 	jtiBytes := make([]byte, 16)
 	_, _ = rand.Read(jtiBytes)
 	p := mfaTokenPayload{
@@ -318,7 +318,7 @@ func signMfaToken(user string) string {
 }
 
 func verifyMfaToken(token string) (user string, jti string, exp int64, ok bool) {
-	secret := sessionSecret()
+	secret := mfaTokenSecret()
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
 		return "", "", 0, false

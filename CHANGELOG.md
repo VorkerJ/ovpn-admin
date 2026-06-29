@@ -5,6 +5,47 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.33] — 2026-06-29
+
+### Security
+
+- **Critical — MFA bypass via session/MFA token confusion (auth bypass).** The
+  session payload tagged its purpose field `json:"p"` while the intermediate MFA
+  token tagged it `json:"purpose"`, and both were signed with the same key. An
+  MFA token (handed to the client in the `/api/login` body after only the first
+  factor, before TOTP) therefore parsed in `verifySession` as an empty purpose,
+  which the legacy "empty is allowed" clause accepted — so the MFA token
+  validated as a full session cookie. Anyone holding the admin password could
+  skip the second factor entirely. **All releases v2.0.0–v2.0.32 are affected.**
+  Fixed with two independent barriers: `verifySession` now requires
+  `purpose == "session"` strictly, and MFA tokens are signed/verified with a
+  domain-separated derived key (`mfaTokenSecret`) so their MAC can never validate
+  as a session. Regression test in `session_token_test.go`.
+
+### Added
+
+- **Per-user traffic is now bucketed by calendar month and stored in SQLite**
+  (`traffic.db` on the auth state-dir), replacing the single lifetime JSON
+  total. A new month bucket starts automatically on the 1st; history is kept.
+  The Traffic page gains a month picker and an "all-time" column. Existing
+  `traffic.json` totals are imported once, losslessly, on first start (kept as
+  `traffic.json.imported`). Live-session snapshots are persisted too, so an
+  ovpn-admin restart no longer double-counts a still-connected user.
+
+### Changed
+
+- Users and Traffic tables support **column sorting** (click a header, click
+  again to reverse) with a direction arrow. The users table previously had none.
+- On phones the users table is **replaced by a card list** so the right-hand
+  columns and action buttons are no longer clipped; both tables keep normal
+  vertical scroll.
+- The **selected tab now survives a page reload** (persisted in localStorage).
+
+### Fixed
+
+- `traffic.db` is created with explicit `0600` permissions regardless of umask
+  or a pre-existing state-dir mode.
+
 ## [2.0.32] — 2026-06-29
 
 ### Fixed

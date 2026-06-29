@@ -191,10 +191,10 @@ func main() {
 	ovpnAdmin.mgmtInterfaces = make(map[string]string)
 	ovpnAdmin.commonRoutes = &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}
 	ovpnAdmin.store = store
-	// Cumulative per-user traffic — persisted alongside the rest of the auth
-	// state (on the PVC when --session.state-dir is set), so totals survive
-	// restarts and reconnects.
-	ovpnAdmin.traffic = newTrafficAccountant(filepath.Join(authStateDir, "traffic.json"))
+	// Per-user traffic, bucketed by calendar month and persisted in a SQLite DB
+	// alongside the rest of the auth state (on the PVC when --session.state-dir
+	// is set), so totals survive restarts and reconnects.
+	ovpnAdmin.traffic = newTrafficAccountant(filepath.Join(authStateDir, "traffic.db"))
 	// Service-account API tokens for non-interactive integrations (create users
 	// / set routes via API). Persisted alongside the rest of the auth state.
 	ovpnAdmin.apiTokens = newAPITokenStore(filepath.Join(authStateDir, "api_tokens.json"))
