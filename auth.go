@@ -329,6 +329,17 @@ func initAuth() {
 	}
 
 	authStateDir = stateDir
+
+	// Legacy migration: builds before --session.state-dir kept the auth state
+	// next to the htpasswd file. When an explicit state-dir is now configured
+	// (e.g. the shipped compose sets OVPN_SESSION_STATE_DIR=/var/lib/ovpn-admin)
+	// and it doesn't yet hold that state, copy the legacy files over ONCE — so an
+	// in-place image upgrade doesn't silently drop the admin's MFA enrollment,
+	// session signing key, logout blacklist, API tokens or traffic history.
+	if *adminHtpasswdFile != "" {
+		migrateLegacyAuthState(stateDir, filepath.Dir(*adminHtpasswdFile))
+	}
+
 	revokedTokensFile = filepath.Join(stateDir, ".session_blacklist.json")
 
 	// Persistent session signing key — survives restarts and password changes,
@@ -344,6 +355,69 @@ func initAuth() {
 	// every distinct IP and per-username key; without the janitor a constant
 	// trickle of failed logins from unique IPs leaks ~256 bytes forever.
 	go loginAttemptsJanitor()
+}
+
+// migrateLegacyAuthState performs a one-time copy of persistent auth state from
+// a legacy directory (where pre-state-dir builds stored it, next to the htpasswd
+// file) into the configured state-dir — but only for files the state-dir does
+// not already have, and it never overwrites. This keeps an in-place upgrade to a
+// build that defaults to a separate state-dir seamless: MFA enrollment, session
+// signing key, logout blacklist, API tokens and traffic history are preserved
+// instead of silently reset.
+func migrateLegacyAuthState(stateDir, legacyDir string) {
+	if stateDir == "" || legacyDir == "" || stateDir == legacyDir {
+		return
+	}
+	if _, err := os.Stat(legacyDir); err != nil {
+		return
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		log.Warnf("legacy-migrate: cannot create state dir %s: %v", stateDir, err)
+		return
+	}
+	// traffic.db is intentionally omitted: copying a live SQLite db + WAL/SHM
+	// risks an inconsistent snapshot. The legacy JSON (traffic.json) is copied
+	// instead and folded into the new db on first start.
+	files := []string{
+		"_mfa_secrets.json",
+		".session_signing_key",
+		".session_blacklist.json",
+		"api_tokens.json",
+		"traffic.json",
+		".ovpn-admin-admin.htpasswd",
+	}
+	migrated := 0
+	for _, f := range files {
+		if ok, err := copyFileIfAbsent(filepath.Join(legacyDir, f), filepath.Join(stateDir, f)); err != nil {
+			log.Warnf("legacy-migrate: copy %s failed: %v", f, err)
+		} else if ok {
+			migrated++
+			log.Infof("legacy-migrate: imported %s from %s", f, legacyDir)
+		}
+	}
+	if migrated > 0 {
+		log.Infof("legacy-migrate: brought %d auth-state file(s) forward from %s into %s — existing MFA/sessions preserved", migrated, legacyDir, stateDir)
+	}
+}
+
+// copyFileIfAbsent copies src to dst only if dst does not exist and src does.
+// Returns (true, nil) when a copy happened. Never overwrites an existing dst.
+func copyFileIfAbsent(src, dst string) (bool, error) {
+	if _, err := os.Stat(dst); err == nil {
+		return false, nil // state-dir already has it
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return false, nil // legacy file absent — nothing to do
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(dst, data, info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // loginAttemptsJanitor periodically evicts stale or expired loginTracker

@@ -5,6 +5,26 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.35] — 2026-06-30
+
+### Fixed
+
+- **Seamless upgrade from pre-`--session.state-dir` builds (≤ v2.0.21, e.g. the
+  2.0.19 currently in production).** Those builds kept the persistent auth state
+  (MFA enrollment, session signing key, logout blacklist, API tokens, traffic
+  history) next to the htpasswd file. Newer builds default to a separate
+  state-dir (the shipped compose sets `OVPN_SESSION_STATE_DIR=/var/lib/ovpn-admin`).
+  On an in-place image upgrade that moved the lookup location, so the admin's
+  **MFA enrollment was silently dropped** (login fell back to password-only) and
+  session/traffic state reset. ovpn-admin now performs a one-time, non-destructive
+  migration on startup: if an explicit state-dir is configured but doesn't yet
+  hold the state, it copies the legacy files over from the htpasswd directory
+  (never overwriting). Verified end-to-end with a local 2.0.19 → 2.0.35 upgrade:
+  MFA login with the pre-upgrade TOTP secret keeps working, users and PKI intact.
+  - Upgrading WITHOUT adopting the new compose (keeping the old one, no
+    `OVPN_SESSION_STATE_DIR`) was already safe — state resolves to the htpasswd
+    dir as before. This change makes the new-compose path safe too.
+
 ## [2.0.34] — 2026-06-30
 
 ### Added
