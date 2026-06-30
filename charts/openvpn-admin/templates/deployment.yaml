@@ -142,8 +142,9 @@ spec:
             - --storage.backend={{ .Values.ovpnAdmin.storageBackend }}
             - --mgmt=main=127.0.0.1:8989
             - --server-config.conf-path=/etc/openvpn-dynamic/server.conf
-            # Durable auth state (signing key, MFA secrets, logout blacklist,
-            # self-changed admin password) — see "persistence" in values.yaml.
+            # Durable auth/usage state (signing key, MFA secrets, logout
+            # blacklist, API tokens, traffic history, self-changed admin
+            # password) — see "persistence" in values.yaml.
             - --session.state-dir=/var/lib/ovpn-admin
             - --mfa.db-path=/var/lib/ovpn-admin/_mfa_secrets.json
             {{- if .Values.ovpnAdmin.ccdEnabled }}
@@ -209,7 +210,8 @@ spec:
         - name: ovpn-dynamic-conf
           emptyDir: {}
 
-        # ── durable auth state (signing key, MFA, blacklist, admin pw) ──
+        # ── durable auth/usage state (signing key, MFA, blacklist, API
+        #    tokens, traffic history, admin pw) — see persistence in values ──
         - name: ovpn-admin-state
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:

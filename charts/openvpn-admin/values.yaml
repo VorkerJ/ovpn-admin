@@ -54,21 +54,34 @@ ovpnAdmin:
 # ----------------------------------------------------------------
 # Persistent auth state
 # ----------------------------------------------------------------
-# Durable storage for the session signing key, MFA (TOTP) secrets, the logout
-# blacklist, and — when no adminHtpasswdSecret is set — the self-changed admin
-# password. Mounted at /var/lib/ovpn-admin and passed to ovpn-admin via
-# --session.state-dir / --mfa.db-path.
+# Durable storage for ovpn-admin's runtime state, mounted at /var/lib/ovpn-admin
+# and passed via --session.state-dir. This is SEPARATE from PKI storage
+# (storageBackend above): the PKI can live in K8s Secrets while this volume holds
+#   - the session signing key            (sessions survive restarts)
+#   - MFA (TOTP) enrollment + backup codes
+#   - the logout/revoked-token blacklist
+#   - service-account API tokens
+#   - per-user traffic history (traffic.db)
+#   - the self-changed admin password    (only when no adminHtpasswdSecret is set)
 #
-# When disabled, this state lives on an emptyDir (pod-lifetime only): every pod
-# restart invalidates all admin sessions, requires MFA re-enrollment, and (in
-# no-htpasswd mode) re-triggers the forced first-login password change.
-# Enable for production.
+# >>> Strongly recommended ON in production. <<<
+# When disabled this state lives on an emptyDir (pod-lifetime only), so EVERY pod
+# restart / rollout:
+#   - logs out all admins and drops the MFA enrollment (re-enroll from scratch —
+#     and 2FA is effectively off until then),
+#   - resets all per-user traffic counters and revokes API tokens,
+#   - in no-htpasswd mode, re-triggers the forced first-login password change.
+#
+# Left OFF by default only so a bare `helm install` still starts on clusters with
+# no default StorageClass. Set enabled=true (and a storageClass if needed) for any
+# real deployment. Upgrades from a build that stored this state elsewhere are
+# migrated automatically on first start — no manual copy needed.
 persistence:
   enabled: false
   # existingClaim: ""          # use a pre-created PVC instead of creating one
   storageClass: ""             # "" = cluster default StorageClass
   accessMode: ReadWriteOnce
-  size: 64Mi
+  size: 64Mi                   # plenty: state is KBs + traffic.db grows ~50 B per user-month
   # fsGroup of the "ovpnshared" group baked into the image; ovpnadmin is a
   # member, so the volume becomes writable without knowing the uid.
   fsGroup: 2000
