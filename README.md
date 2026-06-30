@@ -20,7 +20,8 @@ Simple web UI to manage OpenVPN users, their certificates & routes in Kubernetes
 * **Per-user CCD** (`client-config-dir`) — static IP, custom push routes (by IP/mask or domain with automatic DNS refresh), bulk import from text/file
 * **Per-user full-tunnel with LAN exclusions** — a "Полный туннель" toggle per user that pushes `redirect-gateway def1` plus a configurable list of subnets that bypass the VPN (home LAN, work VPN, Docker bridges). Global defaults are merged with per-user extras. See [Per-user full-tunnel](#per-user-full-tunnel) below.
 * **Common Routes** — a global list of push routes applied to every active user. Supports both static IP/mask entries and domain-based entries (the server periodically re-resolves and pushes the current IPs). Search, pagination, bulk import.
-* **Per-user OpenVPN password auth** — separate from the cert; can be enabled per user
+* **Per-user OpenVPN password auth** — an optional password *on top of* the client certificate, toggled from the **Server** tab and assigned per user in the UI (no env vars). Cert-only users connect unchanged and are never prompted; only flagged users must present a password. The `openvpn-user` verifier is built into the image (no third-party download).
+* **Cumulative per-user traffic** — a **Traffic** tab showing how much each user has transferred, bucketed by calendar month (history kept) and persisted across reconnects and restarts.
 * (optionally) Specifying a Kubernetes LoadBalancer in front of the OpenVPN server (auto-defined `remote` in `client.conf.tpl`)
 * (optionally) Storing certificates and other files in Kubernetes Secrets
 * **Server-side route enforcement** — when enabled (default in Helm), ovpn-admin installs per-client iptables rules so that each VPN client can only reach destinations explicitly allowed via per-user CCD routes or global Common Routes. Requires `NET_ADMIN` capability.
@@ -196,6 +197,16 @@ ovpnAdmin:
 
 Sessions are signed with HMAC-SHA256 and expire after 12 hours. Logout immediately revokes the token server-side.
 
+### Two-factor (TOTP)
+
+Admins enable RFC-6238 2FA from the shield icon in the header (8 single-use backup codes). With `OVPN_MFA_REQUIRED=true` every write endpoint (and API-token / server-config management) is gated on a valid code for the session.
+
+### Persistent auth state
+
+The MFA enrollment, session signing key, logout blacklist, API tokens and traffic history live in the **state directory** (`--session.state-dir` / `OVPN_SESSION_STATE_DIR`). The shipped images default it to `/var/lib/ovpn-admin`; if unset and an htpasswd file is configured, it falls back to the htpasswd directory, otherwise `/tmp`. **Keep this on durable storage** (a PVC in Kubernetes, a bind mount or named volume in Docker) so 2FA and sessions survive container restarts.
+
+Upgrading from an older build that stored this state next to the htpasswd file is seamless: on first start ovpn-admin copies the legacy files into the configured state directory (without overwriting), so MFA enrollment and sessions are preserved.
+
 ## Usage
 
 ```
@@ -251,13 +262,21 @@ Flags:
   (or OVPN_TEMPLATES_CCD_PATH) path to custom ccd.tpl
 
   --auth.password
-  (or OVPN_AUTH)               enable per-user OpenVPN password authentication
+  (or OVPN_AUTH)               legacy global switch — forces OpenVPN password auth
+                               ON for ALL users. For per-user control leave this
+                               off and use the Server-tab "password auth" toggle.
 
   --auth.db="./easyrsa/pki/users.db"
-  (or OVPN_AUTH_DB_PATH)       database path for password authentication
+  (or OVPN_AUTH_DB_PATH)       path to the password/2FA user DB (users.db)
 
   --auth.db-init
   (or OVPN_AUTH_DB_INIT)       initialize auth DB if missing or empty
+
+  --session.state-dir=""
+  (or OVPN_SESSION_STATE_DIR)  writable dir for MFA secrets, session signing key,
+                               logout blacklist, API tokens and traffic history;
+                               keep on durable storage. Defaults to the htpasswd
+                               directory, else /tmp.
 
   --admin.htpasswd-file=""
   (or ADMIN_HTPASSWD_FILE)     path to htpasswd file for admin UI; if empty, a random password is generated
@@ -278,9 +297,9 @@ Flags:
 ## Notes
 
 * This tool uses external calls to `bash`, `coreutils`, and `easy-rsa` — **Linux only**.
-* For per-user OpenVPN password auth, install [openvpn-user](https://github.com/pashcovich/openvpn-user/releases/latest) and pass `--auth.password`.
+* Per-user OpenVPN password auth is **built in** — the `openvpn-user` verifier ships inside the image (no third-party download). Enable it from the **Server** tab and assign a password per user in the UI; cert-only users are unaffected. `OVPN_AUTH=true` is the legacy switch that forces it on for everyone.
 * When using `--ccd`, set `--ovpn.network` to match your OpenVPN server network.
-* Per-user password auth does not work with `--storage.backend=kubernetes.secrets`.
+* Per-user password auth does not work with `--storage.backend=kubernetes.secrets` (the password DB is a filesystem SQLite db).
 * Connected user status refreshes every 28 seconds.
 
 ## Server-side route enforcement (firewall)
