@@ -342,6 +342,19 @@ onMounted(reload)
             >
             DCO (kernel offload) {{ !dcoAvailable ? '— недоступен на этой ноде' : '' }}
           </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input
+              v-model="cfg.password_auth"
+              type="checkbox"
+            >
+            Парольная аутентификация (доп. пароль для избранных)
+          </label>
+          <p
+            v-if="cfg.password_auth"
+            class="text-xs text-muted-foreground -mt-1"
+          >
+            Кому на вкладке «Пользователи» задан пароль (🔑) — заходит по сертификату + паролю; остальные — только по сертификату, без запроса пароля.
+          </p>
         </div>
       </SectionCard>
 

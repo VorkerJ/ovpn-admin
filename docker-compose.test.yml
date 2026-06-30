@@ -35,6 +35,10 @@ services:
       dockerfile: Dockerfile.ovpn-admin
     image: ovpn-admin:local
     command: /app/ovpn-admin
+    # A "hard" server-config save (e.g. toggling password auth) self-exits so the
+    # runtime rebinds the netns to a restarted openvpn. There's no openvpn here,
+    # but keep the restart policy so the panel comes back after that self-exit.
+    restart: unless-stopped
     depends_on:
       pki-init:
         condition: service_completed_successfully
@@ -46,6 +50,21 @@ services:
       OVPN_CCD_PATH: "/mnt/ccd"
       EASYRSA_PATH: "/mnt/easyrsa"
       OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"
+      # Per-user VPN password auth (GUI-toggled): point at the shared users.db
+      # and let ovpn-admin create it on first start. In prod the openvpn
+      # container's configure.sh stages this; the test stack has no openvpn
+      # container, so init it here.
+      OVPN_AUTH_DB_PATH: "/mnt/easyrsa/pki/users.db"
+      OVPN_AUTH_DB_INIT: "true"
+      # No openvpn container here, so point the rendered server.conf at a
+      # writable path (the default /etc/openvpn/server.conf isn't writable by the
+      # non-root panel user). Lets the server-config UI actually save in tests.
+      OVPN_SERVER_CONFIG_PATH: "/tmp/server.conf"
+      # Don't force MFA in the test stack so the browser login stays single-step
+      # (MFA is still available — set OVPN_MFA_REQUIRED=true to demand it). With
+      # it off, the MFA-gated server-config / password endpoints accept a plain
+      # admin session, which keeps the local demo simple.
+      OVPN_MFA_REQUIRED: "false"
       LOG_LEVEL: "debug"
       # Test stack is served over plain HTTP (and often reached by LAN IP, not
       # localhost). Drop the Secure flag so the session cookie is actually sent

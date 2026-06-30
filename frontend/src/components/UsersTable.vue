@@ -3,7 +3,7 @@
 import { ref, computed, watch } from 'vue'
 import Badge from '@/components/ui/Badge.vue'
 import ActionsMenu from '@/components/ActionsMenu.vue'
-import { Search, Eye, EyeOff, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown } from 'lucide-vue-next'
+import { Search, Eye, EyeOff, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronUp, ChevronDown, KeyRound } from 'lucide-vue-next'
 
 const props = defineProps({
   users: { type: Array, default: () => [] },
@@ -15,7 +15,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'revoke', 'unrevoke', 'rotate', 'delete',
-  'download-config', 'edit-ccd', 'change-password'
+  'download-config', 'edit-ccd', 'change-password', 'remove-password'
 ])
 
 const search = ref('')
@@ -271,6 +271,12 @@ function badgeLabel(status) {
                   class="inline-block w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_theme(colors.green.500)]"
                   title="Подключён"
                 />
+                <KeyRound
+                  v-if="user.PasswordRequired"
+                  :size="13"
+                  class="text-amber-500 shrink-0"
+                  title="Требует пароль (cert + пароль)"
+                />
               </div>
             </td>
             <td class="px-4 py-3 text-center">
@@ -299,6 +305,7 @@ function badgeLabel(status) {
                   @download-config="emit('download-config', $event)"
                   @edit-ccd="emit('edit-ccd', $event)"
                   @change-password="emit('change-password', $event)"
+                  @remove-password="emit('remove-password', $event)"
                 />
               </div>
             </td>
@@ -330,6 +337,12 @@ function badgeLabel(status) {
               v-if="user.ConnectionStatus === 'Connected'"
               class="inline-block w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_theme(colors.green.500)] shrink-0"
               title="Подключён"
+            />
+            <KeyRound
+              v-if="user.PasswordRequired"
+              :size="13"
+              class="text-amber-500 shrink-0"
+              title="Требует пароль (cert + пароль)"
             />
           </div>
           <Badge :variant="badgeVariant(user.AccountStatus)">
@@ -377,6 +390,7 @@ function badgeLabel(status) {
             @download-config="emit('download-config', $event)"
             @edit-ccd="emit('edit-ccd', $event)"
             @change-password="emit('change-password', $event)"
+            @remove-password="emit('remove-password', $event)"
           />
         </div>
       </div>

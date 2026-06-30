@@ -15,6 +15,48 @@ import (
 	"time"
 )
 
+func TestRenderServerConfig_PasswordAuth(t *testing.T) {
+	t.Parallel()
+	base := defaultServerConfig()
+
+	// Off (default): no password directives.
+	off, err := renderServerConfig(base, true, true)
+	if err != nil {
+		t.Fatalf("render off: %v", err)
+	}
+	if strings.Contains(off, "auth-user-pass") {
+		t.Fatalf("password auth off must not emit auth-user-pass:\n%s", off)
+	}
+
+	// On: the three directives are present.
+	base.PasswordAuth = true
+	on, err := renderServerConfig(base, true, true)
+	if err != nil {
+		t.Fatalf("render on: %v", err)
+	}
+	for _, want := range []string{
+		"auth-user-pass-verify /etc/openvpn/scripts/auth.sh via-file",
+		"auth-user-pass-optional",
+		"script-security 2",
+	} {
+		if !strings.Contains(on, want) {
+			t.Fatalf("password auth on must emit %q:\n%s", want, on)
+		}
+	}
+}
+
+// TestPasswordAuthIsHardChange locks that toggling password auth forces an
+// openvpn reload (it adds/removes server directives).
+func TestPasswordAuthIsHardChange(t *testing.T) {
+	t.Parallel()
+	a := defaultServerConfig()
+	b := defaultServerConfig()
+	b.PasswordAuth = !a.PasswordAuth
+	if got := categorizeChanges(a, b); got != "hard" {
+		t.Fatalf("toggling PasswordAuth must be a hard change, got %q", got)
+	}
+}
+
 func TestDefaultServerConfig_PreservesBackwardCompat(t *testing.T) {
 	t.Parallel()
 	cfg := defaultServerConfig()

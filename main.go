@@ -440,6 +440,7 @@ func main() {
 	// non-MFA admin still returns 412 (cheaper than 405 + retry).
 	http.HandleFunc(*listenBaseUrl+"api/user/create", auth(mfa(post(ovpnAdmin.userCreateHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/user/change-password", auth(mfa(post(ovpnAdmin.userChangePasswordHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/remove-password", auth(mfa(post(ovpnAdmin.userRemovePasswordHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/user/rotate", auth(mfa(post(ovpnAdmin.userRotateHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/user/delete", auth(mfa(post(ovpnAdmin.userDeleteHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/user/revoke", auth(mfa(post(ovpnAdmin.userRevokeHandler))))

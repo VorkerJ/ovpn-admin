@@ -75,6 +75,46 @@ func runOpenvpnUser(args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// openvpnUserSucceeds runs openvpn-user and reports whether it exited 0. Used
+// for predicate subcommands like `has-password`, whose answer is the exit code.
+func openvpnUserSucceeds(args ...string) bool {
+	return exec.Command("openvpn-user", args...).Run() == nil
+}
+
+// userHasVpnPassword reports whether the user has an active password entry in
+// users.db (i.e. is "password-required" for VPN connect).
+func userHasVpnPassword(username string) bool {
+	if *authDatabase == "" {
+		return false
+	}
+	return openvpnUserSucceeds("has-password", "--db.path", *authDatabase, "--user", username)
+}
+
+// userRequiresPassword decides whether user X must present a VPN password on
+// connect. Legacy OVPN_AUTH forces it for everyone (global mode); otherwise it
+// is per-user: the server-wide PasswordAuth toggle is on AND the user has an
+// active password in users.db. Drives whether the user's .ovpn gets
+// `auth-user-pass`.
+func (oAdmin *OvpnAdmin) userRequiresPassword(username string) bool {
+	if *authByPassword {
+		return true
+	}
+	if oAdmin.serverConfigStore == nil || !oAdmin.serverConfigStore.snapshot().PasswordAuth {
+		return false
+	}
+	return userHasVpnPassword(username)
+}
+
+// passwordAuthActive reports whether VPN password auth is available at all —
+// legacy global env OR the runtime server-config toggle. Gates the per-user
+// password set/remove endpoints and the passwdAuth UI module.
+func (oAdmin *OvpnAdmin) passwordAuthActive() bool {
+	if *authByPassword {
+		return true
+	}
+	return oAdmin.serverConfigStore != nil && oAdmin.serverConfigStore.snapshot().PasswordAuth
+}
+
 type usernameRequest struct {
 	Username string `json:"username"`
 }
@@ -256,7 +296,7 @@ func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *htt
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !*authByPassword {
+	if !oAdmin.passwordAuthActive() {
 		writeJSONError(w, http.StatusNotImplemented, "password auth disabled")
 		return
 	}
@@ -276,6 +316,32 @@ func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "ok",
 		"message": msg,
+	})
+}
+
+// userRemovePasswordHandler POST /api/user/remove-password — drops a user's VPN
+// password so they become cert-only again. Hard-deletes the users.db row (so a
+// later set-password is clean), then the next .ovpn download omits auth-user-pass.
+func (oAdmin *OvpnAdmin) userRemovePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	var req usernameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !oAdmin.passwordAuthActive() {
+		writeJSONError(w, http.StatusNotImplemented, "password auth disabled")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
+		return
+	}
+	o := runOpenvpnUser("delete", "--db.path", *authDatabase, "--user", req.Username, "--force")
+	log.Debugf("userRemovePassword %s: %s", req.Username, o)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "ok",
+		"message": "Пароль удалён — пользователь снова только по сертификату",
 	})
 }
 

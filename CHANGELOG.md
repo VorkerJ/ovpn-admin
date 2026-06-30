@@ -5,6 +5,30 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.34] — 2026-06-30
+
+### Added
+
+- **Per-user optional VPN password, managed entirely from the GUI** (no env
+  vars). A new "Парольная аутентификация" toggle on the Server tab renders
+  `auth-user-pass-verify` + `auth-user-pass-optional` + `script-security 2` into
+  `server.conf`; per user you can set / change / remove a password (🔑 marker in
+  the user list). Users with a password connect with **certificate + password**;
+  everyone else stays **certificate-only and is not prompted** (that's what
+  `auth-user-pass-optional` buys). Only password-required users get
+  `auth-user-pass` in their `.ovpn`.
+  - Verification runs in OpenVPN itself via `setup/auth.sh` → `openvpn-user` →
+    `users.db`, so the VPN keeps authenticating even if the ovpn-admin panel is
+    down. The script keys on the **certificate CN** (not the typed username), so
+    a client can't impersonate another user, and a password-required user can't
+    bypass the check by stripping `auth-user-pass` or sending an empty password.
+  - New `openvpn-user has-password` subcommand + `ActivePasswordUsers` batch
+    lookup back the per-user state. `configure.sh` now always stages `auth.sh`
+    and initializes `users.db` (the old `OVPN_PASSWD_AUTH` env gate is gone), so
+    flipping the toggle works without touching the openvpn container.
+  - Legacy `OVPN_AUTH=true` still works as a global "password for everyone"
+    override for existing deployments.
+
 ## [2.0.33] — 2026-06-29
 
 ### Security

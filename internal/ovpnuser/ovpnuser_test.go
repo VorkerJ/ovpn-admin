@@ -89,6 +89,58 @@ func TestRevokeRestoreDelete(t *testing.T) {
 	}
 }
 
+// TestHasPassword covers the per-user "password-required" predicate that the
+// OpenVPN auth.sh relies on to tell password users from cert-only users.
+func TestHasPassword(t *testing.T) {
+	s := newTestStore(t)
+	_, _ = s.createUser("erin", "erin-pass-12345")
+
+	if !s.userActiveWithPassword("erin") {
+		t.Fatal("active user with a password must be password-required")
+	}
+	if s.userActiveWithPassword("ghost") {
+		t.Fatal("unknown user must not be password-required")
+	}
+	// revoked / deleted users are not password-required (cert handles them)
+	_, _ = s.revokeUser("erin")
+	if s.userActiveWithPassword("erin") {
+		t.Fatal("revoked user must not be password-required")
+	}
+}
+
+// TestActivePasswordUsers covers the batch set used to render the user list.
+func TestActivePasswordUsers(t *testing.T) {
+	s := newTestStore(t)
+	_, _ = s.createUser("u1", "pw-one-123456")
+	_, _ = s.createUser("u2", "pw-two-123456")
+	_, _ = s.createUser("u3", "pw-three-1234")
+	_, _ = s.revokeUser("u3") // revoked → excluded
+
+	// ActivePasswordUsers opens its own connection to the same file. Find the
+	// db path via the test store's file (re-open through the public API).
+	set := ActivePasswordUsers(dbPathOf(t, s))
+	if !set["u1"] || !set["u2"] {
+		t.Fatalf("u1,u2 must be in the set: %v", set)
+	}
+	if set["u3"] {
+		t.Fatalf("revoked u3 must be excluded: %v", set)
+	}
+	if len(set) != 2 {
+		t.Fatalf("expected exactly 2 password users, got %d: %v", len(set), set)
+	}
+}
+
+// dbPathOf returns the file path backing the test store's connection.
+func dbPathOf(t *testing.T, s *store) string {
+	t.Helper()
+	var path string
+	// PRAGMA database_list returns (seq, name, file) for the main db.
+	if err := s.db.QueryRow("SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&path); err != nil {
+		t.Fatalf("resolve db path: %v", err)
+	}
+	return path
+}
+
 // TestAuthCmdExitCodes locks the OpenVPN contract: exit 0 = allow, non-zero =
 // deny — the single most important behaviour of this tool.
 func TestAuthCmdExitCodes(t *testing.T) {

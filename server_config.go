@@ -71,6 +71,15 @@ type ServerConfig struct {
 	// cert validity + CRL.
 	MgmtClientAuth bool `json:"mgmt_client_auth"`
 
+	// PasswordAuth enables per-user optional password auth on top of the
+	// certificate. When true, server.conf gets auth-user-pass-verify (->
+	// setup/auth.sh -> openvpn-user -> users.db) + auth-user-pass-optional
+	// (so cert-only users are NOT prompted) + script-security 2. A user is
+	// "password-required" iff they have an active password entry in users.db;
+	// only those users get `auth-user-pass` in their .ovpn. Cert-only users
+	// connect unchanged. Off = no password checks at all.
+	PasswordAuth bool `json:"password_auth"`
+
 	// Behavior
 	KeepaliveInterval int    `json:"keepalive_interval"`
 	KeepaliveTimeout  int    `json:"keepalive_timeout"`
@@ -464,6 +473,11 @@ management 127.0.0.1 8989
 {{- if .Cfg.MgmtClientAuth }}
 management-client-auth
 {{- end }}
+{{- if .Cfg.PasswordAuth }}
+auth-user-pass-verify /etc/openvpn/scripts/auth.sh via-file
+auth-user-pass-optional
+script-security 2
+{{- end }}
 
 tun-mtu {{ .Cfg.TunMTU }}
 {{- if gt .Cfg.MssFix 0 }}
@@ -582,6 +596,7 @@ func categorizeChanges(old, new ServerConfig) string {
 		old.TLSAuthMode != new.TLSAuthMode ||
 		old.DCOEnabled != new.DCOEnabled ||
 		old.MgmtClientAuth != new.MgmtClientAuth ||
+		old.PasswordAuth != new.PasswordAuth ||
 		// Push-related fields used to be "soft" (SIGHUP only), but SIGHUP
 		// doesn't re-deliver push to already-connected clients — they keep
 		// the old DNS/gateway until reconnect. Treating these as hard means

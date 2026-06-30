@@ -66,20 +66,16 @@ if [ ! -c /dev/net/tun ]; then
     mknod /dev/net/tun c 10 200
 fi
 
-# NOTE: per-user password-auth directives must be in the user-editable
-# server config (added via ovpn-admin UI's Дополнительно textarea), e.g.:
-#   auth-user-pass-verify /etc/openvpn/scripts/auth.sh via-file
-#   script-security 2
-#   verify-client-cert require
-# This used to be appended here automatically when OVPN_PASSWD_AUTH=true,
-# but rendered config is now owned by ovpn-admin. The auth.sh script is
-# still copied below so manually adding the directives works.
-if [ ${OVPN_PASSWD_AUTH} = "true" ]; then
-  mkdir -p /etc/openvpn/scripts/
-  cp -f /etc/openvpn/setup/auth.sh /etc/openvpn/scripts/auth.sh
-  chmod +x /etc/openvpn/scripts/auth.sh
-  openvpn-user db-init --db.path=$EASY_RSA_LOC/pki/users.db && openvpn-user db-migrate --db.path=$EASY_RSA_LOC/pki/users.db
-fi
+# Password auth is now toggled from the ovpn-admin GUI (Server tab), which
+# renders the auth-user-pass-verify / auth-user-pass-optional / script-security
+# directives into server.conf on demand. We therefore ALWAYS stage the verify
+# script and ensure users.db exists, so flipping the toggle works immediately
+# without touching env vars or restarting the openvpn container. (OVPN_PASSWD_AUTH
+# is no longer consulted.)
+mkdir -p /etc/openvpn/scripts/
+cp -f /etc/openvpn/setup/auth.sh /etc/openvpn/scripts/auth.sh
+chmod +x /etc/openvpn/scripts/auth.sh
+openvpn-user db-init --db.path=$EASY_RSA_LOC/pki/users.db && openvpn-user db-migrate --db.path=$EASY_RSA_LOC/pki/users.db
 
 # easyrsa creates pki/.lock-easyrsa-* during build-client-full, revoke,
 # gen-crl, etc. It needs WRITE in pki/ itself, not just on existing files.

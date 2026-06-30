@@ -24,6 +24,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 
+	"ovpn-admin/internal/ovpnuser"
 	"ovpn-admin/internal/storage"
 )
 
@@ -101,6 +102,7 @@ type OpenvpnClient struct {
 	RevocationDate   string `json:"RevocationDate"`
 	ConnectionStatus string `json:"ConnectionStatus"`
 	Connections      int    `json:"Connections"`
+	PasswordRequired bool   `json:"PasswordRequired"` // has an active VPN password (per-user password auth)
 }
 
 type ccdRoute struct {
@@ -217,6 +219,13 @@ func (oAdmin *OvpnAdmin) usersList() []OpenvpnClient {
 	totalActiveConnections := 0
 	apochNow := time.Now().Unix()
 
+	// Per-user "has VPN password" — one DB read for the whole list, only when
+	// password auth is active (env global or the server-config toggle).
+	var pwUsers map[string]bool
+	if *authByPassword || (oAdmin.serverConfigStore != nil && oAdmin.serverConfigStore.snapshot().PasswordAuth) {
+		pwUsers = ovpnuser.ActivePasswordUsers(*authDatabase)
+	}
+
 	for _, line := range indexTxtParser(fRead(*indexTxtPath)) {
 		if line.Identity != "server" && !strings.Contains(line.Identity, "REVOKED") {
 			totalCerts += 1
@@ -240,6 +249,7 @@ func (oAdmin *OvpnAdmin) usersList() []OpenvpnClient {
 				ovpnClient.AccountStatus = "Expired"
 			}
 			ovpnClient.Connections = 0
+			ovpnClient.PasswordRequired = pwUsers[line.Identity]
 
 			userConnected, userConnectedTo := isUserConnected(line.Identity, oAdmin.activeClients)
 			if userConnected {
@@ -313,7 +323,7 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 
 		conf.Cert, conf.Key = oAdmin.store.GetClientCert(username)
 
-		conf.PasswdAuth = *authByPassword
+		conf.PasswdAuth = oAdmin.userRequiresPassword(username)
 
 		if oAdmin.serverConfigStore != nil {
 			conf.TLSAuthMode = oAdmin.serverConfigStore.snapshot().TLSAuthMode
@@ -493,6 +503,22 @@ func (oAdmin *OvpnAdmin) serverSettingsHandler(w http.ResponseWriter, r *http.Re
 	modules := oAdmin.modules
 	if modules == nil {
 		modules = []string{}
+	}
+	// Password auth is toggled at runtime from the server-config UI, so surface
+	// the passwdAuth module dynamically (when OVPN_AUTH was set at startup it is
+	// already in oAdmin.modules). This makes the per-user password actions appear
+	// without restarting.
+	if oAdmin.serverConfigStore != nil && oAdmin.serverConfigStore.snapshot().PasswordAuth {
+		has := false
+		for _, m := range modules {
+			if m == "passwdAuth" {
+				has = true
+				break
+			}
+		}
+		if !has {
+			modules = append(append([]string{}, modules...), "passwdAuth")
+		}
 	}
 
 	// adminMfaRequired is true only when MFA is enabled server-side AND

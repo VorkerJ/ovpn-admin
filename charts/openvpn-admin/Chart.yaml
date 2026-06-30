@@ -5,8 +5,8 @@ description: |
   PKI is stored in K8s Secrets (etcd) — no PVC required.
   Admin UI is protected by htpasswd authentication.
 type: application
-version: "2.0.33"
-appVersion: "2.0.33"
+version: "2.0.34"
+appVersion: "2.0.34"
 kubeVersion: ">=1.21.0-0"
 keywords:
   - openvpn

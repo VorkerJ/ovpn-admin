@@ -59,6 +59,13 @@ export async function changePassword(username, password) {
   return data
 }
 
+export async function removePassword(username) {
+  const { data } = await axios.post('api/user/remove-password', JSON.stringify({ username }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data
+}
+
 export async function fetchUserConfig(username) {
   const { data } = await axios.post('api/user/config/show', JSON.stringify({ username }), {
     headers: { 'Content-Type': 'application/json' },

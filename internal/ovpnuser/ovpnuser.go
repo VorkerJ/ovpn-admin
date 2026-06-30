@@ -84,6 +84,13 @@ func RunCLI(args []string) int {
 	cCheck := app.Command("check", "check user existent.")
 	checkUser := cCheck.Flag("user", "Username.").Short('u').Required().String()
 
+	// has-password — exit 0 if the user must present a password (active entry
+	// with a non-empty password), 1 otherwise. Used by the OpenVPN auth.sh to
+	// tell password-required users from cert-only users under
+	// auth-user-pass-optional.
+	cHasPass := app.Command("has-password", "Exit 0 if the user has an active password entry.")
+	hasPassUser := cHasPass.Flag("user", "Username.").Short('u').Required().String()
+
 	cList := app.Command("list", "List active users.")
 	listAll := cList.Flag("all", "Show all users include revoked and deleted.").Short('a').Default("false").Bool()
 
@@ -143,6 +150,11 @@ func RunCLI(args []string) int {
 	case cCheck.FullCommand():
 		_ = s.userExists(*checkUser) // upstream prints nothing here
 		return 0
+	case cHasPass.FullCommand():
+		if s.userActiveWithPassword(*hasPassUser) {
+			return 0
+		}
+		return 1
 	case cList.FullCommand():
 		s.printUsers(*listAll)
 		return 0
@@ -229,6 +241,53 @@ func (s *store) userExists(username string) bool {
 	c := 0
 	_ = s.db.QueryRow("SELECT count(*) FROM users WHERE username = ?", username).Scan(&c)
 	return c == 1
+}
+
+// ActivePasswordUsers returns the set of usernames that have an active
+// (non-revoked, non-deleted) non-empty password in the database at dbPath —
+// i.e. the users who are "password-required" for VPN connect. Returns an empty
+// set if the database is absent or unreadable (so callers degrade to "no one
+// requires a password"). Opens its own read connection; safe to call alongside
+// the openvpn-user CLI writing the same file.
+func ActivePasswordUsers(dbPath string) map[string]bool {
+	out := map[string]bool{}
+	if dbPath == "" {
+		return out
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return out
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.Query("SELECT username FROM users WHERE revoked = 0 AND deleted = 0 AND password != ''")
+	if err != nil {
+		return out
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var u string
+		if rows.Scan(&u) == nil {
+			out[u] = true
+		}
+	}
+	return out
+}
+
+// userActiveWithPassword reports whether the user exists, is active (not revoked
+// or deleted), and has a non-empty password — i.e. a connecting client with this
+// CN must present a valid password. Cert-only users (no entry / empty password)
+// return false.
+func (s *store) userActiveWithPassword(username string) bool {
+	var revoked, deleted int
+	var password string
+	err := s.db.QueryRow(
+		"SELECT password, revoked, deleted FROM users WHERE username = ?",
+		username,
+	).Scan(&password, &revoked, &deleted)
+	if err != nil {
+		return false
+	}
+	return revoked == 0 && deleted == 0 && password != ""
 }
 
 func (s *store) userDeleted(username string) bool {

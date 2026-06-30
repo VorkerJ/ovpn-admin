@@ -4,7 +4,7 @@ import DropdownMenu from '@/components/ui/DropdownMenu.vue'
 import Button from '@/components/ui/Button.vue'
 import {
   Download, RotateCcw, MoreHorizontal,
-  ShieldOff, RefreshCw, Settings, KeyRound, Trash2,
+  ShieldOff, RefreshCw, Settings, KeyRound, KeySquare, Trash2,
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -14,7 +14,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'revoke', 'unrevoke', 'rotate', 'delete',
-  'download-config', 'edit-ccd', 'change-password'
+  'download-config', 'edit-ccd', 'change-password', 'remove-password'
 ])
 
 const hasModule = (m) => props.modulesEnabled.includes(m)
@@ -92,7 +92,15 @@ const isExpired = () => props.user.AccountStatus === 'Expired'
           class="w-full flex items-center gap-2 px-3 py-2 text-sm text-blue-600 dark:text-blue-400 hover:bg-accent cursor-pointer"
           @click="emit('change-password', user.Identity)"
         >
-          <KeyRound :size="14" /> Сменить пароль
+          <KeyRound :size="14" /> {{ user.PasswordRequired ? 'Сменить пароль' : 'Задать пароль' }}
+        </button>
+        <button
+          v-if="hasModule('passwdAuth') && user.PasswordRequired"
+          type="button"
+          class="w-full flex items-center gap-2 px-3 py-2 text-sm text-amber-600 dark:text-amber-400 hover:bg-accent cursor-pointer"
+          @click="emit('remove-password', user.Identity)"
+        >
+          <KeySquare :size="14" /> Убрать пароль (только cert)
         </button>
         <div class="h-px bg-border mx-2 my-1" />
         <button

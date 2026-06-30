@@ -26,7 +26,7 @@ import TrafficView from '@/components/TrafficView.vue'
 import {
   fetchUsers, fetchServerSettings,
   createUser, revokeUser, unrevokeUser, rotateUser, deleteUser,
-  changePassword, fetchUserConfig, fetchUserCcd, applyCcd, refreshUserCcdDns, importUserCcd
+  changePassword, removePassword, fetchUserConfig, fetchUserCcd, applyCcd, refreshUserCcdDns, importUserCcd
 } from '@/api.js'
 
 // ── Auth ───────────────────────────────────────────────────────────
@@ -226,6 +226,18 @@ function handleRevoke(username) {
 
 function handleUnrevoke(username) {
   return safeUnrevoke(username)
+}
+
+async function handleRemovePassword(username) {
+  try {
+    await removePassword(username)
+    notify(`Пароль для ${username} удалён — теперь только сертификат`, 'default')
+    loadUsers()
+  } catch (e) {
+    if (!handleMfa412(e)) {
+      notify(`Не удалось удалить пароль для ${username}`, 'destructive')
+    }
+  }
 }
 
 async function handleDownloadConfig(username) {
@@ -505,6 +517,7 @@ async function safeUnrevoke(username) {
               @download-config="handleDownloadConfig"
               @edit-ccd="handleEditCcd"
               @change-password="(u) => openModal('changePassword', u)"
+              @remove-password="handleRemovePassword"
             />
           </div>
         </template>
