@@ -91,16 +91,25 @@ func (oAdmin *OvpnAdmin) mgmtConnectedUsersParser(text, serverName string) []cli
 }
 
 func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) {
-	conn, err := net.Dial("tcp", oAdmin.mgmtInterfaces[serverName])
+	conn, err := net.DialTimeout("tcp", oAdmin.mgmtInterfaces[serverName], 5*time.Second)
 	if err != nil {
 		log.Errorf("openvpn mgmt interface for %s is not reachable by addr %s", serverName, oAdmin.mgmtInterfaces[serverName])
 		return
 	}
+	defer conn.Close()
+	// Bound the whole exchange. The OpenVPN management console serves a single
+	// client at a time; if another consumer already holds it (e.g. the
+	// mgmt-client-auth loop on the same port) our read of the welcome banner
+	// would otherwise block forever — and this kill runs on the CCD-write path,
+	// so an unbounded read here stalls the HTTP request (and, when the caller
+	// holds ccdMu, every other CCD writer behind it). The CCD file is already
+	// persisted by the time we get here; a missed kick just means the user
+	// picks up new routes on their next natural reconnect.
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	oAdmin.mgmtRead(conn) // read welcome message
 	username = strings.NewReplacer("\n", "", "\r", "").Replace(username)
 	fmt.Fprintf(conn, "kill %s\n", username)
 	fmt.Printf("%v", oAdmin.mgmtRead(conn))
-	conn.Close()
 }
 
 func (oAdmin *OvpnAdmin) mgmtGetActiveClients() []clientStatus {

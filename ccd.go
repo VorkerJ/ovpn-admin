@@ -637,6 +637,12 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Serialize the read-modify-write against every other CCD writer
+	// (granular add/remove, import, refresh, the periodic re-resolvers) so
+	// concurrent callers can't clobber each other's changes (lost update).
+	ccdMu.Lock()
+	defer ccdMu.Unlock()
+
 	// For per-user domain routes: preserve resolved IPs from existing CCD when the
 	// domain itself is unchanged; resolve synchronously for new/changed domains.
 	existingCcd := oAdmin.getCcd(ccd.User)
@@ -714,6 +720,9 @@ func (oAdmin *OvpnAdmin) userCcdImportHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	parsed, errs := parseImportText(req.Text)
+
+	ccdMu.Lock()
+	defer ccdMu.Unlock()
 
 	ccd := oAdmin.getCcd(req.Username)
 	// Dedup vs existing per-user routes.
@@ -797,6 +806,9 @@ func (oAdmin *OvpnAdmin) userCcdRefreshHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	ccdMu.Lock()
+	defer ccdMu.Unlock()
+
 	ccd := oAdmin.getCcd(req.Username)
 	changed := false
 	resolved := 0
@@ -847,5 +859,220 @@ func (oAdmin *OvpnAdmin) userCcdRefreshHandler(w http.ResponseWriter, r *http.Re
 		"changed":  true,
 		"resolved": resolved,
 		"failed":   failed,
+	})
+}
+
+// ccdRouteKey is the identity of a per-user route for dedup/matching. IP
+// routes are keyed by network+mask, domain routes by lower-cased hostname.
+// Description is deliberately excluded — two entries that differ only in
+// description are the same route. Matches the inline logic in the import
+// handler and routeDedupKey so add/remove/import agree on what a duplicate is.
+func ccdRouteKey(r ccdRoute) string {
+	if r.Kind == "domain" {
+		return "d:" + strings.ToLower(strings.TrimSpace(r.Domain))
+	}
+	return "i:" + strings.TrimSpace(r.Address) + "/" + strings.TrimSpace(r.Mask)
+}
+
+// normalizeCcrKind fills in the Kind a caller may have omitted: a route with a
+// Domain but no Kind is a domain route, everything else defaults to ip. Keeps
+// add/remove matching robust to slightly-loose client payloads.
+func normalizeCcdRouteKind(r ccdRoute) ccdRoute {
+	if r.Kind == "" {
+		if strings.TrimSpace(r.Domain) != "" {
+			r.Kind = "domain"
+		} else {
+			r.Kind = "ip"
+		}
+	}
+	return r
+}
+
+// ccdRouteMutation is the request body for the granular add/remove endpoints.
+// A caller may send a single `route` object, a `routes` array, or both — they
+// are concatenated. This lets an integration add/remove one route with a
+// minimal body while still supporting batch changes in a single request.
+type ccdRouteMutation struct {
+	Username string     `json:"username"`
+	Route    *ccdRoute  `json:"route,omitempty"`
+	Routes   []ccdRoute `json:"routes,omitempty"`
+}
+
+func (m ccdRouteMutation) allRoutes() []ccdRoute {
+	out := make([]ccdRoute, 0, len(m.Routes)+1)
+	if m.Route != nil {
+		out = append(out, *m.Route)
+	}
+	out = append(out, m.Routes...)
+	return out
+}
+
+// userAddCcdRouteHandler POST /api/user/ccd/route/add.
+// Adds one or more routes to a user's CCD WITHOUT touching the rest — a
+// granular, concurrency-safe alternative to the full-replace ccd/apply.
+// Body: { "username": "...", "route": {...} } or { "username": "...", "routes": [...] }.
+// Routes already present (by ccdRouteKey) are reported as "skipped", not an
+// error, so the call is idempotent and safe to retry. Domain routes are
+// resolved synchronously (same as apply/import). Returns the updated CCD.
+func (oAdmin *OvpnAdmin) userAddCcdRouteHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	var req ccdRouteMutation
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid username")
+		return
+	}
+	incoming := req.allRoutes()
+	if len(incoming) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "no route(s) supplied (send \"route\" or \"routes\")")
+		return
+	}
+
+	ccdMu.Lock()
+	defer ccdMu.Unlock()
+
+	ccd := oAdmin.getCcd(req.Username)
+	existing := map[string]struct{}{}
+	for _, e := range ccd.CustomRoutes {
+		existing[ccdRouteKey(e)] = struct{}{}
+	}
+
+	added := []ccdRoute{}
+	skipped := []ccdRoute{}
+	// De-dupe within the payload too, so a caller sending the same route
+	// twice doesn't append it twice.
+	for _, in := range incoming {
+		in = normalizeCcdRouteKind(in)
+		key := ccdRouteKey(in)
+		if _, dup := existing[key]; dup {
+			skipped = append(skipped, in)
+			continue
+		}
+		entry := ccdRoute{Kind: in.Kind, Description: in.Description}
+		switch in.Kind {
+		case "domain":
+			entry.Domain = strings.TrimSpace(in.Domain)
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			ips, derr := domainResolver(ctx, entry.Domain)
+			cancel()
+			entry.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+			if derr != nil {
+				entry.LastResolveErr = derr.Error()
+			} else {
+				entry.ResolvedIPs = ips
+			}
+		default: // "ip"
+			entry.Address = strings.TrimSpace(in.Address)
+			entry.Mask = strings.TrimSpace(in.Mask)
+		}
+		ccd.CustomRoutes = append(ccd.CustomRoutes, entry)
+		existing[key] = struct{}{}
+		added = append(added, entry)
+	}
+
+	if len(added) == 0 {
+		// Nothing new — don't rewrite the file or kick the user.
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"added": added, "skipped": skipped, "ccd": ccd,
+		})
+		return
+	}
+
+	var expanded []ccdCommonRoute
+	if oAdmin.commonRoutes != nil {
+		expanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
+	}
+	if ok, msg := oAdmin.modifyCcd(ccd, expanded); !ok {
+		writeJSONError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+	if oAdmin.firewall != nil {
+		oAdmin.firewall.push(fwEvent{Kind: EvUserChanged, CN: req.Username})
+	}
+	oAdmin.kickUsersAfterCcdChange([]string{req.Username})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"added": added, "skipped": skipped, "ccd": oAdmin.getCcd(req.Username),
+	})
+}
+
+// userRemoveCcdRouteHandler POST /api/user/ccd/route/remove.
+// Removes one or more routes from a user's CCD by identity (ccdRouteKey),
+// leaving every other route untouched. Body shape mirrors the add endpoint.
+// A requested route that isn't present is reported in "not_found", not an
+// error, so the call is idempotent. Returns the updated CCD.
+func (oAdmin *OvpnAdmin) userRemoveCcdRouteHandler(w http.ResponseWriter, r *http.Request) {
+	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	var req ccdRouteMutation
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateUsername(req.Username); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid username")
+		return
+	}
+	incoming := req.allRoutes()
+	if len(incoming) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "no route(s) supplied (send \"route\" or \"routes\")")
+		return
+	}
+
+	ccdMu.Lock()
+	defer ccdMu.Unlock()
+
+	ccd := oAdmin.getCcd(req.Username)
+
+	// Keys the caller asked to remove.
+	wanted := map[string]struct{}{}
+	for _, in := range incoming {
+		wanted[ccdRouteKey(normalizeCcdRouteKind(in))] = struct{}{}
+	}
+
+	kept := make([]ccdRoute, 0, len(ccd.CustomRoutes))
+	removed := []ccdRoute{}
+	removedKeys := map[string]struct{}{}
+	for _, e := range ccd.CustomRoutes {
+		k := ccdRouteKey(e)
+		if _, drop := wanted[k]; drop {
+			removed = append(removed, e)
+			removedKeys[k] = struct{}{}
+			continue
+		}
+		kept = append(kept, e)
+	}
+
+	notFound := []ccdRoute{}
+	for _, in := range incoming {
+		in = normalizeCcdRouteKind(in)
+		if _, ok := removedKeys[ccdRouteKey(in)]; !ok {
+			notFound = append(notFound, in)
+		}
+	}
+
+	if len(removed) == 0 {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"removed": removed, "not_found": notFound, "ccd": ccd,
+		})
+		return
+	}
+
+	ccd.CustomRoutes = kept
+	var expanded []ccdCommonRoute
+	if oAdmin.commonRoutes != nil {
+		expanded = expandCommonRoutes(oAdmin.commonRoutes.snapshot())
+	}
+	if ok, msg := oAdmin.modifyCcd(ccd, expanded); !ok {
+		writeJSONError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+	if oAdmin.firewall != nil {
+		oAdmin.firewall.push(fwEvent{Kind: EvUserChanged, CN: req.Username})
+	}
+	oAdmin.kickUsersAfterCcdChange([]string{req.Username})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"removed": removed, "not_found": notFound, "ccd": oAdmin.getCcd(req.Username),
 	})
 }

@@ -5,6 +5,36 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.36] — 2026-07-01
+
+### Added
+
+- **Granular per-user route API for service-account automation.** Two new
+  endpoints let an integration add/remove *individual* personal routes without
+  the full-replace read-modify-write dance of `ccd/apply`:
+  - `POST /api/user/ccd/route/add` — add one route (`"route"`) or many
+    (`"routes"`). Routes already present come back in `skipped` (idempotent);
+    domain routes are resolved synchronously. Returns the updated CCD.
+  - `POST /api/user/ccd/route/remove` — remove by route identity
+    (`ip` → address+mask, `domain` → hostname; `Description` not needed to
+    match). Absent routes come back in `not_found` (idempotent).
+  Both are in a token's existing `/api/user` scope. See [`docs/API.md`](docs/API.md).
+
+### Fixed
+
+- **CCD writes are now serialized (lost-update fix).** `ccd/apply`, `ccd/import`
+  and `ccd/refresh` performed a read-modify-write without holding the CCD lock,
+  so two concurrent writers to the same user could clobber each other. All CCD
+  mutation paths (including the new granular endpoints) now run under the global
+  CCD lock, making concurrent/async callers safe.
+- **Bounded the OpenVPN management "kill" on the CCD-write path.**
+  `mgmtKillUserConnection` dialed and read the management console with no
+  timeout; if the console was already held by another consumer (e.g. the
+  mgmt-client-auth loop on the same port) the read blocked forever, hanging the
+  CCD-write HTTP request. It now uses a 5s dial + connection deadline — the CCD
+  file is already persisted before the kick, so a missed kick just defers new
+  routes to the user's next reconnect instead of stalling the request.
+
 ## [2.0.35] — 2026-06-30
 
 ### Fixed

@@ -449,6 +449,8 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/user/ccd/apply", auth(mfa(post(ovpnAdmin.userApplyCcdHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/user/ccd/refresh", auth(mfa(post(ovpnAdmin.userCcdRefreshHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/user/ccd/import", auth(mfa(post(ovpnAdmin.userCcdImportHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd/route/add", auth(mfa(post(ovpnAdmin.userAddCcdRouteHandler))))
+	http.HandleFunc(*listenBaseUrl+"api/user/ccd/route/remove", auth(mfa(post(ovpnAdmin.userRemoveCcdRouteHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/common-routes/refresh", auth(mfa(post(ovpnAdmin.commonRoutesRefreshHandler))))
 	http.HandleFunc(*listenBaseUrl+"api/common-routes/import", auth(mfa(post(ovpnAdmin.commonRoutesImportHandler))))
 

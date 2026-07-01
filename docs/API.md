@@ -120,9 +120,19 @@ Each returns `200` on success or `4xx` with `{"error":...}`.
 
 ## Per-user routes (CCD)
 
-A user's routes live in their **CCD**. `apply` is a **full replace** — always GET
-the current CCD first, modify the `CustomRoutes` array, then POST the whole object
-back.
+A user's routes live in their **CCD**. There are two ways to change them:
+
+- **Granular** (`ccd/route/add`, `ccd/route/remove`) — add or remove individual
+  routes, leaving the rest untouched. **Recommended for automation**, especially
+  when several changes can happen concurrently: each call is a server-side
+  read-modify-write under a lock, so two async callers can't clobber each other.
+- **Full replace** (`ccd/apply`) — you send the *entire* desired route set and it
+  replaces what's there (PUT-style). Fine for a single sequential writer; with
+  concurrent writers you'd risk a lost update, so prefer the granular endpoints.
+
+All three are serialized server-side (a global CCD lock), so even `apply` is
+internally consistent — the caveat with `apply` is only that *your* read (GET)
+can go stale between GET and POST if something else writes in between.
 
 ### Get a user's CCD
 
@@ -143,7 +153,71 @@ Returns the CCD object:
 }
 ```
 
-### Set a user's routes
+### Route fields
+
+| Field | For | Notes |
+|---|---|---|
+| `Kind` | both | `"ip"` (default) or `"domain"` |
+| `Address` + `Mask` | `ip` routes | dotted-quad network + mask |
+| `Domain` | `domain` routes | server re-resolves periodically and pushes current IPs |
+| `Description` | both | free text (ignored when matching for removal) |
+
+A route's **identity** (for dedup on add, and for matching on remove) is:
+`ip` → `Address`+`Mask`; `domain` → the hostname (case-insensitive).
+`Description` is *not* part of the identity — you don't need to know it to remove
+a route.
+
+### Add route(s) — granular
+
+```
+POST /api/user/ccd/route/add
+{ "username": "alice",
+  "route": { "Kind": "ip", "Address": "10.8.0.0", "Mask": "255.255.255.0", "Description": "office" } }
+```
+Send a single `route` **or** a `routes` array (or both — they're concatenated):
+```
+POST /api/user/ccd/route/add
+{ "username": "alice",
+  "routes": [
+    { "Kind": "ip",     "Address": "10.8.0.0", "Mask": "255.255.255.0" },
+    { "Kind": "domain", "Domain": "internal.example.com", "Description": "app" }
+  ] }
+```
+Response `200`:
+```json
+{
+  "added":   [ { "Kind": "ip", "Address": "10.8.0.0", "Mask": "255.255.255.0", "Description": "office" } ],
+  "skipped": [],
+  "ccd":     { "User": "alice", "CustomRoutes": [ ... full updated list ... ] }
+}
+```
+- Routes already present are returned in **`skipped`** (not an error) → the call
+  is **idempotent**, safe to retry.
+- Domain routes are resolved synchronously; the returned entry carries
+  `ResolvedIPs`.
+- `422` only if a supplied route fails validation (bad IP/mask, invalid hostname,
+  description with a reserved marker, etc.) — nothing is written in that case.
+
+### Remove route(s) — granular
+
+```
+POST /api/user/ccd/route/remove
+{ "username": "alice",
+  "route": { "Kind": "ip", "Address": "10.8.0.0", "Mask": "255.255.255.0" } }
+```
+(or a `routes` array, same as add). Match is by route **identity** — you can omit
+`Description`. Response `200`:
+```json
+{
+  "removed":   [ { "Kind": "ip", "Address": "10.8.0.0", "Mask": "255.255.255.0", "Description": "office" } ],
+  "not_found": [],
+  "ccd":       { "User": "alice", "CustomRoutes": [ ... full updated list ... ] }
+}
+```
+Routes that weren't present come back in **`not_found`** (not an error) → also
+**idempotent**.
+
+### Set the whole route set — full replace
 
 ```
 POST /api/user/ccd/apply
@@ -157,20 +231,13 @@ POST /api/user/ccd/apply
   ]
 }
 ```
-Route fields:
-| Field | For | Notes |
-|---|---|---|
-| `Kind` | both | `"ip"` (default) or `"domain"` |
-| `Address` + `Mask` | `ip` routes | dotted-quad network + mask |
-| `Domain` | `domain` routes | server re-resolves periodically and pushes current IPs |
-| `Description` | both | free text |
-
 `ClientAddress` is `"dynamic"` (pool-assigned) or a fixed IP. `RedirectGateway:
-true` sends all of the user's traffic through the VPN. Applying a CCD change
-disconnects the affected session so it reconnects with the new routes.
+true` sends all of the user's traffic through the VPN. These two are **only**
+settable via `apply` (the granular endpoints touch just `CustomRoutes`), so use
+`apply` when you need to change the client address or the full-tunnel flag.
 
-To **add** a route: GET the CCD, append to `CustomRoutes`, POST it back.
-To **remove** a route: GET, drop the entry from `CustomRoutes`, POST it back.
+Any change (granular or full) rewrites the CCD and **disconnects the affected
+session** so it reconnects with the new routes.
 
 ---
 
@@ -208,10 +275,13 @@ auth=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
 # 1. create the user
 curl -s "${auth[@]}" -X POST "$BASE/api/user/create" -d '{"username":"alice","password":""}'
 
-# 2. give alice a personal route (full replace: read-modify-write)
-ccd=$(curl -s "${auth[@]}" -X POST "$BASE/api/user/ccd" -d '{"username":"alice"}')
-echo "$ccd" | jq '.CustomRoutes += [{"Kind":"ip","Address":"10.8.0.0","Mask":"255.255.255.0","Description":"office"}]' \
-  | curl -s "${auth[@]}" -X POST "$BASE/api/user/ccd/apply" -d @-
+# 2. give alice a personal route (granular — no read-modify-write needed)
+curl -s "${auth[@]}" -X POST "$BASE/api/user/ccd/route/add" \
+  -d '{"username":"alice","route":{"Kind":"ip","Address":"10.8.0.0","Mask":"255.255.255.0","Description":"office"}}'
+
+# 2b. later, drop that one route (Description not needed to match)
+curl -s "${auth[@]}" -X POST "$BASE/api/user/ccd/route/remove" \
+  -d '{"username":"alice","route":{"Kind":"ip","Address":"10.8.0.0","Mask":"255.255.255.0"}}'
 
 # 3. fetch the .ovpn to hand to the client
 curl -s "${auth[@]}" -X POST "$BASE/api/user/config/show" -d '{"username":"alice"}' > alice.ovpn
