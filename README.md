@@ -298,6 +298,7 @@ Flags:
 
 * This tool uses external calls to `bash`, `coreutils`, and `easy-rsa` — **Linux only**.
 * Per-user OpenVPN password auth is **built in** — the `openvpn-user` verifier ships inside the image (no third-party download). Enable it from the **Server** tab and assign a password per user in the UI; cert-only users are unaffected. `OVPN_AUTH=true` is the legacy switch that forces it on for everyone.
+* Upgrading an existing deployment? See [docs/UPGRADE.md](docs/UPGRADE.md) (worked example: 2.0.19 → 2.0.35, including the automatic auth-state migration).
 * When using `--ccd`, set `--ovpn.network` to match your OpenVPN server network.
 * Per-user password auth does not work with `--storage.backend=kubernetes.secrets` (the password DB is a filesystem SQLite db).
 * Connected user status refreshes every 28 seconds.
