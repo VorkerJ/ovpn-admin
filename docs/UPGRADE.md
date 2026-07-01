@@ -1,17 +1,17 @@
-# Upgrade guide: 2.0.19 → 2.0.35
+# Upgrade guide: 2.0.19 → 2.0.36
 
 This covers an in-place upgrade of a Docker-Compose deployment (the production
-layout) from **2.0.19** to **2.0.35**. It was validated end-to-end on a local
+layout) from **2.0.19** to **2.0.36**. It was validated end-to-end on a local
 copy of the production stack: MFA enrollment, admin login, users, PKI and CCD all
 survive the upgrade.
 
-> **TL;DR** — bump the image tags to `2.0.35`, `docker compose pull`, `up -d`.
+> **TL;DR** — bump the image tags to `2.0.36`, `docker compose pull`, `up -d`.
 > No `down -v`, no manual data migration. Your MFA and sessions are preserved
 > automatically.
 
 ---
 
-## Why upgrade (highlights 2.0.19 → 2.0.35)
+## Why upgrade (highlights 2.0.19 → 2.0.36)
 
 - **[Critical security] MFA bypass fixed (v2.0.33).** In every release up to and
   including v2.0.32, anyone who knew the admin password could bypass the admin
@@ -26,6 +26,13 @@ survive the upgrade.
 - **UI:** column sorting, a mobile card layout for the users table, and the
   selected tab persists across reloads.
 - **Seamless auth-state migration (v2.0.35).** See below.
+- **Granular per-user route API + CCD write hardening (v2.0.36).** New
+  `POST /api/user/ccd/route/add` and `/remove` endpoints let a service account
+  manage individual personal routes (idempotent) without the full-replace
+  read-modify-write of `ccd/apply`. All CCD writes are now serialized to prevent
+  lost updates from concurrent callers, and the management "kill" on the
+  CCD-write path is bounded by a 5s timeout so it can't hang a request. See
+  [`docs/API.md`](API.md).
 - Hardening carried in the 2.0.20–2.0.32 line: forced first-login password
   change, durable auth state, native `openvpn-user` (own source), govulncheck CI.
 
@@ -50,7 +57,7 @@ Full detail per version is in [`CHANGELOG.md`](../CHANGELOG.md).
 file** (e.g. `/mnt/auth`). Newer builds use a dedicated state directory
 (`--session.state-dir`, default `/var/lib/ovpn-admin` in the shipped images).
 
-On first start, 2.0.35 detects this and **copies the legacy files into the
+On first start, 2.0.36 detects this and **copies the legacy files into the
 configured state dir automatically** (never overwriting). You get a log line like:
 
 ```
@@ -84,8 +91,8 @@ cd /opt/ovpn-admin
 # 1. (Optional but recommended) back up the auth state + PKI
 tar czf ~/ovpn-admin-backup-$(date +%F).tgz auth/ /var/lib/ovpn-admin/easyrsa /var/lib/ovpn-admin/ccd
 
-# 2. Point both images at 2.0.35
-sed -i 's#:2\.0\.19#:2.0.35#g' .env     # adjust if your current tag differs
+# 2. Point both images at 2.0.36
+sed -i 's#:2\.0\.19#:2.0.36#g' .env     # adjust if your current tag differs
 
 # 3. Pull and roll
 docker compose pull
@@ -123,7 +130,7 @@ step 1, restore it first.
 
 ## Kubernetes (Helm)
 
-Bump `image.tag` / `Chart.appVersion` to `2.0.35` and `helm upgrade`. **Set
+Bump `image.tag` / `Chart.appVersion` to `2.0.36` and `helm upgrade`. **Set
 `persistence.enabled=true`** (see [`charts/openvpn-admin/values.yaml`](../charts/openvpn-admin/values.yaml))
 so the state dir is a PVC — otherwise a pod restart drops MFA, sessions, API
 tokens and traffic history. The same auto-migration runs on first start.
