@@ -1,0 +1,232 @@
+# ovpn-admin API — service-account integration
+
+For non-interactive integrations (your backend creating/revoking VPN users and
+managing their routes). Everything here is reachable with a **service-account API
+token** — no browser session, no MFA prompt.
+
+---
+
+## Authentication
+
+Create a token in the UI: header **🔑 (API tokens)** → give it a name → the token
+is shown **once** (starts with `ovpnadm_`). Save it immediately; it is stored
+hashed and cannot be retrieved again. (Creating tokens requires an MFA-enabled
+admin — a security requirement on the human side only.)
+
+Send it on every request as a Bearer token:
+
+```
+Authorization: Bearer ovpnadm_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+(Or the header `X-API-Token: ovpnadm_...` if a Bearer header is inconvenient.)
+
+### Is the token static? Yes.
+
+- **No expiry, no refresh.** It is valid until you revoke it in the UI. Service
+  accounts can't do interactive TOTP, so there is no rotation flow — treat it like
+  a long-lived secret (store in a vault/secret manager).
+- Revocation is immediate: delete it in the UI and it stops working on the next
+  request.
+- To rotate: create a new token, switch your integration to it, then delete the
+  old one.
+
+### Scope (what a token may touch)
+
+A token is **restricted to user and route management**. Allowed path prefixes:
+
+| Prefix | Purpose |
+|---|---|
+| `/api/user`, `/api/users` | user lifecycle + per-user routes (CCD) + `.ovpn` |
+| `/api/common-routes` | global routes pushed to all users |
+| `/api/traffic` | per-user traffic (read) |
+
+Anything else (`/api/server-config`, `/api/mfa/*`, `/api/api-tokens`,
+`/api/admin/*`, `/metrics`, …) returns **403** — a token cannot change server
+config, manage MFA, mint other tokens, or change the admin password.
+
+---
+
+## Conventions
+
+- Base URL: your ovpn-admin origin, e.g. `https://vpn.example.com`. All paths
+  below are relative to it (if you run with `--listen.base-url`, prepend it).
+- Request bodies are JSON; set `Content-Type: application/json`.
+- Usernames must match `^[A-Za-z0-9_@][A-Za-z0-9_.@-]{0,62}$` (validated
+  server-side; invalid → `400`).
+- Errors are `{"error":"<message>"}` with a matching HTTP status:
+  `400` bad request/validation · `401` missing/invalid token ·
+  `403` out of scope · `405` wrong method · `412` server not yet initialized ·
+  `5xx` server error.
+- **One-time setup:** users can only be created after the server has been
+  initialized once in the UI (Server tab → Save). Until then user-create returns
+  `412` (server-config is out of a token's scope, so this is a human step).
+
+---
+
+## Users
+
+### List users
+
+```
+GET /api/users/list
+```
+Returns an array of users:
+```json
+[
+  {
+    "Identity": "alice",
+    "AccountStatus": "Active",          // Active | Revoked | Expired
+    "ExpirationDate": "2036-01-02 12:00:00",
+    "RevocationDate": "",
+    "ConnectionStatus": "Connected",    // "" when offline
+    "Connections": 1,
+    "PasswordRequired": false
+  }
+]
+```
+
+### Create a user (issues a certificate)
+
+```
+POST /api/user/create
+{ "username": "alice", "password": "" }
+```
+`password` is only meaningful when per-user password auth is enabled; for
+cert-only users send `""`. Response `200` `{"status":"ok", ...}`; the client cert
+is generated and the user appears in the list.
+
+### Download the user's `.ovpn`
+
+```
+POST /api/user/config/show
+{ "username": "alice" }
+```
+Returns the ready-to-use OpenVPN config as **plain text** (not JSON). Hand this to
+the client.
+
+### Revoke / restore / rotate / delete
+
+```
+POST /api/user/revoke     { "username": "alice" }   # cert → CRL, session dropped, reversible
+POST /api/user/unrevoke   { "username": "alice" }   # undo a revoke
+POST /api/user/rotate     { "username": "alice" }   # new keypair, old cert revoked
+POST /api/user/delete     { "username": "alice" }   # cert → CRL, files removed, NOT reversible
+POST /api/user/disconnect { "username": "alice" }   # kick the live session (stays authorized)
+```
+Each returns `200` on success or `4xx` with `{"error":...}`.
+
+---
+
+## Per-user routes (CCD)
+
+A user's routes live in their **CCD**. `apply` is a **full replace** — always GET
+the current CCD first, modify the `CustomRoutes` array, then POST the whole object
+back.
+
+### Get a user's CCD
+
+```
+POST /api/user/ccd
+{ "username": "alice" }
+```
+Returns the CCD object:
+```json
+{
+  "User": "alice",
+  "ClientAddress": "dynamic",
+  "RedirectGateway": false,
+  "CustomRoutes": [
+    { "Kind": "ip",     "Address": "10.8.0.0", "Mask": "255.255.255.0", "Description": "office" },
+    { "Kind": "domain", "Domain": "github.com", "Description": "git" }
+  ]
+}
+```
+
+### Set a user's routes
+
+```
+POST /api/user/ccd/apply
+{
+  "User": "alice",
+  "ClientAddress": "dynamic",
+  "RedirectGateway": false,
+  "CustomRoutes": [
+    { "Kind": "ip",     "Address": "10.8.0.0", "Mask": "255.255.255.0", "Description": "office" },
+    { "Kind": "domain", "Domain": "internal.example.com", "Description": "app" }
+  ]
+}
+```
+Route fields:
+| Field | For | Notes |
+|---|---|---|
+| `Kind` | both | `"ip"` (default) or `"domain"` |
+| `Address` + `Mask` | `ip` routes | dotted-quad network + mask |
+| `Domain` | `domain` routes | server re-resolves periodically and pushes current IPs |
+| `Description` | both | free text |
+
+`ClientAddress` is `"dynamic"` (pool-assigned) or a fixed IP. `RedirectGateway:
+true` sends all of the user's traffic through the VPN. Applying a CCD change
+disconnects the affected session so it reconnects with the new routes.
+
+To **add** a route: GET the CCD, append to `CustomRoutes`, POST it back.
+To **remove** a route: GET, drop the entry from `CustomRoutes`, POST it back.
+
+---
+
+## Global routes (all users)
+
+```
+GET    /api/common-routes                 # list
+POST   /api/common-routes                 # add     { "kind":"ip","address":"10.0.0.0","mask":"255.0.0.0","description":"corp" }
+DELETE /api/common-routes/{id}            # remove by id (from the list)
+```
+`kind` is `"ip"` (with `address`+`mask`) or `"domain"` (with `domain`). These
+apply to every active user on top of their per-user routes.
+
+---
+
+## Traffic (read)
+
+```
+GET /api/traffic                 # current month
+GET /api/traffic?month=2026-06   # a specific month (YYYY-MM)
+```
+Returns `{ "month": "...", "months": ["2026-06", ...], "rows": [ { "user": "...",
+"rx_bytes": N, "tx_bytes": N, "total_bytes": N, "all_time_bytes": N, "connected":
+true, ... } ] }`. `rx_bytes` = client upload, `tx_bytes` = client download.
+
+---
+
+## End-to-end example (curl)
+
+```bash
+BASE=https://vpn.example.com
+TOKEN=ovpnadm_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+auth=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+
+# 1. create the user
+curl -s "${auth[@]}" -X POST "$BASE/api/user/create" -d '{"username":"alice","password":""}'
+
+# 2. give alice a personal route (full replace: read-modify-write)
+ccd=$(curl -s "${auth[@]}" -X POST "$BASE/api/user/ccd" -d '{"username":"alice"}')
+echo "$ccd" | jq '.CustomRoutes += [{"Kind":"ip","Address":"10.8.0.0","Mask":"255.255.255.0","Description":"office"}]' \
+  | curl -s "${auth[@]}" -X POST "$BASE/api/user/ccd/apply" -d @-
+
+# 3. fetch the .ovpn to hand to the client
+curl -s "${auth[@]}" -X POST "$BASE/api/user/config/show" -d '{"username":"alice"}' > alice.ovpn
+
+# 4. later: revoke access
+curl -s "${auth[@]}" -X POST "$BASE/api/user/revoke" -d '{"username":"alice"}'
+```
+
+---
+
+## Notes for automation
+
+- All write endpoints are idempotent-ish but not transactional; check the HTTP
+  status and `{"error":...}` body.
+- The token bypasses the MFA and forced-password-change gates by design (a service
+  can do neither) but stays inside the scope above — it can never escalate.
+- Keep the token out of logs and version control; rotate by create-new →
+  switch → delete-old.

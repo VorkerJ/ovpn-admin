@@ -22,6 +22,7 @@ Simple web UI to manage OpenVPN users, their certificates & routes in Kubernetes
 * **Common Routes** — a global list of push routes applied to every active user. Supports both static IP/mask entries and domain-based entries (the server periodically re-resolves and pushes the current IPs). Search, pagination, bulk import.
 * **Per-user OpenVPN password auth** — an optional password *on top of* the client certificate, toggled from the **Server** tab and assigned per user in the UI (no env vars). Cert-only users connect unchanged and are never prompted; only flagged users must present a password. The `openvpn-user` verifier is built into the image (no third-party download).
 * **Cumulative per-user traffic** — a **Traffic** tab showing how much each user has transferred, bucketed by calendar month (history kept) and persisted across reconnects and restarts.
+* **Service-account API tokens** — long-lived, scope-limited tokens for non-interactive integrations (create/revoke users, manage per-user routes) — see [docs/API.md](docs/API.md).
 * (optionally) Specifying a Kubernetes LoadBalancer in front of the OpenVPN server (auto-defined `remote` in `client.conf.tpl`)
 * (optionally) Storing certificates and other files in Kubernetes Secrets
 * **Server-side route enforcement** — when enabled (default in Helm), ovpn-admin installs per-client iptables rules so that each VPN client can only reach destinations explicitly allowed via per-user CCD routes or global Common Routes. Requires `NET_ADMIN` capability.
