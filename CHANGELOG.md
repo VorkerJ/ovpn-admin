@@ -5,6 +5,27 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.37] — 2026-07-03
+
+### Changed
+
+- **Native browser dialogs replaced with an in-app confirm modal.** The
+  Server-config "Reset to defaults" action used the OS `window.confirm()` popup
+  (small box pinned to the top of the window). It now uses a centred, app-styled
+  confirmation dialog via a reusable promise-based `useConfirm()` composable +
+  a global `ConfirmDialog` — Escape/backdrop/Cancel dismiss, Enter confirms.
+  Other destructive actions (delete/rotate user, password changes, MFA) already
+  used custom modals; this closes the last native one and gives future code a
+  drop-in `await confirm({...})` instead of `window.confirm`.
+
+### Fixed
+
+- **Buttons of different variants now render the same size.** A bordered variant
+  (e.g. `secondary`, used by "Reset") rendered ~2px wider than a borderless one
+  (e.g. the primary "Save"), so a side-by-side pair looked mismatched. The base
+  button now reserves a transparent 1px border that bordered variants recolour,
+  so all buttons share identical box dimensions regardless of variant.
+
 ## [2.0.36] — 2026-07-01
 
 ### Added

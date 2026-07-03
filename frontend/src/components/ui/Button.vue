@@ -30,12 +30,16 @@ const sizes = {
 }
 </script>
 
+<!-- Base reserves a 1px `border-transparent` so every variant is the same box
+     size: variants that add a coloured border (secondary/outline) just recolour
+     that reserved edge instead of growing the button, keeping e.g. a Save
+     (borderless primary) + Reset (bordered secondary) pair identical in size. -->
 <template>
   <button
     type="button"
     :disabled="loading || $attrs.disabled"
     :class="cn(
-      'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
+      'inline-flex items-center justify-center rounded-md border border-transparent text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
       variants[props.variant],
       sizes[props.size],
       props.class

@@ -9,6 +9,7 @@ import UsersTable from '@/components/UsersTable.vue'
 import { AlertTriangle, ShieldAlert } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import Toast from '@/components/ui/Toast.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import AddUserModal from '@/components/modals/AddUserModal.vue'
 import DeleteUserModal from '@/components/modals/DeleteUserModal.vue'
 import RotateUserModal from '@/components/modals/RotateUserModal.vue'
@@ -603,6 +604,9 @@ async function safeUnrevoke(username) {
       <!-- Toast notifications -->
       <Toast />
     </template>
+
+    <!-- Global confirm dialog (replaces native window.confirm) -->
+    <ConfirmDialog />
   </div>
 </template>
 

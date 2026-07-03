@@ -6,6 +6,7 @@ import Button from '@/components/ui/Button.vue'
 import SectionCard from '@/components/server-config/SectionCard.vue'
 import ChipInput from '@/components/server-config/ChipInput.vue'
 import { useToast } from '@/composables/useToast'
+import { useConfirm } from '@/composables/useConfirm'
 import {
   fetchServerConfig, updateServerConfig, fetchServerConfigDefaults,
 } from '@/api.js'
@@ -22,6 +23,7 @@ const submitting = ref(false)
 
 const { toast: _toast } = useToast()
 function notify(title, variant = 'default') { _toast({ title, variant }) }
+const { confirm } = useConfirm()
 
 const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/
 
@@ -72,7 +74,13 @@ async function save() {
 }
 
 async function resetToDefaults() {
-  if (!confirm('Сбросить все настройки сервера к дефолтам?')) return
+  const ok = await confirm({
+    title: 'Сбросить настройки сервера?',
+    message: 'Все настройки сервера вернутся к значениям по умолчанию. Изменения не сохранятся, пока вы не нажмёте «Сохранить».',
+    confirmText: 'Сбросить',
+    variant: 'destructive',
+  })
+  if (!ok) return
   const def = await fetchServerConfigDefaults()
   cfg.value = def
 }
