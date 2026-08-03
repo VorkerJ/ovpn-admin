@@ -116,6 +116,30 @@ POST /api/user/disconnect { "username": "alice" }   # kick the live session (sta
 ```
 Each returns `200` on success or `4xx` with `{"error":...}`.
 
+### Per-user VPN password (optional second factor)
+
+By default clients authenticate with their **certificate only**. You can require
+an additional username+password *on top of* the cert for specific users. The
+server-wide switch (Server tab → "password auth") must be enabled once in the UI
+first — that toggle is out of a token's scope — after which a token can set or
+clear individual users' passwords:
+
+```
+POST /api/user/change-password   { "username": "alice", "password": "s3cret" }   # set / change
+POST /api/user/remove-password   { "username": "alice" }                         # back to cert-only
+```
+`change-password` marks the user as password-required and their `.ovpn` will then
+carry `auth-user-pass`. `remove-password` returns `501` if password auth is
+disabled server-wide. Both return `200` `{...}` on success.
+
+### Per-user statistic
+
+```
+POST /api/user/statistic   { "username": "alice" }
+```
+Returns connection statistics for the user (bytes / sessions as tracked by the
+mgmt interface). For cumulative per-month usage prefer `/api/traffic` below.
+
 ---
 
 ## Per-user routes (CCD)
@@ -239,6 +263,28 @@ settable via `apply` (the granular endpoints touch just `CustomRoutes`), so use
 Any change (granular or full) rewrites the CCD and **disconnects the affected
 session** so it reconnects with the new routes.
 
+### Bulk import routes (from text)
+
+```
+POST /api/user/ccd/import
+{ "username": "alice", "text": "example.com\n10.0.0.0/24\n1.2.3.4 255.255.0.0" }
+```
+Parses one route per line (`domain`, CIDR, `IP mask`, or bare IP → /32; `#`
+comments ignored), appends the valid ones, skips duplicates. Returns
+`{ "Added": [...], "Skipped": [...], "Errors": [ {"Line":N,"Reason":"..."} ] }`.
+Handy for provisioning a user's routes in one call.
+
+### Refresh a user's domain routes
+
+```
+POST /api/user/ccd/refresh
+{ "username": "alice" }
+```
+Re-resolves every `domain` route in the user's CCD and rewrites it if any IP set
+changed (kicking the user only when it did). Returns
+`{ "changed": bool, "resolved": N, "failed": N }`. The server also does this on a
+timer (`domain_refresh_interval_hours`); call this to force it immediately.
+
 ---
 
 ## Global routes (all users)
@@ -247,9 +293,13 @@ session** so it reconnects with the new routes.
 GET    /api/common-routes                 # list
 POST   /api/common-routes                 # add     { "kind":"ip","address":"10.0.0.0","mask":"255.0.0.0","description":"corp" }
 DELETE /api/common-routes/{id}            # remove by id (from the list)
+POST   /api/common-routes/import          # bulk import  { "text": "example.com\n10.0.0.0/24" }
+POST   /api/common-routes/refresh         # re-resolve all global domain routes now
 ```
 `kind` is `"ip"` (with `address`+`mask`) or `"domain"` (with `domain`). These
-apply to every active user on top of their per-user routes.
+apply to every active user on top of their per-user routes. `import` accepts the
+same one-route-per-line text format as the per-user import and returns the same
+`{Added,Skipped,Errors}` report; `refresh` re-resolves the global domain routes.
 
 ---
 
