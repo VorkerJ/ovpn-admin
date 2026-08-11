@@ -5,6 +5,24 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.38] — 2026-08-11
+
+### Security
+
+- **Patched two newly-published vulnerabilities** flagged by govulncheck (both
+  advisories appeared after the 2.0.37 build; neither is a logic bug in this app):
+  - `GO-2026-5970` in `golang.org/x/text` — bumped `v0.37.0` → `v0.39.0`.
+  - `GO-2026-5856` in the Go standard library `crypto/tls` — bumped the build
+    toolchain `go1.26.4` → `go1.26.5` (CI govulncheck pin updated to match).
+
+### Documentation
+
+- **`docs/API.md` now covers every service-account-reachable endpoint.** Several
+  in-scope endpoints were missing from the integration reference: per-user VPN
+  password (`change-password` / `remove-password`), per-user route bulk import +
+  domain refresh (`ccd/import`, `ccd/refresh`), per-user statistic, and the
+  global-route bulk import + refresh (`common-routes/import`, `common-routes/refresh`).
+
 ## [2.0.37] — 2026-07-03
 
 ### Changed
