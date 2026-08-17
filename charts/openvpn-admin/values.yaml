@@ -2,6 +2,12 @@
 # openvpn-admin Helm chart — default values
 # ================================================================
 
+# Override the generated resource name prefix. Set this when migrating onto this
+# chart from another one so Services keep their existing names (e.g. an HAProxy
+# tcp-services entry targeting "<release>-<chart>-openvpn" must not change).
+nameOverride: ""
+fullnameOverride: ""
+
 # ----------------------------------------------------------------
 # ovpn-admin UI
 # ----------------------------------------------------------------
@@ -109,11 +115,15 @@ openvpn:
 
   logLevel: 3
 
-  # Expose OpenVPN port: HostPort | LoadBalancer | ExternalIP
+  # Expose OpenVPN port: HostPort | ClusterIP | LoadBalancer | ExternalIP
+  #  - ClusterIP: in-cluster Service only; put an external L4 proxy in front
+  #    (e.g. HAProxy tcp-services) that targets <ns>/<release>-openvpn:<port>.
+  #    Pin the Service name with fullnameOverride (below) so the proxy target is
+  #    stable across a chart migration.
   inlet: HostPort
   hostPort: 1194
   # externalIP: 1.2.3.4      # for ExternalIP inlet
-  # externalPort: 1194        # for LoadBalancer / ExternalIP inlet
+  # externalPort: 1194        # for ClusterIP / LoadBalancer / ExternalIP inlet
 
 # ----------------------------------------------------------------
 # Service for admin UI

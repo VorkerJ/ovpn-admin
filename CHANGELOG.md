@@ -5,6 +5,26 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.39] — 2026-08-17
+
+### Added
+
+- **Declarative first-boot server config (env-seeded listen port/proto/network).**
+  `defaultServerConfig()` now seeds `Proto`/`Port`/`Network`/`NetworkMask` from
+  `OVPN_SERVER_PROTO` / `OVPN_SERVER_PORT` / `OVPN_SERVER_NETWORK` /
+  `OVPN_SERVER_NETWORK_MASK` (falling back to the previous built-in defaults when
+  unset). Previously the rendered `server.conf` always listened on `1194/tcp` on
+  first boot and could only be changed by saving in the UI — a problem for a
+  GitOps deploy where a fronting L4 proxy targets a fixed port. Existing installs
+  are unaffected (no env → identical defaults).
+- **Helm chart: `openvpn.inlet: ClusterIP`.** Exposes the OpenVPN port as an
+  in-cluster Service only, for setups where an external L4 proxy (e.g. the
+  HAProxy ingress-controller's `tcp-services` ConfigMap) targets it — no cloud
+  LoadBalancer provisioned. The chart also wires the `OVPN_SERVER_*` env above
+  from `openvpn.{proto,port,network,networkMask}`, and documents
+  `nameOverride`/`fullnameOverride` so Services keep their names when migrating
+  onto this chart from another (e.g. an HAProxy target that must not change).
+
 ## [2.0.38] — 2026-08-11
 
 ### Security

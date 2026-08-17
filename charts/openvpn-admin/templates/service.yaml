@@ -58,6 +58,30 @@ spec:
       protocol: {{ .Values.openvpn.proto | upper }}
   selector:
     {{- include "openvpn-admin.selectorLabels" . | nindent 4 }}
+{{- else if eq .Values.openvpn.inlet "ClusterIP" }}
+---
+# ── OpenVPN ClusterIP ───────────────────────────────────────────────────────
+# In-cluster Service only; external reachability is provided by a fronting L4
+# proxy that targets this Service (e.g. the HAProxy ingress-controller's
+# tcp-services ConfigMap: `<port>: "<ns>/<svc>:<port>"`). No cloud LoadBalancer
+# is provisioned. Pin the Service name with fullnameOverride so the proxy's
+# target doesn't change on a chart migration.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "openvpn-admin.fullname" . }}-openvpn
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openvpn-admin.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: openvpn
+      port: {{ .Values.openvpn.externalPort | default .Values.openvpn.port }}
+      targetPort: {{ .Values.openvpn.port }}
+      protocol: {{ .Values.openvpn.proto | upper }}
+  selector:
+    {{- include "openvpn-admin.selectorLabels" . | nindent 4 }}
 {{- end }}
 
 {{- if .Values.serviceMonitor.enabled }}

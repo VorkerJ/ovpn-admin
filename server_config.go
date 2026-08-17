@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -135,16 +136,43 @@ type ServerConfigResponse struct {
 	Initialized bool `json:"initialized"`
 }
 
+// serverDefaultStr / serverDefaultInt seed a first-boot server-config field
+// from an env var, falling back to the built-in default when unset/invalid.
+// This lets an operator pin the listen proto/port/network declaratively (e.g.
+// from the Helm chart) instead of having to set them once in the UI — important
+// for a GitOps deploy where the rendered server.conf must listen on a fixed
+// port (a fronting L4 proxy targets it) from the very first boot.
+func serverDefaultStr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+func serverDefaultInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		log.Warnf("server-config: %s=%q is not a valid integer — using default %d", key, v, def)
+	}
+	return def
+}
+
 // defaultServerConfig — дефолты при первом запуске (store пустой).
 // Подобраны под текущие production-значения чтобы upgrade не ломал клиентов.
+// Proto/Port/Network/NetworkMask могут быть переопределены env-переменными
+// (OVPN_SERVER_PROTO / OVPN_SERVER_PORT / OVPN_SERVER_NETWORK /
+// OVPN_SERVER_NETWORK_MASK) — чтобы порт прослушивания и подсеть задавались
+// декларативно из чарта, а не выставлялись руками в UI после деплоя.
 // Initialized=false (zero value) — admin ещё не сохранял настройки через UI;
 // до явного сохранения создание пользователей будет заблокировано.
 func defaultServerConfig() ServerConfig {
 	return ServerConfig{
-		Proto:         "tcp",
-		Port:          1194,
-		Network:       "172.16.100.0",
-		NetworkMask:   "255.255.255.0",
+		Proto:         serverDefaultStr("OVPN_SERVER_PROTO", "tcp"),
+		Port:          serverDefaultInt("OVPN_SERVER_PORT", 1194),
+		Network:       serverDefaultStr("OVPN_SERVER_NETWORK", "172.16.100.0"),
+		NetworkMask:   serverDefaultStr("OVPN_SERVER_NETWORK_MASK", "255.255.255.0"),
 		TunMTU:        1500,
 		MssFix:        1450,
 		DataCiphers:   []string{"AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"},

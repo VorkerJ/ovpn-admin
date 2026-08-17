@@ -134,6 +134,19 @@ spec:
               add: ["NET_ADMIN"]
             seccompProfile:
               type: RuntimeDefault
+          # Seed the first-boot server-config so the rendered server.conf
+          # listens on the intended proto/port/network from the very first
+          # boot (before any UI save) — required when a fronting L4 proxy
+          # targets a fixed port.
+          env:
+            - name: OVPN_SERVER_PROTO
+              value: {{ .Values.openvpn.proto | quote }}
+            - name: OVPN_SERVER_PORT
+              value: {{ .Values.openvpn.port | quote }}
+            - name: OVPN_SERVER_NETWORK
+              value: {{ .Values.openvpn.network | quote }}
+            - name: OVPN_SERVER_NETWORK_MASK
+              value: {{ .Values.openvpn.networkMask | quote }}
           command: ["/app/ovpn-admin"]
           args:
             - --listen.host=0.0.0.0
