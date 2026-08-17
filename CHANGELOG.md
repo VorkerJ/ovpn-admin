@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.39] — 2026-08-17
 
+### Security
+
+- **Bumped the build toolchain `go1.26.5` → `go1.26.6`** to clear five Go
+  standard-library advisories that govulncheck flagged as reachable from this
+  code (in `encoding/asn1`, `crypto/tls`, `net/http`, `net/url`), all fixed in
+  `go1.26.6`. CI's govulncheck pin was updated to match.
+
 ### Added
 
 - **Declarative first-boot server config (env-seeded listen port/proto/network).**
