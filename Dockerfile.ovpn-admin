@@ -38,7 +38,7 @@ RUN apk add --update bash easy-rsa openssl openvpn coreutils iptables iptables-l
     rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/*
 RUN addgroup -S ovpnadmin && \
     addgroup -g 2000 ovpnshared && \
-    adduser -S -G ovpnadmin ovpnadmin && \
+    adduser -S -u 1000 -G ovpnadmin ovpnadmin && \
     adduser ovpnadmin ovpnshared && \
     chown -R ovpnadmin:ovpnadmin /app && \
     # Durable auth-state dir (OVPN_SESSION_STATE_DIR). Owned by ovpnadmin so a
@@ -48,4 +48,7 @@ RUN addgroup -S ovpnadmin && \
     chown ovpnadmin:ovpnadmin /var/lib/ovpn-admin && \
     chmod 700 /var/lib/ovpn-admin && \
     setcap cap_net_admin+ep /usr/sbin/xtables-nft-multi 2>/dev/null || true
-USER ovpnadmin
+# Numeric USER (not the name) so Kubernetes `runAsNonRoot: true` can verify the
+# user is non-root without resolving /etc/passwd — a name-only USER fails with
+# CreateContainerConfigError under that policy.
+USER 1000

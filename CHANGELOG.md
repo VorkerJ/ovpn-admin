@@ -5,6 +5,17 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.40] — 2026-08-20
+
+### Fixed
+
+- **ovpn-admin container failed to start (`CreateContainerConfigError`) on
+  clusters enforcing `runAsNonRoot`.** The image declared its user by name
+  (`USER ovpnadmin`) while the chart set `runAsNonRoot: true` without a numeric
+  `runAsUser`, so the kubelet couldn't verify the user is non-root and refused to
+  create the container. The `ovpnadmin` user now has a pinned **uid 1000**
+  (`USER 1000` in the image) and the chart sets `runAsUser: 1000`.
+
 ## [2.0.39] — 2026-08-17
 
 ### Security

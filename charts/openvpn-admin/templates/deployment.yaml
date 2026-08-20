@@ -123,10 +123,13 @@ spec:
           image: "{{ .Values.ovpnAdmin.image.repository }}:{{ .Values.ovpnAdmin.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.ovpnAdmin.image.pullPolicy }}
           securityContext:
-            # ovpn-admin runs as the non-root "ovpnadmin" user baked into the
-            # image and only needs NET_ADMIN for the firewall feature; deny all
-            # other capabilities and forbid privilege escalation.
+            # ovpn-admin runs as the non-root "ovpnadmin" user (uid 1000) baked
+            # into the image and only needs NET_ADMIN for the firewall feature;
+            # deny all other capabilities and forbid privilege escalation.
+            # runAsUser must be numeric: with runAsNonRoot and a name-only image
+            # USER, kubelet can't verify non-root → CreateContainerConfigError.
             runAsNonRoot: true
+            runAsUser: 1000
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # writes /etc/openvpn-dynamic/server.conf
             capabilities:
