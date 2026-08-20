@@ -5,6 +5,17 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.45] — 2026-08-20
+
+### Changed
+
+- **UI: the service-account token "Создать" button now explains why it is
+  disabled without MFA.** Creating a token requires an MFA-enabled admin (the
+  server returns 412 otherwise); previously the button looked clickable and
+  failed on click. It is now disabled with a styled hover tooltip plus an inline
+  notice ("2FA required — Profile → MFA Setup"). Adds a small reusable
+  `ui/Tooltip` component.
+
 ## [2.0.44] — 2026-08-20
 
 ### Added

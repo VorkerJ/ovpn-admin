@@ -6,8 +6,9 @@
 import { ref, watch } from 'vue'
 import Dialog from '@/components/ui/Dialog.vue'
 import Button from '@/components/ui/Button.vue'
-import { fetchApiTokens, createApiToken, revokeApiToken } from '@/api.js'
-import { KeyRound, Copy, Check, Trash2 } from 'lucide-vue-next'
+import Tooltip from '@/components/ui/Tooltip.vue'
+import { fetchApiTokens, createApiToken, revokeApiToken, fetchMfaStatus } from '@/api.js'
+import { KeyRound, Copy, Check, Trash2, ShieldAlert } from 'lucide-vue-next'
 
 const props = defineProps({ open: Boolean })
 const emit = defineEmits(['close'])
@@ -17,6 +18,10 @@ const loading = ref(false)
 const error = ref('')
 const newName = ref('')
 const creating = ref(false)
+// Creating a token requires an MFA-enabled admin session (server returns 412
+// otherwise). Mirror that in the UI so the button is disabled with an
+// explanation instead of failing on click.
+const mfaEnabled = ref(true)
 const created = ref(null) // { name, token } — shown once
 const copied = ref(false)
 
@@ -49,6 +54,7 @@ watch(() => props.open, (o) => {
     newName.value = ''
     error.value = ''
     load()
+    fetchMfaStatus().then(s => { mfaEnabled.value = !!s?.enabled }).catch(() => {})
   }
 })
 
@@ -144,14 +150,28 @@ function onClose() {
           @keyup.enter="create"
         >
       </div>
-      <Button
-        :loading="creating"
-        :disabled="creating || !newName.trim()"
-        @click="create"
-      >
-        <KeyRound :size="14" />
-        Создать
-      </Button>
+      <Tooltip :text="!mfaEnabled ? 'Нужна включённая 2FA: Профиль → MFA Setup. Токены может создавать только админ с MFA.' : ''">
+        <Button
+          :loading="creating"
+          :disabled="creating || !newName.trim() || !mfaEnabled"
+          @click="create"
+        >
+          <KeyRound :size="14" />
+          Создать
+        </Button>
+      </Tooltip>
+    </div>
+
+    <!-- MFA requirement notice — visible without hovering the disabled button -->
+    <div
+      v-if="!mfaEnabled"
+      class="mb-4 flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400"
+    >
+      <ShieldAlert
+        :size="14"
+        class="mt-0.5 shrink-0"
+      />
+      <span>Создание токенов доступно только админу с включённой 2FA. Включите её: <b>Профиль → MFA Setup</b>.</span>
     </div>
 
     <div
