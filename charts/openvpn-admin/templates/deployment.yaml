@@ -146,6 +146,10 @@ spec:
               value: {{ .Values.openvpn.network | quote }}
             - name: OVPN_SERVER_NETWORK_MASK
               value: {{ .Values.openvpn.networkMask | quote }}
+            {{- if and .Values.ovpnAdmin.metricsEnabled .Values.ovpnAdmin.metrics.port }}
+            - name: OVPN_METRICS_PORT
+              value: {{ .Values.ovpnAdmin.metrics.port | quote }}
+            {{- end }}
           command: ["/app/ovpn-admin"]
           args:
             - --listen.host=0.0.0.0
@@ -182,21 +186,17 @@ spec:
             - name: http
               containerPort: {{ .Values.ovpnAdmin.port }}
               protocol: TCP
+            {{- if and .Values.ovpnAdmin.metricsEnabled .Values.ovpnAdmin.metrics.port }}
+            - name: metrics
+              containerPort: {{ .Values.ovpnAdmin.metrics.port }}
+              protocol: TCP
+            {{- end }}
           resources:
             {{- toYaml .Values.resources.ovpnAdmin | nindent 12 }}
           startupProbe:
-            httpGet:
-              path: /
-              port: {{ .Values.ovpnAdmin.port }}
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            failureThreshold: 30
+            {{- toYaml .Values.ovpnAdmin.startupProbe | nindent 12 }}
           livenessProbe:
-            httpGet:
-              path: /
-              port: {{ .Values.ovpnAdmin.port }}
-            periodSeconds: 15
-            failureThreshold: 3
+            {{- toYaml .Values.ovpnAdmin.livenessProbe | nindent 12 }}
           volumeMounts:
             - name: ovpn-dynamic-conf
               mountPath: /etc/openvpn-dynamic

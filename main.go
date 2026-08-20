@@ -49,6 +49,7 @@ var (
 	openvpnServiceName       = kingpin.Flag("ovpn.service", "the name of Kubernetes Service having the LoadBalancer type if your OpenVPN server is behind it").Default("openvpn-external").Envar("OVPN_LB_SERVICE").Strings()
 	mgmtAddress              = kingpin.Flag("mgmt", "ALIAS=HOST:PORT for OpenVPN server mgmt interface; can have multiple values").Default("main=127.0.0.1:8989").Envar("OVPN_MGMT").Strings()
 	metricsPath              = kingpin.Flag("metrics.path", "URL path for exposing collected metrics").Default("/metrics").Envar("OVPN_METRICS_PATH").String()
+	metricsPort              = kingpin.Flag("metrics.port", "serve metrics on a SEPARATE port with NO auth (for internal Prometheus scrape); empty = on the main listen.port behind auth").Default("").Envar("OVPN_METRICS_PORT").String()
 	easyrsaDirPath           = kingpin.Flag("easyrsa.path", "path to easyrsa dir").Default("./easyrsa").Envar("EASYRSA_PATH").String()
 	indexTxtPath             = kingpin.Flag("easyrsa.index-path", "path to easyrsa index file").Default("").Envar("OVPN_INDEX_PATH").String()
 	easyrsaBinPath           = kingpin.Flag("easyrsa.bin-path", "path to easyrsa script").Default("easyrsa").Envar("EASYRSA_BIN_PATH").String()
@@ -459,9 +460,27 @@ func main() {
 	http.HandleFunc(*listenBaseUrl+"api/common-routes/", auth(ovpnAdmin.commonRoutesItemHandler))
 	http.HandleFunc(*listenBaseUrl+"api/server-config", auth(ovpnAdmin.serverConfigHandler))
 
-	http.HandleFunc(*metricsPath, ovpnAdmin.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		promhttp.HandlerFor(ovpnAdmin.promRegistry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
-	}))
+	metricsHandler := promhttp.HandlerFor(ovpnAdmin.promRegistry, promhttp.HandlerOpts{})
+	if *metricsPort == "" || *metricsPort == *listenPort {
+		// Metrics on the main listener, behind auth (default / backward-compatible).
+		http.HandleFunc(*metricsPath, ovpnAdmin.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+			metricsHandler.ServeHTTP(w, r)
+		}))
+	} else {
+		// Metrics on a SEPARATE port with no auth — a dedicated internal endpoint
+		// for Prometheus scraping (keep it off any publicly-exposed listener /
+		// bind it cluster-internal only). Runs in its own goroutine/server so the
+		// user-facing API port stays free of an unauthenticated /metrics.
+		go func() {
+			mmux := http.NewServeMux()
+			mmux.Handle(*metricsPath, metricsHandler)
+			mmux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+			addr := *listenHost + ":" + *metricsPort
+			log.Printf("Metrics: http://%s%s (no auth)", addr, *metricsPath)
+			msrv := &http.Server{Addr: addr, Handler: mmux, ReadHeaderTimeout: 10 * time.Second}
+			log.Fatal(msrv.ListenAndServe())
+		}()
+	}
 	http.HandleFunc(*listenBaseUrl+"ping", get(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "pong")
 	}))

@@ -5,6 +5,30 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.44] — 2026-08-20
+
+### Added
+
+- **Optional separate metrics port.** `--metrics.port` (env `OVPN_METRICS_PORT`)
+  serves `/metrics` on its own port with **no auth** — a dedicated internal
+  endpoint for Prometheus scraping, so an unauthenticated `/metrics` never rides
+  the user-facing API port. Empty (default) keeps metrics on the main port behind
+  auth (unchanged). Chart: `ovpnAdmin.metrics.port` wires the containerPort,
+  Service port and ServiceMonitor target.
+- **Configurable health probes.** `ovpnAdmin.startupProbe` / `livenessProbe` are
+  now rendered from values instead of hardcoded; the startup `initialDelaySeconds`
+  is raised to 15s to cut "connection refused" probe noise during the ~20-30s cold
+  start (PKI load from Secrets, firewall init).
+
+### Changed
+
+- **Chart defaults hardened for out-of-the-box `helm install`.** The openvpn
+  container's default securityContext now includes SETUID/SETGID/SETPCAP (+CHOWN,
+  DAC_OVERRIDE) so OpenVPN's post-start privilege drop to nobody:nogroup works;
+  `ovpnAdmin.firewall.enabled` now defaults to **false** (iptables needs an
+  elevated securityContext — enable it deliberately together with a root
+  securityContext, e.g. the kube-proxy pattern).
+
 ## [2.0.43] — 2026-08-20
 
 ### Fixed

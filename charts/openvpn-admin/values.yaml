@@ -41,6 +41,30 @@ ovpnAdmin:
   # Prometheus metrics endpoint
   metricsEnabled: true
   metricsPath: "/metrics"
+  metrics:
+    # Serve /metrics on a SEPARATE container port with NO auth, for internal
+    # Prometheus scraping (keeps an unauthenticated /metrics off the API port).
+    # Empty = metrics stay on the main port (ovpnAdmin.port) behind auth.
+    # When set, a `metrics` containerPort + Service port are exposed and the
+    # ServiceMonitor (if enabled) targets it.
+    port: ""        # e.g. 9000
+
+  # Health probes for the ovpn-admin container. Rendered verbatim, so you can
+  # fully retune them. Startup can take ~20-30s (PKI load from Secrets, firewall
+  # init) — initialDelaySeconds is set accordingly to keep the probe quiet.
+  startupProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    failureThreshold: 30
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+    periodSeconds: 15
+    failureThreshold: 3
 
   # PKI storage backend: "filesystem" or "kubernetes.secrets"
   # kubernetes.secrets stores all certs in etcd — no PVC needed
@@ -67,7 +91,11 @@ ovpnAdmin:
   #  - global Common Routes
   # Requires NET_ADMIN capability on the container and iptables binary in image.
   firewall:
-    enabled: true               # default ON for new installs; existing users see CHANGELOG
+    # OFF by default: iptables needs CAP_NET_ADMIN which can't be granted to a
+    # non-root process reliably in K8s (see securityContext note above). To use
+    # it, set enabled: true AND raise ovpnAdmin.securityContext to root with
+    # NET_ADMIN (+ DAC_OVERRIDE), e.g. the kube-proxy pattern.
+    enabled: false
     chainName: "OVPN_FW"
     iptablesBin: "/usr/sbin/iptables"
     reconcileInterval: "5m"
@@ -125,7 +153,11 @@ openvpn:
     allowPrivilegeEscalation: false
     capabilities:
       drop: ["ALL"]
-      add: ["NET_ADMIN", "NET_RAW", "MKNOD"]
+      # NET_ADMIN/NET_RAW/MKNOD: tun + routing. SETUID/SETGID/SETPCAP: OpenVPN
+      # drops privileges to nobody:nogroup after start and fatals without them
+      # ("setgid failed / missing CAP_SETPCAP"). CHOWN/DAC_OVERRIDE: read CCD/PKI
+      # after the drop. Same set as the reference docker-compose.
+      add: ["NET_ADMIN", "NET_RAW", "MKNOD", "CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "SETPCAP"]
     seccompProfile:
       type: RuntimeDefault
 

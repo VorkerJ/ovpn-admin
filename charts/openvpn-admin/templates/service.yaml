@@ -14,6 +14,12 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: {{ .Values.ovpnAdmin.port }}
       protocol: TCP
+    {{- if and .Values.ovpnAdmin.metricsEnabled .Values.ovpnAdmin.metrics.port }}
+    - name: metrics
+      port: {{ .Values.ovpnAdmin.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "openvpn-admin.selectorLabels" . | nindent 4 }}
 
@@ -102,7 +108,13 @@ spec:
     matchNames:
       - {{ .Release.Namespace }}
   endpoints:
+    {{- if .Values.ovpnAdmin.metrics.port }}
+    - port: metrics
+      path: {{ .Values.ovpnAdmin.metricsPath }}
+      interval: {{ .Values.serviceMonitor.interval }}
+    {{- else }}
     - port: http
       path: {{ .Values.ovpnAdmin.metricsPath }}
       interval: {{ .Values.serviceMonitor.interval }}
+    {{- end }}
 {{- end }}
