@@ -5,6 +5,18 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.41] — 2026-08-20
+
+### Changed
+
+- **Container securityContext is now configurable via values.**
+  `ovpnAdmin.securityContext` and `openvpn.securityContext` are rendered verbatim
+  instead of being hardcoded in the template, so operators can adapt to their
+  cluster's PodSecurity/policy without forking the chart. Defaults are unchanged:
+  the ovpn-admin container runs as non-root **uid 1000** (`runAsUser: 1000`, the
+  fix from 2.0.40), the openvpn container as root with the narrow
+  NET_ADMIN/NET_RAW/MKNOD cap set.
+
 ## [2.0.40] — 2026-08-20
 
 ### Fixed

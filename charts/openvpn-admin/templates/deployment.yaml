@@ -97,17 +97,11 @@ spec:
               {{- if eq .Values.openvpn.inlet "HostPort" }}
               hostPort: {{ .Values.openvpn.hostPort }}
               {{- end }}
+          # OpenVPN needs root for /dev/net/tun and a narrow capability set;
+          # override via openvpn.securityContext in values.yaml if your cluster
+          # policy differs.
           securityContext:
-            # OpenVPN needs root for /dev/net/tun; we drop everything except the
-            # narrow capability set it actually requires and forbid privilege
-            # escalation beyond that.
-            runAsNonRoot: false
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-              add: ["NET_ADMIN", "NET_RAW", "MKNOD"]
-            seccompProfile:
-              type: RuntimeDefault
+            {{- toYaml .Values.openvpn.securityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.resources.openvpn | nindent 12 }}
           volumeMounts:
@@ -122,21 +116,11 @@ spec:
         - name: ovpn-admin
           image: "{{ .Values.ovpnAdmin.image.repository }}:{{ .Values.ovpnAdmin.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.ovpnAdmin.image.pullPolicy }}
+          # runAsUser MUST stay numeric while runAsNonRoot is true (a name-only
+          # image USER fails kubelet's non-root check → CreateContainerConfigError).
+          # Override the whole block via ovpnAdmin.securityContext in values.yaml.
           securityContext:
-            # ovpn-admin runs as the non-root "ovpnadmin" user (uid 1000) baked
-            # into the image and only needs NET_ADMIN for the firewall feature;
-            # deny all other capabilities and forbid privilege escalation.
-            # runAsUser must be numeric: with runAsNonRoot and a name-only image
-            # USER, kubelet can't verify non-root → CreateContainerConfigError.
-            runAsNonRoot: true
-            runAsUser: 1000
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false  # writes /etc/openvpn-dynamic/server.conf
-            capabilities:
-              drop: ["ALL"]
-              add: ["NET_ADMIN"]
-            seccompProfile:
-              type: RuntimeDefault
+            {{- toYaml .Values.ovpnAdmin.securityContext | nindent 12 }}
           # Seed the first-boot server-config so the rendered server.conf
           # listens on the intended proto/port/network from the very first
           # boot (before any UI save) — required when a fronting L4 proxy

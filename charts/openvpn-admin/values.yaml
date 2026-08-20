@@ -20,6 +20,21 @@ ovpnAdmin:
 
   port: 8080
 
+  # Container securityContext for the ovpn-admin container. Rendered verbatim.
+  # NOTE: keep runAsUser numeric while runAsNonRoot is true — the image's user is
+  # baked as uid 1000; a name-only user fails the kubelet non-root check
+  # (CreateContainerConfigError) on clusters that enforce runAsNonRoot.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false   # writes the rendered server.conf
+    capabilities:
+      drop: ["ALL"]
+      add: ["NET_ADMIN"]            # firewall feature; drop if firewall disabled
+    seccompProfile:
+      type: RuntimeDefault
+
   # CCD (client-config-dir): per-user static IPs and push routes
   ccdEnabled: true
 
@@ -101,6 +116,18 @@ openvpn:
     # tag: defaults to .Chart.AppVersion when empty
     tag: ""
     pullPolicy: IfNotPresent
+
+  # Container securityContext for the openvpn container. It needs root for
+  # /dev/net/tun plus a narrow capability set; override here if your cluster
+  # policy differs.
+  securityContext:
+    runAsNonRoot: false
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+      add: ["NET_ADMIN", "NET_RAW", "MKNOD"]
+    seccompProfile:
+      type: RuntimeDefault
 
   # External hostname or IP used in generated .ovpn client configs
   # serverName: vpn.example.com
