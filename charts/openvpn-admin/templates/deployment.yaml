@@ -117,6 +117,12 @@ spec:
               mountPath: /etc/openvpn/pki
             - name: openvpn-ccd
               mountPath: /etc/openvpn/ccd
+            {{- if .Values.openvpn.tunDevice.hostPath }}
+            # OpenVPN needs /dev/net/tun. The Alpine openvpn image doesn't mknod
+            # it, so mount the node's device (the node must have the tun module).
+            - name: tun-device
+              mountPath: /dev/net/tun
+            {{- end }}
 
         # ── ovpn-admin UI ──────────────────────────────────────────────
         - name: ovpn-admin
@@ -276,6 +282,14 @@ spec:
         # ── CCD — managed by ovpn-admin, restored from Secrets on start ─
         - name: openvpn-ccd
           emptyDir: {}
+
+        {{- if .Values.openvpn.tunDevice.hostPath }}
+        # ── /dev/net/tun from the node (OpenVPN data plane) ─────────────
+        - name: tun-device
+          hostPath:
+            path: {{ .Values.openvpn.tunDevice.hostPath }}
+            type: CharDevice
+        {{- end }}
 
         {{- if .Values.ovpnAdmin.adminHtpasswdSecret }}
         # ── htpasswd from Secret ────────────────────────────────────────

@@ -129,6 +129,13 @@ openvpn:
     seccompProfile:
       type: RuntimeDefault
 
+  # OpenVPN needs the TUN device. The Alpine openvpn image doesn't create it, so
+  # by default we bind-mount the node's /dev/net/tun into the openvpn container
+  # (the node must have the tun kernel module). Set hostPath to "" to disable
+  # (e.g. if you provide the device another way / use DCO).
+  tunDevice:
+    hostPath: /dev/net/tun
+
   # External hostname or IP used in generated .ovpn client configs
   # serverName: vpn.example.com
 

@@ -5,6 +5,17 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.43] — 2026-08-20
+
+### Fixed
+
+- **openvpn container crashed with `Cannot open TUN/TAP dev /dev/net/tun: No such
+  file or directory`.** The chart never provided the TUN device to the openvpn
+  container and the image doesn't `mknod` it. It now bind-mounts the node's
+  `/dev/net/tun` (new value `openvpn.tunDevice.hostPath`, default `/dev/net/tun`;
+  set to `""` to disable, e.g. when providing the device another way). The node
+  must have the `tun` kernel module.
+
 ## [2.0.42] — 2026-08-20
 
 ### Fixed
