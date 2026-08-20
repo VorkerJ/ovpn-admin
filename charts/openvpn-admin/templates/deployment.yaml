@@ -54,7 +54,13 @@ spec:
 
         - name: init-dirs
           image: busybox:1.36
-          command: ["sh", "-c", "mkdir -p /etc/openvpn/ccd && chmod 700 /etc/openvpn/ccd"]
+          # chmod 2775 (not 700): the ccd emptyDir is group-owned by fsGroup
+          # (ovpnshared) so the non-root ovpn-admin container (uid 1000, member
+          # of that group) can write CCD files; setgid makes new files inherit
+          # the group, and o+rx lets openvpn read them if it drops privileges.
+          # 700 would leave the dir root-only → ovpn-admin fatals with
+          # "open /etc/openvpn/ccd/...: permission denied".
+          command: ["sh", "-c", "mkdir -p /etc/openvpn/ccd && chmod 2775 /etc/openvpn/ccd"]
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: false
