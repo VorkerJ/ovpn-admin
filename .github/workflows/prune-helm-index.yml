@@ -1,0 +1,55 @@
+name: Prune Helm index
+
+# Manual utility: remove specific chart versions from the published Helm repo
+# index (gh-pages/index.yaml). The release pipeline only ever MERGES into the
+# index (never removes), so when a release/tag is deleted its index entry lingers
+# with a dead .tgz URL — and clients (ArgoCD, `helm search`) keep showing it.
+# Run this to prune those stale entries.
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "Space-separated chart versions to remove (e.g. 'v2.0.40 v2.0.41')"
+        required: true
+
+permissions:
+  pages: write
+  id-token: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Fetch current Pages and prune versions
+        env:
+          PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          VERSIONS: ${{ github.event.inputs.versions }}
+        run: |
+          set -euo pipefail
+          mkdir -p pages
+          curl -sf "$PAGES_URL/index.yaml" -o pages/index.yaml
+          curl -sf "$PAGES_URL/index.html" -o pages/index.html || true
+          for v in $VERSIONS; do
+            # only allow version-looking tokens (defensive; input is trusted-actor only)
+            case "$v" in
+              v[0-9]*) ;;
+              *) echo "skip invalid version token: $v"; continue ;;
+            esac
+            yq -i "del(.entries.\"openvpn-admin\"[] | select(.version == \"$v\"))" pages/index.yaml
+            echo "pruned $v"
+          done
+          echo "--- remaining versions ---"
+          yq '.entries."openvpn-admin"[].version' pages/index.yaml
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages/
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v5
