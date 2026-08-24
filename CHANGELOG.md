@@ -5,6 +5,32 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.49] — 2026-08-24
+
+### Fixed
+
+- **Hard server-config changes are actually applied to openvpn again.** The
+  openvpn container's config watcher used the pattern `openvpn & ;
+  OVPN_PID=$! ; while kill -0 "$OVPN_PID"; do … md5 …; done`. In production this
+  loop silently stopped iterating (the shell fell through to `wait`), so when
+  ovpn-admin re-rendered server.conf on a hard change the running openvpn was
+  **never restarted** — the change only took effect on the next unrelated pod
+  restart. Rewritten to run openvpn in the foreground via `exec` (PID 1, so it
+  gets signals directly) with a separate watcher process that restarts the
+  container by TERMing PID 1 when server.conf's checksum changes. No more
+  reliance on `$!`/`kill -0`.
+
+### Changed
+
+- **Removed the `management-client-auth` toggle from the server-config UI.**
+  The setting gates every connect through ovpn-admin, but it authorizes by
+  certificate CN (which the cert already proves) and forces every client to
+  send a username/password — breaking cert-only clients — while its only real
+  benefit (instant revocation) is already covered by the CRL. It was confusing
+  next to the genuine "password auth" option and caused more harm than good.
+  The backend field remains (default `false`) for anyone who sets it via config
+  directly, but it is no longer exposed in the UI.
+
 ## [2.0.48] — 2026-08-24
 
 ### Fixed
