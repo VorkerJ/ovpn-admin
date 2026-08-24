@@ -5,6 +5,30 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.48] — 2026-08-24
+
+### Fixed
+
+- **Hard server-config reload no longer bounces the admin UI instead of
+  openvpn.** On a "hard" change ovpn-admin used to `os.Exit(0)` itself to force
+  a network-namespace rebind — correct only for docker-compose
+  `network_mode: service:openvpn`, but in the Helm chart (separate ovpn-admin /
+  openvpn containers) it just restarted the admin app ("front") while the
+  openvpn process ("back") kept running the old config. Combined with the
+  SIGTERM-via-mgmt call timing out when the single-client management console is
+  busy, a hard change silently failed to apply. Now ovpn-admin re-renders
+  server.conf and lets the openvpn container's watch-loop restart openvpn
+  (best-effort mgmt SIGTERM still tried first); it no longer exits. The old
+  self-exit is available behind `--server-config.hard-reload-self-exit`
+  (`OVPN_SERVER_CONFIG_HARD_RELOAD_SELF_EXIT`) for the docker-compose topology.
+
+- **CRL is now mounted world-readable (0644) in the chart.** openvpn re-reads
+  `crl-verify` on every client connect *after* dropping privileges to `nobody`;
+  with the previous 0400 root-owned mount it could not re-read the file once the
+  CRL was rewritten (user revoke / restart), so it logged `CRL: cannot read` →
+  `VERIFY ERROR: CRL not loaded` and rejected every client as "unknown CA". A
+  CRL is public revocation data, so 0644 is safe.
+
 ## [2.0.47] — 2026-08-24
 
 ### Fixed

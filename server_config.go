@@ -721,6 +721,14 @@ type serverManager struct {
 	confPath       string
 	dcoAvailable   bool
 	ccdEnabled     bool
+	// hardReloadSelfExit: on a hard reload, exit the ovpn-admin process so the
+	// runtime rebinds its network namespace. ONLY correct for docker-compose
+	// `network_mode: service:openvpn`, where ovpn-admin is locked to openvpn's
+	// netns. In the Helm chart (separate containers) the openvpn container
+	// watches server.conf and restarts itself, so ovpn-admin must NOT exit —
+	// exiting would bounce the admin UI ("front") while openvpn keeps running
+	// the old config ("back"). Default false.
+	hardReloadSelfExit bool
 }
 
 func (m *serverManager) softReload() error {
@@ -815,10 +823,10 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 		return "", fmt.Errorf("write conf: %w", err)
 	}
 
-	// `current` was previously captured as a backup for rollback. Hard
-	// reload now self-exits (so the runtime rebinds the network namespace),
-	// which means we can't roll back from in-process anyway. The validation
-	// step above guards against the bad-config case at save time.
+	// `current` was previously captured as a backup for rollback. We don't
+	// roll back in-process (openvpn restarts out-of-band via the watch-loop /
+	// mgmt SIGTERM); the validation step above guards the bad-config case at
+	// save time.
 	_ = current
 	m.store.replace(newCfg)
 	if err := m.persist(newCfg); err != nil {
@@ -842,32 +850,38 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 		return "soft", nil
 	case "hard":
 		ovpnServerConfigReloads.WithLabelValues("hard").Inc()
-		// SIGTERM into openvpn's mgmt makes the openvpn process exit, which
-		// in turn makes the container exit and be recreated by the runtime
-		// (`restart: unless-stopped` in docker-compose; kubelet in K8s).
-		// The recreated openvpn container has a NEW network namespace.
+		// A hard change needs the openvpn PROCESS to restart so it re-reads
+		// server.conf (and re-loads PKI/CRL). server.conf is already written
+		// above — that alone drives the restart in the two robust ways below;
+		// ovpn-admin ("front") must stay up so the admin keeps their session
+		// and sees the result.
 		//
-		// When ovpn-admin is in the same Pod (K8s) the pod's pause container
-		// holds the netns, so ovpn-admin keeps networking — fine.
-		// In docker-compose with `network_mode: service:openvpn`, ovpn-admin
-		// is locked to openvpn's OLD netns ID and becomes orphaned (502 on
-		// every UI request). To make this work in both runtimes we exit too
-		// after a short delay and let depends_on bring us back attached to
-		// the new netns. The HTTP caller has already received the apply()
-		// response by the time we exit.
+		// 1) Best-effort SIGTERM via the mgmt console: openvpn exits, the
+		//    container is recreated by the runtime, back on the new config.
+		//    This can legitimately fail (e.g. the single-client mgmt console
+		//    is held by the mgmt-client-auth loop) — that's fine, (2) covers it.
+		// 2) Guaranteed fallback: the openvpn container watches server.conf's
+		//    checksum and restarts openvpn itself within a few seconds of the
+		//    write above (Helm chart, since v2.0.46). No mgmt access needed.
+		//
+		// So we do NOT exit here. The old code self-exited to rebind ovpn-admin's
+		// netns, which is only needed under docker-compose
+		// `network_mode: service:openvpn`; gate that behind hardReloadSelfExit.
 		if err := m.sendSignal("SIGTERM"); err != nil {
-			log.Warnf("SIGTERM via mgmt failed: %v", err)
+			log.Infof("hard reload: SIGTERM via mgmt not delivered (%v) — openvpn will restart via the server.conf watch-loop", err)
+		} else {
+			log.Infof("hard reload: signalled openvpn to restart and pick up the new server.conf")
 		}
-		go func() {
-			// Give the HTTP handler ~1s to flush the success response to
-			// the client BEFORE the process dies. log.Info is buffered
-			// against stdout — sync via log.Fatal would write the line
-			// synchronously but also flag-up the exit as an error in
-			// healthchecks; use a plain Info + os.Exit instead.
-			time.Sleep(1200 * time.Millisecond)
-			log.Infof("hard reload: graceful self-exit so runtime rebinds netns to new openvpn (Docker network_mode: service:openvpn or K8s pod)")
-			os.Exit(0)
-		}()
+		if m.hardReloadSelfExit {
+			go func() {
+				// Give the HTTP handler ~1s to flush the success response to
+				// the client BEFORE the process dies. Plain Info + os.Exit
+				// (not log.Fatal) so healthchecks don't flag the exit as error.
+				time.Sleep(1200 * time.Millisecond)
+				log.Infof("hard reload: self-exit to rebind netns (network_mode:service:openvpn)")
+				os.Exit(0)
+			}()
+		}
 		return "hard", nil
 	}
 	return kind, nil

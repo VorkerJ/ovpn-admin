@@ -81,6 +81,19 @@ var (
 		"path where ovpn-admin writes the rendered server.conf").
 		Default("/etc/openvpn/server.conf").Envar("OVPN_SERVER_CONFIG_PATH").String()
 
+	// A "hard" server-config change (port/proto/cipher/tls-mode/DCO/mgmt-client-auth)
+	// requires the openvpn PROCESS to restart. There are two topologies:
+	//   * Separate containers (our Helm chart): the openvpn container watches
+	//     server.conf and self-restarts on change — ovpn-admin only re-renders
+	//     and must NOT exit (exiting just bounces the admin UI, not openvpn).
+	//   * docker-compose `network_mode: service:openvpn`: ovpn-admin shares
+	//     openvpn's netns; when openvpn restarts into a new netns ovpn-admin is
+	//     orphaned (502 on every request), so it must self-exit and be brought
+	//     back attached to the new netns. ONLY that topology should set this.
+	serverConfigHardReloadSelfExit = kingpin.Flag("server-config.hard-reload-self-exit",
+		"on a hard reload, self-exit ovpn-admin so the runtime rebinds its netns; ONLY for docker-compose network_mode:service:openvpn. Leave false when the openvpn container watches server.conf itself (Helm chart)").
+		Default("false").Envar("OVPN_SERVER_CONFIG_HARD_RELOAD_SELF_EXIT").Bool()
+
 	mfaEnabled = kingpin.Flag("mfa", "enable TOTP two-factor authentication for admin UI").
 			Default("true").Envar("OVPN_MFA").Bool()
 	mfaDBPath = kingpin.Flag("mfa.db-path", "path to MFA secrets JSON file").
@@ -310,12 +323,13 @@ func main() {
 		}
 
 		ovpnAdmin.serverManager = &serverManager{
-			store:          ovpnAdmin.serverConfigStore,
-			persistBackend: store,
-			mgmtAddr:       mgmtAddr,
-			confPath:       *serverConfigPath,
-			dcoAvailable:   dcoAvailable,
-			ccdEnabled:     *ccdEnabled,
+			store:              ovpnAdmin.serverConfigStore,
+			persistBackend:     store,
+			mgmtAddr:           mgmtAddr,
+			confPath:           *serverConfigPath,
+			dcoAvailable:       dcoAvailable,
+			ccdEnabled:         *ccdEnabled,
+			hardReloadSelfExit: *serverConfigHardReloadSelfExit,
 		}
 
 		// Render initial server.conf at startup (openvpn-container waits for this file)

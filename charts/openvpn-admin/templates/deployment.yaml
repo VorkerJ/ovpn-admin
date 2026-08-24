@@ -299,6 +299,14 @@ spec:
                   items:
                     - key: crl.pem
                       path: crl.pem
+                      # 0644, not the 0400 default: openvpn re-reads the CRL
+                      # (crl-verify) on every client connect AFTER it has
+                      # dropped privileges to nobody. A 0400 root-owned file is
+                      # then unreadable → "CRL: cannot read" → "VERIFY ERROR:
+                      # CRL not loaded" → every client rejected as "unknown CA"
+                      # whenever the CRL is rewritten (user revoke / restart).
+                      # A CRL is public revocation data, so world-readable is safe.
+                      mode: 0644
 
         # ── CCD — managed by ovpn-admin, restored from Secrets on start ─
         - name: openvpn-ccd

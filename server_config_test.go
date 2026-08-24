@@ -896,6 +896,51 @@ func TestServerManager_Apply_Soft(t *testing.T) {
 	}
 }
 
+func TestServerManager_Apply_Hard_NoSelfExit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	confPath := filepath.Join(dir, "server.conf")
+	mgmt := startFakeMgmt(t)
+	store := newServerConfigStore()
+
+	// hardReloadSelfExit defaults to false (the Helm-chart topology): a hard
+	// change must re-render + signal openvpn but NOT os.Exit ovpn-admin. If the
+	// old unconditional os.Exit(0) regressed, this test binary would exit
+	// mid-run and the package would fail — so simply completing proves it.
+	mgr := &serverManager{
+		store:          store,
+		persistBackend: testFilesystemStore(dir),
+		mgmtAddr:       mgmt.addr(),
+		confPath:       confPath,
+		ccdEnabled:     true,
+	}
+
+	cfg := store.snapshot()
+	cfg.Port = 1195 // port is a hard change
+
+	kind, err := mgr.apply(context.Background(), cfg, "admin")
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if kind != "hard" {
+		t.Fatalf("expected hard, got %q", kind)
+	}
+	time.Sleep(150 * time.Millisecond)
+	found := false
+	for _, sig := range mgmt.gotSignals {
+		if strings.Contains(sig, "SIGTERM") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected SIGTERM in signals, got %v", mgmt.gotSignals)
+	}
+	if _, err := os.Stat(confPath); err != nil {
+		t.Errorf("server.conf not written: %v", err)
+	}
+	// Reaching here means apply() returned without self-exiting.
+}
+
 func TestServerManager_Apply_RejectsInvalid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -905,7 +950,7 @@ func TestServerManager_Apply_RejectsInvalid(t *testing.T) {
 		store:      store,
 		mgmtAddr:   "127.0.0.1:0",
 		confPath:   filepath.Join(dir, "server.conf"),
-		ccdEnabled:  true,
+		ccdEnabled: true,
 	}
 
 	cfg := store.snapshot()
