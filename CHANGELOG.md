@@ -5,6 +5,33 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.47] — 2026-08-24
+
+### Fixed
+
+- **`management-client-auth` is now OFF by default and has a real UI toggle.**
+  The server-config field `mgmt_client_auth` existed and defaulted to ON, but
+  had no control in the panel — so it could not be turned off. Worse, OpenVPN's
+  `management-client-auth` mode **requires every client to send
+  username/password** (`auth-user-pass`) during the TLS handshake; a cert-only
+  client config — which is what ovpn-admin generates by default — is rejected
+  with `TLS Error: Auth Username/Password was not provided by peer` before
+  ovpn-admin is ever consulted. The result was that a fresh install silently
+  refused all cert-only clients. Now:
+  - The default is `false` — pure certificate + CRL verification, matching a
+    classic OpenVPN setup and working out of the box with the generated
+    cert-only configs.
+  - A labelled checkbox in **Сервер → Безопасность** exposes it, warning that
+    enabling it forces a login/password prompt on every client and requires
+    re-issuing client configs.
+  - When enabled, the client template now emits `auth-user-pass`, so the
+    feature actually works instead of locking clients out.
+
+  Existing installs that had the ON default persisted must uncheck the new
+  toggle (or it stays on). Certificate + CRL already provides revocation;
+  `management-client-auth` only adds live per-connect gating at the cost of a
+  password prompt.
+
 ## [2.0.46] — 2026-08-24
 
 ### Fixed

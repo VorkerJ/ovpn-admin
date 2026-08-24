@@ -363,6 +363,19 @@ onMounted(reload)
           >
             Кому на вкладке «Пользователи» задан пароль (🔑) — заходит по сертификату + паролю; остальные — только по сертификату, без запроса пароля.
           </p>
+          <label class="flex items-center gap-2 text-sm">
+            <input
+              v-model="cfg.mgmt_client_auth"
+              type="checkbox"
+            >
+            Гейтить подключения через ovpn-admin (management-client-auth)
+          </label>
+          <p
+            v-if="cfg.mgmt_client_auth"
+            class="text-xs text-muted-foreground -mt-1"
+          >
+            Каждое подключение подтверждается ovpn-admin вживую (мгновенная блокировка без ожидания CRL). ⚠️ Клиентам потребуется вводить <b>логин/пароль</b> при каждом коннекте, а конфиги нужно перевыпустить. Выключено = вход по сертификату + CRL (как в классическом OpenVPN).
+          </p>
         </div>
       </SectionCard>
 

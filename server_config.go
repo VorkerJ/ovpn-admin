@@ -68,8 +68,14 @@ type ServerConfig struct {
 	// or `client-deny`. This lets ovpn-admin enforce policy beyond cert+CRL
 	// (hot revocation, custom rules, etc).
 	//
+	// NOTE: `management-client-auth` makes OpenVPN require the client to send
+	// username/password (auth-user-pass) during the TLS handshake — a cert-only
+	// client is rejected with "Auth Username/Password was not provided by peer"
+	// before ovpn-admin is ever consulted. So when this is on, the client
+	// template MUST also emit `auth-user-pass` (see app.go, MgmtClientAuth flag).
+	//
 	// When false the directive is omitted and OpenVPN authorizes solely on
-	// cert validity + CRL.
+	// cert validity + CRL (the default; matches a classic cert-only setup).
 	MgmtClientAuth bool `json:"mgmt_client_auth"`
 
 	// PasswordAuth enables per-user optional password auth on top of the
@@ -183,10 +189,15 @@ func defaultServerConfig() ServerConfig {
 		// will refuse to start the server config. Operators who run a
 		// DCO-enabled binary can toggle this on via the server-config UI.
 		DCOEnabled: false,
-		// MgmtClientAuth=true is the safer default: every connect is gated
-		// by ovpn-admin so revocation/policy changes take effect immediately
-		// without waiting for CRL refresh on the client side.
-		MgmtClientAuth:             true,
+		// MgmtClientAuth defaults OFF: pure certificate + CRL verification,
+		// which matches the classic OpenVPN setup and works with cert-only
+		// client configs. When ON, OpenVPN's `management-client-auth` mode
+		// requires every client to ALSO send username/password (auth-user-pass)
+		// in the TLS handshake — the client template adds that directive — and
+		// each connect is gated live by ovpn-admin over the management
+		// interface. That gives instant revocation without waiting for CRL
+		// refresh, at the cost of a login/password prompt on every client.
+		MgmtClientAuth:             false,
 		DomainRefreshIntervalHours: 24,
 		KeepaliveInterval:          10,
 		KeepaliveTimeout:           60,

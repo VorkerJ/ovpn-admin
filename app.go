@@ -93,6 +93,10 @@ type openvpnClientConfig struct {
 	TLS         string
 	TLSAuthMode string // "tls-auth" | "tls-crypt"; empty -> tls-auth (back-compat)
 	PasswdAuth  bool
+	// MgmtClientAuth mirrors the server-config flag: when the server runs with
+	// `management-client-auth`, OpenVPN requires the client to send
+	// username/password, so the template must emit `auth-user-pass` too.
+	MgmtClientAuth bool
 }
 
 type OpenvpnClient struct {
@@ -326,7 +330,9 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 		conf.PasswdAuth = oAdmin.userRequiresPassword(username)
 
 		if oAdmin.serverConfigStore != nil {
-			conf.TLSAuthMode = oAdmin.serverConfigStore.snapshot().TLSAuthMode
+			sc := oAdmin.serverConfigStore.snapshot()
+			conf.TLSAuthMode = sc.TLSAuthMode
+			conf.MgmtClientAuth = sc.MgmtClientAuth
 		}
 
 		t := oAdmin.getClientConfigTemplate()
