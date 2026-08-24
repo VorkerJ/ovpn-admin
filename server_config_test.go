@@ -86,8 +86,8 @@ func TestDefaultServerConfig_PreservesBackwardCompat(t *testing.T) {
 	if cfg.DCOEnabled {
 		t.Error("DCOEnabled must default to false (alpine openvpn lacks DCO build flag)")
 	}
-	if !cfg.MgmtClientAuth {
-		t.Error("MgmtClientAuth must default to true (matches the rendered server.conf and the auth loop)")
+	if cfg.MgmtClientAuth {
+		t.Error("MgmtClientAuth must default to false (cert + CRL; management-client-auth would reject cert-only clients that don't send auth-user-pass)")
 	}
 	if !cfg.ClientToClient || !cfg.DuplicateCN {
 		t.Error("ClientToClient/DuplicateCN must default to true")
@@ -387,7 +387,6 @@ func TestRenderServerConfig_Defaults(t *testing.T) {
 		`push "dhcp-option DNS 8.8.8.8"`,
 		"verb 3",
 		"management 127.0.0.1 8989",
-		"management-client-auth",
 		"client-config-dir /etc/openvpn/ccd",
 	}
 	for _, want := range checks {
@@ -395,8 +394,28 @@ func TestRenderServerConfig_Defaults(t *testing.T) {
 			t.Errorf("missing directive: %q\n---rendered---\n%s", want, out)
 		}
 	}
+	if strings.Contains(out, "management-client-auth") {
+		t.Errorf("management-client-auth must NOT appear by default (MgmtClientAuth defaults false)")
+	}
 	if strings.Contains(out, "data-channel-offload") {
 		t.Errorf("data-channel-offload must not appear when DCOAvailable=false")
+	}
+}
+
+func TestRenderServerConfig_MgmtClientAuthEmitsDirective(t *testing.T) {
+	t.Parallel()
+	// When opted in, the `management-client-auth` directive must render so the
+	// mgmt-client-auth loop is actually consulted per connect. (The client
+	// template must then also emit auth-user-pass — see the client-config
+	// rendering — or OpenVPN rejects the client before the loop is reached.)
+	cfg := defaultServerConfig()
+	cfg.MgmtClientAuth = true
+	out, err := renderServerConfig(cfg, false, true)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, "management-client-auth") {
+		t.Errorf("management-client-auth must appear when MgmtClientAuth=true:\n%s", out)
 	}
 }
 
