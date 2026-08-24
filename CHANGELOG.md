@@ -5,6 +5,21 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.46] — 2026-08-24
+
+### Fixed
+
+- **Hard server-config changes now apply in Kubernetes without a manual pod
+  restart.** A "hard" change (port/proto/cipher/tls-mode/DCO) re-renders
+  server.conf, but openvpn doesn't reload it on its own; ovpn-admin tries to
+  restart it via the management console, which is unreliable when the
+  single-client mgmt socket is already held by mgmt-client-auth (`SIGTERM via
+  mgmt failed: i/o timeout`). The openvpn container now runs openvpn in the
+  background and watches the rendered server.conf, restarting the container (to
+  reload the new config) when the file changes — independent of the management
+  socket. Soft changes still take effect too. Server-config saves are rare, so
+  the brief restart is acceptable.
+
 ## [2.0.45] — 2026-08-20
 
 ### Changed

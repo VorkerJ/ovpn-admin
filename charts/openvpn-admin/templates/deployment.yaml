@@ -95,7 +95,28 @@ spec:
                 echo "PKI not ready, retrying in 5s..."
                 sleep 5
               done
-              exec openvpn --config /etc/openvpn-dynamic/server.conf
+              # openvpn won't pick up a "hard" server-config change (port / proto
+              # / cipher / tls-mode / DCO) on its own, and signalling it via the
+              # single-client management console is unreliable when another
+              # consumer (mgmt-client-auth) holds it. So run openvpn in the
+              # background and restart the container whenever ovpn-admin rewrites
+              # server.conf — the new config is loaded on the next start. Saves
+              # are rare admin actions, so the few seconds of VPN downtime are fine.
+              openvpn --config /etc/openvpn-dynamic/server.conf &
+              OVPN_PID=$!
+              trap 'kill -TERM "$OVPN_PID" 2>/dev/null; exit 0' TERM INT
+              CONF_SUM=$(md5sum /etc/openvpn-dynamic/server.conf | awk '{print $1}')
+              while kill -0 "$OVPN_PID" 2>/dev/null; do
+                sleep 5
+                NEW_SUM=$(md5sum /etc/openvpn-dynamic/server.conf | awk '{print $1}')
+                if [ "$NEW_SUM" != "$CONF_SUM" ]; then
+                  echo "server.conf changed — restarting openvpn to apply new config"
+                  kill -TERM "$OVPN_PID" 2>/dev/null
+                  wait "$OVPN_PID" 2>/dev/null
+                  exit 0
+                fi
+              done
+              wait "$OVPN_PID"
           ports:
             - name: openvpn
               containerPort: {{ .Values.openvpn.port }}
