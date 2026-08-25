@@ -606,7 +606,7 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 		// this the deleted user keeps tunnelling traffic until they happen
 		// to reconnect — CRL only takes effect at the next TLS handshake,
 		// not on already-established sessions.
-		connectedUsers := oAdmin.mgmtGetActiveClients()
+		connectedUsers, _ := oAdmin.mgmtGetActiveClients()
 		connected, connections := isUserConnected(username, connectedUsers)
 		if connected {
 			for _, conn := range connections {

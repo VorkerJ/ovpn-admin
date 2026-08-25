@@ -190,7 +190,7 @@ type clientStatus struct {
 }
 
 func (oAdmin *OvpnAdmin) setState() {
-	oAdmin.activeClients = oAdmin.mgmtGetActiveClients()
+	oAdmin.activeClients, _ = oAdmin.mgmtGetActiveClients()
 	if oAdmin.traffic != nil {
 		oAdmin.traffic.update(oAdmin.activeClients)
 		oAdmin.traffic.persist()

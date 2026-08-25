@@ -112,21 +112,29 @@ func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) {
 	fmt.Printf("%v", oAdmin.mgmtRead(conn))
 }
 
-func (oAdmin *OvpnAdmin) mgmtGetActiveClients() []clientStatus {
+// mgmtGetActiveClients returns the connected clients across every mgmt
+// interface. The bool is false if ANY interface could not be reached (the
+// single-client mgmt console was momentarily busy with another consumer, a
+// poll collided, etc.). Callers that RECONCILE state off this snapshot (the
+// firewall) MUST treat false as "unknown" and skip — never as "no clients" —
+// or they'd tear down rules for still-connected users on a transient miss.
+func (oAdmin *OvpnAdmin) mgmtGetActiveClients() ([]clientStatus, bool) {
 	var activeClients []clientStatus
+	ok := true
 
 	for srv, addr := range oAdmin.mgmtInterfaces {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			log.Warnf("openvpn mgmt interface for %s is not reachable by addr %s", srv, addr)
-			break
+			ok = false
+			continue
 		}
 		oAdmin.mgmtRead(conn)            // read welcome message
 		conn.Write([]byte("status 1\n")) //nolint:errcheck
 		activeClients = append(activeClients, oAdmin.mgmtConnectedUsersParser(oAdmin.mgmtRead(conn), srv)...)
 		conn.Close()
 	}
-	return activeClients
+	return activeClients, ok
 }
 
 func (oAdmin *OvpnAdmin) mgmtSetTimeFormat() {

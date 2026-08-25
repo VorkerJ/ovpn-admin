@@ -5,6 +5,26 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.51] — 2026-08-25
+
+### Fixed
+
+- **Per-user route firewall now actually installs its ACCEPT rules (works with
+  cert-only clients).** The firewall tracked live sessions by holding a
+  persistent `log on` connection to OpenVPN's management console and reacting to
+  real-time `>CLIENT:CONNECT` events. Two fatal problems in prod: those events
+  are only emitted under `management-client-auth` (now off by default, since it
+  breaks cert-only clients), and the persistent connection monopolised the
+  **single-client** mgmt console — so the `status` polls that the reconcile and
+  the connected-users view depend on were refused ("mgmt interface not
+  reachable"). The firewall then saw zero live sessions, installed no per-route
+  ACCEPTs, and its default-deny silently dropped every pushed route. Rewritten
+  to POLL `status` on short-lived connections (every ~8s) instead of holding the
+  console, decoupling it from `management-client-auth`. `mgmtGetActiveClients`
+  now returns an ok flag so a failed/contended poll is treated as "unknown"
+  (reconcile skipped) rather than "no clients" (which would tear down rules for
+  connected users).
+
 ## [2.0.50] — 2026-08-25
 
 ### Fixed

@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"os/exec"
 	"strings"
@@ -14,6 +12,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
+
+// firewallReconcilePoll caps how often the firewall polls the mgmt `status` to
+// track live VPN sessions. We poll (rather than hold a persistent >CLIENT:
+// event stream) because those events need management-client-auth and the held
+// connection starved OpenVPN's single-client mgmt console. It bounds the delay
+// before a freshly-connected client's per-route ACCEPT rules are installed.
+const firewallReconcilePoll = 8 * time.Second
 
 var (
 	ovpnFirewallEnabledGauge = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -107,32 +112,34 @@ type CcdReader interface {
 }
 
 type firewallController struct {
-	mu           sync.Mutex
-	enabled      bool
-	chainName    string
-	iptBin       string
-	vpnNet       *net.IPNet
-	sessions     map[string]*fwSession
-	pending      map[string]fwEvent
-	kick         chan struct{}
-	iptCmd       iptCmdFunc
-	ccdReader    CcdReader
-	ctx          context.Context
-	cancel       context.CancelFunc
-	mgmtSnapshot func() []clientStatus
+	mu        sync.Mutex
+	enabled   bool
+	chainName string
+	iptBin    string
+	vpnNet    *net.IPNet
+	sessions  map[string]*fwSession
+	pending   map[string]fwEvent
+	kick      chan struct{}
+	iptCmd    iptCmdFunc
+	ccdReader CcdReader
+	ctx       context.Context
+	cancel    context.CancelFunc
+	// mgmtSnapshot returns the live sessions and an ok flag; ok=false means the
+	// mgmt poll failed (console busy) and the snapshot is UNKNOWN, not empty.
+	mgmtSnapshot func() ([]clientStatus, bool)
 }
 
 func newFirewallController(ccdReader CcdReader, chainName, iptBin string, vpnNet *net.IPNet, iptCmd iptCmdFunc) *firewallController {
 	return &firewallController{
-		enabled:      true,
-		chainName:    chainName,
-		iptBin:       iptBin,
-		vpnNet:       vpnNet,
-		sessions:     make(map[string]*fwSession),
-		pending:      make(map[string]fwEvent),
-		kick:         make(chan struct{}, 1),
-		iptCmd:       iptCmd,
-		ccdReader:    ccdReader,
+		enabled:   true,
+		chainName: chainName,
+		iptBin:    iptBin,
+		vpnNet:    vpnNet,
+		sessions:  make(map[string]*fwSession),
+		pending:   make(map[string]fwEvent),
+		kick:      make(chan struct{}, 1),
+		iptCmd:    iptCmd,
+		ccdReader: ccdReader,
 	}
 }
 
@@ -480,7 +487,13 @@ func (fc *firewallController) handleEvent(ev fwEvent) {
 // reconcileLocked полностью сверяет fc.sessions с реальностью из mgmt-snapshot'а.
 // Caller держит fc.mu. Используется при старте, при обрыве mgmt-стрима и периодически.
 func (fc *firewallController) reconcileLocked() {
-	snapshot := fc.mgmtSnapshot()
+	snapshot, ok := fc.mgmtSnapshot()
+	if !ok {
+		// mgmt poll failed (single-client console momentarily busy). Treat as
+		// UNKNOWN, not "no clients" — skip so we don't uninstall rules for
+		// still-connected users. The next poll (firewallReconcilePoll) retries.
+		return
+	}
 	live := make(map[string]*clientStatus)
 	for i := range snapshot {
 		live[snapshot[i].CommonName] = &snapshot[i]
@@ -513,66 +526,7 @@ func (fc *firewallController) reconcileLocked() {
 	ovpnFirewallReconciles.Inc()
 }
 
-// consumeStream читает строки из соединения mgmt-interface и пушит события в очередь.
-// Возвращает при EOF, ошибке чтения или ctx cancel.
-func (fc *firewallController) consumeStream(ctx context.Context, r io.Reader) error {
-	parser := newMgmtEventParser()
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 4096), 1<<20)
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		line := scanner.Text()
-		if ev := parser.feed(line); ev != nil {
-			fc.push(*ev)
-		}
-	}
-	return scanner.Err()
-}
-
-// mgmtEventLoop держит постоянное TCP-подключение к mgmt-interface, парсит real-time
-// события connect/disconnect. На обрыве — reconnect с backoff'ом + reconcile.
-func (fc *firewallController) mgmtEventLoop(ctx context.Context, mgmtAddr string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		conn, err := net.Dial("tcp", mgmtAddr)
-		if err != nil {
-			log.Warnf("firewall: mgmt connect %s failed: %v; retry in 5s", mgmtAddr, err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-			continue
-		}
-		// Включаем подписку на лог-события. В server.conf для real-time >CLIENT: событий
-		// должно стоять `management-client-auth` (или эквивалент).
-		fmt.Fprintln(conn, "log on")
-
-		if err := fc.consumeStream(ctx, conn); err != nil && err != io.EOF {
-			log.Warnf("firewall: mgmt stream error: %v; reconnect", err)
-		}
-		conn.Close()
-
-		// При reconnect делаем reconcile для сверки.
-		fc.push(fwEvent{Kind: EvReconcile})
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(1 * time.Second):
-		}
-	}
-}
-
-// Start выполняет initChain, запускает горутины (mgmt-event, event-handler, self-heal-ticker)
+// Start выполняет initChain, запускает горутины (event-handler + status-poll reconcile)
 // и делает initial reconcile. Возвращает ошибку только если initChain провалился.
 func (fc *firewallController) Start(ctx context.Context, mgmtAddr string, reconcileInterval time.Duration) error {
 	fc.ctx, fc.cancel = context.WithCancel(ctx)
@@ -582,8 +536,22 @@ func (fc *firewallController) Start(ctx context.Context, mgmtAddr string, reconc
 	}
 
 	go fc.eventHandlerLoop(fc.ctx)
-	go fc.mgmtEventLoop(fc.ctx, mgmtAddr)
-	go fc.selfHealLoop(fc.ctx, reconcileInterval)
+	// Track live sessions by POLLING the mgmt `status` (via reconcileLocked ->
+	// mgmtSnapshot) on short-lived connections, rather than holding a persistent
+	// `log on` stream for real-time >CLIENT: events. Two reasons the old stream
+	// approach failed in prod: (1) those >CLIENT: events are only emitted under
+	// `management-client-auth`, which is off by default (it forces every client
+	// to send a login/password and breaks cert-only clients); (2) the persistent
+	// connection monopolised OpenVPN's SINGLE-CLIENT mgmt console, so the
+	// `status` polls that reconcileLocked AND the connected-users view rely on
+	// were refused ("mgmt interface not reachable") — the firewall then saw zero
+	// live sessions and installed no per-route ACCEPTs. Polling caps the delay
+	// for a new client's routes at one interval and never holds the console.
+	poll := reconcileInterval
+	if poll <= 0 || poll > firewallReconcilePoll {
+		poll = firewallReconcilePoll
+	}
+	go fc.selfHealLoop(fc.ctx, poll)
 
 	// initial reconcile
 	fc.push(fwEvent{Kind: EvReconcile})

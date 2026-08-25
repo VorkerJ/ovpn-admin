@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strings"
@@ -597,11 +596,11 @@ func TestReconcile_FromMgmtSnapshot(t *testing.T) {
 		return nil
 	}
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
-	fc.mgmtSnapshot = func() []clientStatus {
+	fc.mgmtSnapshot = func() ([]clientStatus, bool) {
 		return []clientStatus{
 			{CommonName: "alice", VirtualAddress: "172.16.100.5"},
 			{CommonName: "bob", VirtualAddress: "172.16.100.6"},
-		}
+		}, true
 	}
 
 	fc.mu.Lock()
@@ -629,7 +628,7 @@ func TestReconcile_DriftCorrection(t *testing.T) {
 
 	// pre-seed: ghost session не существующая в mgmt
 	fc.sessions["ghost"] = &fwSession{CN: "ghost", VpnIP: "172.16.100.99", AllowedCIDRs: []string{"10.0.0.0/8"}}
-	fc.mgmtSnapshot = func() []clientStatus { return nil } // mgmt видит 0 клиентов
+	fc.mgmtSnapshot = func() ([]clientStatus, bool) { return nil, true } // mgmt видит 0 клиентов
 
 	fc.mu.Lock()
 	fc.reconcileLocked()
@@ -646,30 +645,30 @@ func TestSubscribeAndPump_ParsesMultipleEvents(t *testing.T) {
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
 
-	streamData := strings.Join([]string{
-		"SUCCESS: real-time notification of client events enabled\n",
-		">CLIENT:CONNECT,2,1\n",
-		">CLIENT:ENV,common_name=alice\n",
-		">CLIENT:ENV,ifconfig_pool_remote_ip=172.16.100.5\n",
-		">CLIENT:ENV,END\n",
-		">CLIENT:DISCONNECT,2\n",
-		">CLIENT:ENV,common_name=alice\n",
-		">CLIENT:ENV,END\n",
-	}, "")
-
-	pr, pw := io.Pipe()
-	go func() {
-		_, _ = io.Copy(pw, strings.NewReader(streamData))
-		_ = pw.Close()
-	}()
+	streamLines := []string{
+		"SUCCESS: real-time notification of client events enabled",
+		">CLIENT:CONNECT,2,1",
+		">CLIENT:ENV,common_name=alice",
+		">CLIENT:ENV,ifconfig_pool_remote_ip=172.16.100.5",
+		">CLIENT:ENV,END",
+		">CLIENT:DISCONNECT,2",
+		">CLIENT:ENV,common_name=alice",
+		">CLIENT:ENV,END",
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	go fc.eventHandlerLoop(ctx)
 
-	if err := fc.consumeStream(ctx, pr); err != nil && err != io.EOF {
-		t.Logf("consumeStream returned: %v (acceptable on EOF)", err)
+	// Drive the mgmt event parser directly (prod no longer holds a persistent
+	// >CLIENT: stream — see firewallReconcilePoll — but the parser + event
+	// handling for connect/disconnect must still work correctly).
+	p := newMgmtEventParser()
+	for _, line := range streamLines {
+		if ev := p.feed(line); ev != nil {
+			fc.push(*ev)
+		}
 	}
 
 	// Дать обработчику время
@@ -696,7 +695,7 @@ func TestStart_RunsInitAndReconcile(t *testing.T) {
 		return nil
 	}
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
-	fc.mgmtSnapshot = func() []clientStatus { return nil }
+	fc.mgmtSnapshot = func() ([]clientStatus, bool) { return nil, true }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -724,7 +723,7 @@ func TestStop_RunsCleanup(t *testing.T) {
 		return nil
 	}
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
-	fc.mgmtSnapshot = func() []clientStatus { return nil }
+	fc.mgmtSnapshot = func() ([]clientStatus, bool) { return nil, true }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := fc.Start(ctx, "127.0.0.1:65001", 100*time.Millisecond); err != nil {
