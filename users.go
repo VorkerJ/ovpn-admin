@@ -532,7 +532,10 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 	if checkUserExist(username) {
 		// check certificate valid flag 'V'
 		if err := oAdmin.store.RevokeClient(username); err != nil {
-			log.Error(err)
+			// Don't report success on failure (e.g. denied K8s secret update) —
+			// the cert would still be valid and the user could keep connecting.
+			log.Errorf("userRevoke: RevokeClient(%s): %v", username, err)
+			return err, fmt.Sprintf("failed to revoke user %q: %v", username, err)
 		}
 
 		if *authByPassword {
@@ -619,7 +622,12 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 		}
 
 		if err := oAdmin.store.DeleteClient(username); err != nil {
-			log.Error(err)
+			// Do NOT report success on failure — the client was still there and
+			// tunnelling. Surface the error so the UI shows it (this used to be
+			// swallowed, so a denied K8s secret update looked like a success
+			// while the user stayed in the list).
+			log.Errorf("userDelete: DeleteClient(%s): %v", username, err)
+			return err, mustJSONMsg(fmt.Sprintf("Failed to delete user %s: %v", username, err))
 		}
 
 		crlFix()

@@ -5,6 +5,23 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.52] — 2026-08-25
+
+### Fixed
+
+- **Deleting / revoking a user now works on the kubernetes.secrets backend.**
+  The RBAC Role granted `update`/`patch` only on the statically-named PKI
+  secrets, while `create`/`list`/`delete` were unscoped. But both revoke (stamps
+  `revokedAt`) and delete (relabels to `REVOKED-<cn>-<hash>`) mutate the client's
+  OWN dynamically-named cert secret (`openvpn-pki-<serial>`) via `Update()` — so
+  they were denied with `cannot update resource "secrets"` and the user was never
+  removed. Added `update`/`patch` to the unscoped secrets rule.
+- **User delete/revoke no longer reports success on failure.** `userDelete` and
+  `userRevoke` swallowed the store error and always returned "successfully
+  deleted/revoked", so a denied K8s update looked like success while the user
+  stayed in the list (and kept connecting). They now propagate the error and the
+  API returns 400.
+
 ## [2.0.51] — 2026-08-25
 
 ### Fixed

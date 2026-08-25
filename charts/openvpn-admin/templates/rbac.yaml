@@ -35,9 +35,13 @@ rules:
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["secrets"]
-    # No resourceNames possible: client cert secrets use the
-    # dynamic name pattern openvpn-pki-<serial>.
-    verbs: ["create", "list", "delete"]
+    # No resourceNames possible: client cert secrets use the dynamic name
+    # pattern openvpn-pki-<serial>. `update`/`patch` are required here (not just
+    # on the static secrets above) because revoke AND delete mutate the client's
+    # OWN cert secret — revoke stamps a `revokedAt` annotation, delete relabels
+    # it to REVOKED-<cn>-<hash>. Without update, delete/revoke fail with
+    # "cannot update resource secrets" and the user is never removed.
+    verbs: ["create", "list", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list"]
