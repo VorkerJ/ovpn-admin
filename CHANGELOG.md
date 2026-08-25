@@ -5,6 +5,21 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.50] — 2026-08-25
+
+### Fixed
+
+- **Pushed routes are reachable again (MASQUERADE restored).** The openvpn
+  container runs a custom command that `exec`s openvpn directly, bypassing the
+  image's `configure.sh` — which is where `ensure_masquerade` installed the
+  `POSTROUTING -s <vpnNet> ! -d <vpnNet> -j MASQUERADE` rule. Without it, VPN
+  client packets left the pod sourced from the VPN subnet (e.g. 10.20.30.0/24),
+  the destination networks had no route back, and every pushed route (CCD /
+  Common Routes) as well as internet access was silently dead. The chart now
+  installs the MASQUERADE rule itself at openvpn start, gated by the new
+  `openvpn.masquerade` value (default `true`; set `false` when the destination
+  networks already route the VPN subnet back to this gateway).
+
 ## [2.0.49] — 2026-08-24
 
 ### Fixed

@@ -95,6 +95,18 @@ spec:
                 echo "PKI not ready, retrying in 5s..."
                 sleep 5
               done
+              {{- if .Values.openvpn.masquerade }}
+              # SNAT VPN client traffic to the pod IP. Our custom command bypasses
+              # the image's configure.sh (which normally runs ensure_masquerade),
+              # so without this the destination networks receive packets sourced
+              # from the VPN subnet ({{ .Values.openvpn.networkPrefix }}) — which
+              # they don't route back — and every pushed route is unreachable.
+              # `! -d <vpnNet>` leaves intra-VPN (client-to-client) traffic un-NATed.
+              VPN_CIDR="{{ .Values.openvpn.networkPrefix }}"
+              iptables -t nat -C POSTROUTING -s "$VPN_CIDR" ! -d "$VPN_CIDR" -j MASQUERADE 2>/dev/null \
+                || iptables -t nat -A POSTROUTING -s "$VPN_CIDR" ! -d "$VPN_CIDR" -j MASQUERADE \
+                || echo "WARN: MASQUERADE install failed — pushed routes will be unreachable"
+              {{- end }}
               # openvpn won't pick up a "hard" server-config change (port / proto
               # / cipher / tls-mode / DCO) on its own, and signalling it via the
               # single-client management console is unreliable when another

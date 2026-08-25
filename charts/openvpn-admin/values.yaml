@@ -179,6 +179,12 @@ openvpn:
   networkMask: "255.255.255.0"
   networkPrefix: "172.16.100.0/24"
 
+  # SNAT (MASQUERADE) VPN client traffic to the pod IP so replies from pushed
+  # routes / the internet come back. Required unless your destination networks
+  # explicitly route the VPN subnet back to this gateway. Needs the openvpn
+  # container to have NET_ADMIN (it does by default).
+  masquerade: true
+
   logLevel: 3
 
   # Expose OpenVPN port: HostPort | ClusterIP | LoadBalancer | ExternalIP
