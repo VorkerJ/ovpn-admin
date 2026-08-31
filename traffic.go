@@ -80,6 +80,14 @@ func newTrafficAccountant(path string) *trafficAccountant {
 	// the DB is fresh; the JSON file is renamed afterwards so it is kept as a
 	// backup and never re-imported.
 	ta.importLegacyJSON(strings.TrimSuffix(path, ".db") + ".json")
+	// Purge phantom "UNDEF"/empty rows left by older builds that recorded
+	// unauthenticated sessions (revoked/deleted users retrying, mid-handshake).
+	// Runs before loadSessions so they are not restored into the live snapshot.
+	for _, tbl := range []string{"traffic_monthly", "session_state"} {
+		if _, err := db.Exec("DELETE FROM " + tbl + " WHERE username = '' OR username = 'UNDEF'"); err != nil {
+			log.Warnf("traffic: purge phantom rows from %s failed: %v", tbl, err)
+		}
+	}
 	ta.loadSessions()
 	var users int
 	_ = db.QueryRow("SELECT count(DISTINCT username) FROM traffic_monthly").Scan(&users)
@@ -185,6 +193,13 @@ func (ta *trafficAccountant) loadSessions() {
 
 // update folds one mgmt poll into the monthly totals. Called from setState every
 // poll interval.
+// isPhantomCN reports whether a CommonName is OpenVPN's placeholder for a
+// connection with no authenticated identity ("" or "UNDEF"), which must never
+// be recorded as a real user in the traffic stats.
+func isPhantomCN(cn string) bool {
+	return cn == "" || cn == "UNDEF"
+}
+
 func (ta *trafficAccountant) update(clients []clientStatus) {
 	ta.mu.Lock()
 	defer ta.mu.Unlock()
@@ -196,7 +211,11 @@ func (ta *trafficAccountant) update(clients []clientStatus) {
 	seen := make(map[string]struct{}, len(clients))
 
 	for _, c := range clients {
-		if c.CommonName == "" {
+		if isPhantomCN(c.CommonName) {
+			// "" / "UNDEF" are OpenVPN's placeholders for a connection that has
+			// not authenticated (mid-handshake, or a revoked/deleted user's
+			// client retrying with its old .ovpn). It maps to no real user, so
+			// recording it just leaves a phantom "UNDEF" row in the stats.
 			continue
 		}
 		seen[c.CommonName] = struct{}{}

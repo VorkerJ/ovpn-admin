@@ -54,6 +54,29 @@ func TestTrafficAccumulation(t *testing.T) {
 	}
 }
 
+func TestTrafficIgnoresPhantomCN(t *testing.T) {
+	ta := newTestAccountant(t)
+	m := currentMonth()
+	// "UNDEF"/empty are OpenVPN placeholders for unauthenticated connections
+	// (e.g. a deleted user retrying a revoked cert) — must never be recorded.
+	ta.update([]clientStatus{
+		cs("UNDEF", "s1", "1000", "2000"),
+		cs("", "s1", "500", "500"),
+		cs("realuser", "s1", "100", "100"),
+	})
+	if rx, tx := monthTotal(t, ta, "UNDEF", m); rx != 0 || tx != 0 {
+		t.Errorf("UNDEF must not be recorded, got rx=%d tx=%d", rx, tx)
+	}
+	if rx, tx := monthTotal(t, ta, "realuser", m); rx != 100 || tx != 100 {
+		t.Errorf("realuser must be recorded, got rx=%d tx=%d", rx, tx)
+	}
+	var n int
+	_ = ta.db.QueryRow("SELECT count(*) FROM session_state WHERE username IN ('UNDEF','')").Scan(&n)
+	if n != 0 {
+		t.Errorf("session_state must not hold phantom rows, got %d", n)
+	}
+}
+
 func TestTrafficDisconnectReconnect(t *testing.T) {
 	ta := newTestAccountant(t)
 	m := currentMonth()

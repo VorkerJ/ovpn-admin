@@ -100,6 +100,34 @@ func TestDefaultServerConfig_PreservesBackwardCompat(t *testing.T) {
 	}
 }
 
+func TestDefaultServerConfig_EnvOverrides(t *testing.T) {
+	// No t.Parallel(): t.Setenv is incompatible with parallel tests.
+	t.Setenv("OVPN_SERVER_PROTO", "udp")
+	t.Setenv("OVPN_SERVER_TLS_AUTH_MODE", "tls-crypt")
+	t.Setenv("OVPN_SERVER_DCO", "true")
+	cfg := defaultServerConfig()
+	if cfg.Proto != "udp" {
+		t.Errorf("Proto: got %q, want udp", cfg.Proto)
+	}
+	if cfg.TLSAuthMode != "tls-crypt" {
+		t.Errorf("TLSAuthMode: got %q, want tls-crypt", cfg.TLSAuthMode)
+	}
+	if !cfg.DCOEnabled {
+		t.Error("DCOEnabled: want true from OVPN_SERVER_DCO=true")
+	}
+
+	// Invalid values fall back to the safe defaults (no silent wrong config).
+	t.Setenv("OVPN_SERVER_TLS_AUTH_MODE", "garbage")
+	t.Setenv("OVPN_SERVER_DCO", "notabool")
+	cfg = defaultServerConfig()
+	if cfg.TLSAuthMode != "tls-auth" {
+		t.Errorf("invalid tls mode must fall back to tls-auth, got %q", cfg.TLSAuthMode)
+	}
+	if cfg.DCOEnabled {
+		t.Error("invalid DCO bool must fall back to false")
+	}
+}
+
 func TestServerConfigStore_RoundTrip(t *testing.T) {
 	t.Parallel()
 	store := newServerConfigStore()

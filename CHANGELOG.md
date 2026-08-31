@@ -5,6 +5,29 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.53] — 2026-08-26
+
+### Added
+
+- **Env-seeding for the control-channel mode and DCO.** `defaultServerConfig`
+  now reads `OVPN_SERVER_TLS_AUTH_MODE` (`tls-auth`|`tls-crypt`, invalid falls
+  back to `tls-auth`) and `OVPN_SERVER_DCO` (bool). Together with the existing
+  `OVPN_SERVER_PROTO`, a deployment can declare udp + tls-crypt + DCO from its
+  chart/.env instead of clicking through the UI after first boot — e.g. a
+  gaming / anti-DPI server: `OVPN_SERVER_PROTO=udp`,
+  `OVPN_SERVER_TLS_AUTH_MODE=tls-crypt`, `OVPN_SERVER_DCO=true`. The hardcoded
+  defaults (tcp / tls-auth / DCO off) are unchanged, so Alpine builds without a
+  DCO-capable binary stay safe.
+
+### Fixed
+
+- **Deleted users no longer linger in the stats as a phantom "UNDEF".** When a
+  removed user's client retried with its now-revoked cert, OpenVPN reported the
+  mid-handshake connection under CN `UNDEF`, which the traffic accountant
+  recorded as a real user (shown "connected", 0 B). Unauthenticated CNs (`""` /
+  `UNDEF`) are now skipped in the mgmt status parser and the accountant, and any
+  existing `UNDEF`/empty rows are purged from `traffic.db` on startup.
+
 ## [2.0.52] — 2026-08-25
 
 ### Fixed

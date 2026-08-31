@@ -62,6 +62,13 @@ func (oAdmin *OvpnAdmin) mgmtConnectedUsersParser(text, serverName string) []cli
 			user := strings.Split(txt, ",")
 
 			userName := user[0]
+			if isPhantomCN(userName) {
+				// Unauthenticated / mid-handshake connection — OpenVPN reports
+				// CN "UNDEF" (e.g. a deleted user's client retrying with a
+				// revoked cert). Not a real session: keep it out of the
+				// connected list, Prometheus metrics and traffic stats.
+				continue
+			}
 			userAddress := user[1]
 			userBytesReceived := user[2]
 			userBytesSent := user[3]

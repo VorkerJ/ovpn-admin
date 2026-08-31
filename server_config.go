@@ -165,12 +165,39 @@ func serverDefaultInt(key string, def int) int {
 	return def
 }
 
+func serverDefaultBool(key string, def bool) bool {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+		log.Warnf("server-config: %s=%q is not a valid bool (true/false/1/0) — using default %v", key, v, def)
+	}
+	return def
+}
+
+// serverDefaultTLSMode reads an OVPN_SERVER_TLS_AUTH_MODE-style env, accepting
+// only the two valid control-channel modes and falling back to def otherwise.
+func serverDefaultTLSMode(key, def string) string {
+	switch v := strings.TrimSpace(os.Getenv(key)); v {
+	case "":
+		return def
+	case "tls-auth", "tls-crypt":
+		return v
+	default:
+		log.Warnf("server-config: %s=%q is not tls-auth|tls-crypt — using default %q", key, v, def)
+		return def
+	}
+}
+
 // defaultServerConfig — дефолты при первом запуске (store пустой).
 // Подобраны под текущие production-значения чтобы upgrade не ломал клиентов.
-// Proto/Port/Network/NetworkMask могут быть переопределены env-переменными
-// (OVPN_SERVER_PROTO / OVPN_SERVER_PORT / OVPN_SERVER_NETWORK /
-// OVPN_SERVER_NETWORK_MASK) — чтобы порт прослушивания и подсеть задавались
-// декларативно из чарта, а не выставлялись руками в UI после деплоя.
+// Proto/Port/Network/NetworkMask/TLSAuthMode/DCOEnabled могут быть переопределены
+// env-переменными (OVPN_SERVER_PROTO / OVPN_SERVER_PORT / OVPN_SERVER_NETWORK /
+// OVPN_SERVER_NETWORK_MASK / OVPN_SERVER_TLS_AUTH_MODE / OVPN_SERVER_DCO) — чтобы
+// протокол, подсеть, режим контрол-канала и DCO задавались декларативно из
+// чарта/.env, а не выставлялись руками в UI после деплоя. Пример под игровой/
+// анти-DPI сценарий: OVPN_SERVER_PROTO=udp, OVPN_SERVER_TLS_AUTH_MODE=tls-crypt,
+// OVPN_SERVER_DCO=true.
 // Initialized=false (zero value) — admin ещё не сохранял настройки через UI;
 // до явного сохранения создание пользователей будет заблокировано.
 func defaultServerConfig() ServerConfig {
@@ -183,12 +210,15 @@ func defaultServerConfig() ServerConfig {
 		MssFix:        1450,
 		DataCiphers:   []string{"AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"},
 		TLSVersionMin: "1.2",
-		TLSAuthMode:   "tls-auth",
+		// tls-auth (HMAC only) by default; set OVPN_SERVER_TLS_AUTH_MODE=tls-crypt
+		// to encrypt the control channel too (obfuscation vs DPI).
+		TLSAuthMode: serverDefaultTLSMode("OVPN_SERVER_TLS_AUTH_MODE", "tls-auth"),
 		// DCOEnabled opts in to `data-channel-offload`. Default off because
 		// the official Alpine `openvpn` package is built WITHOUT DCO and
-		// will refuse to start the server config. Operators who run a
-		// DCO-enabled binary can toggle this on via the server-config UI.
-		DCOEnabled: false,
+		// will refuse to start the server config. Set OVPN_SERVER_DCO=true only
+		// where the openvpn binary is DCO-enabled AND the host `ovpn` kernel
+		// module is loaded; otherwise it can also be toggled in the UI.
+		DCOEnabled: serverDefaultBool("OVPN_SERVER_DCO", false),
 		// MgmtClientAuth defaults OFF: pure certificate + CRL verification,
 		// which matches the classic OpenVPN setup and works with cert-only
 		// client configs. When ON, OpenVPN's `management-client-auth` mode
