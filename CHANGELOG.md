@@ -5,6 +5,16 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.54] — 2026-08-26
+
+### Fixed
+
+- **No more flash of `0` in the stat tiles on page load.** StatCards derived its
+  Всего/Активных/Подключено/Отозвано counts from the users array, which is empty
+  until the fetch resolves — so a refresh briefly rendered 0/0/0/0 before the
+  real numbers popped in. The tiles now show a skeleton placeholder until the
+  first users fetch completes (`usersLoaded`), then reveal the values.
+
 ## [2.0.53] — 2026-08-26
 
 ### Added

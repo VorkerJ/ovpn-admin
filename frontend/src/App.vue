@@ -61,6 +61,9 @@ function handleLogin() {
 
 // ── State ──────────────────────────────────────────────────────────
 const users = ref([])
+// False until the first users fetch resolves, so stat tiles show a skeleton
+// instead of flashing 0/0/0/0 on page load before the data arrives.
+const usersLoaded = ref(false)
 const modulesEnabled = ref([])
 // serverInitialized — admin сохранял настройки сервера через UI хотя бы раз.
 // До этого создание/ротация пользователей заблокировано на бэкенде (412).
@@ -159,7 +162,11 @@ function closeModal(name) {
 
 // ── Data loading ───────────────────────────────────────────────────
 async function loadUsers() {
-  users.value = await fetchUsers()
+  try {
+    users.value = await fetchUsers()
+  } finally {
+    usersLoaded.value = true
+  }
 }
 
 async function loadSettings() {
@@ -500,7 +507,10 @@ async function safeUnrevoke(username) {
             <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">
               Обзор
             </p>
-            <StatCards :users="users" />
+            <StatCards
+              :users="users"
+              :loading="!usersLoaded"
+            />
           </div>
 
           <div>

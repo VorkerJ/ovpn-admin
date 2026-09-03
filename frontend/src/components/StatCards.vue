@@ -5,6 +5,9 @@ import { Users, UserCheck, Activity, UserX } from 'lucide-vue-next'
 
 const props = defineProps({
   users: { type: Array, default: () => [] },
+  // While true, tiles show a skeleton instead of a value — avoids flashing
+  // 0/0/0/0 on page load before the users fetch resolves.
+  loading: { type: Boolean, default: false },
 })
 
 const stats = computed(() => {
@@ -40,7 +43,15 @@ const stats = computed(() => {
           />
         </div>
       </div>
-      <p class="font-mono text-3xl font-semibold tabular tracking-tight">
+      <div
+        v-if="loading"
+        class="h-9 w-12 rounded bg-muted animate-pulse"
+        aria-hidden="true"
+      />
+      <p
+        v-else
+        class="font-mono text-3xl font-semibold tabular tracking-tight"
+      >
         {{ stat.value }}
       </p>
     </div>
