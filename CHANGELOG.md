@@ -5,6 +5,31 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.56] — 2026-09-04
+
+Security-review follow-up, part 2.
+
+### Fixed
+
+- **Data race + unbounded blocking on the connected-clients state.** `activeClients`
+  was written by the 28s `setState` poll and read directly (unlocked) by several
+  handlers — a data race. It's now behind `activeClientsMu` with a
+  `snapshotActiveClients()` accessor used by every reader. The mgmt polls
+  (`mgmtGetActiveClients`, `mgmtSetTimeFormat`, `mgmtKillUserConnection`) use
+  `net.DialTimeout` + an absolute `SetDeadline` so a hung/half-open management
+  console can't block forever, and `setState` is now single-flight so a slow poll
+  can't pile up goroutines.
+- **openvpn-user errors no longer reported as success.** `runOpenvpnUser` returned
+  only a string, so a failed delete / password change on the password-auth path
+  still returned 200 while the change hadn't happened. It now returns
+  `(output, error)` and the delete / remove-password / change-password paths
+  propagate the failure (non-2xx). (The password is still passed via argv — a
+  known upstream `openvpn-user` limitation, noted in code.)
+- **Hardened parsers against malformed input.** The index.txt parser, the mgmt
+  status CSV parser, and PEM decoding (`decodeCert`/`decodePrivKey`) previously
+  assumed a field count / a non-nil PEM block and could panic on corrupt data.
+  They now bounds-check and skip/return with a warning.
+
 ## [2.0.55] — 2026-09-04
 
 Security review follow-up (findings by an external reviewer, verified against the code).
