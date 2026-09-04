@@ -443,7 +443,10 @@ func main() {
 	// Downloads embedded client private key — must require the same MFA
 	// gate as user-write endpoints; otherwise a stolen session cookie
 	// gives away every client cert without the second factor.
-	http.HandleFunc(*listenBaseUrl+"api/user/config/show", auth(mfa(post(ovpnAdmin.userShowConfigHandler))))
+	// config/show returns the client's PRIVATE KEY. requireTokenConfigExport
+	// makes it default-DENY for service-account tokens (only tokens with
+	// AllowConfigExport may reach it); human session+MFA callers are unaffected.
+	http.HandleFunc(*listenBaseUrl+"api/user/config/show", auth(ovpnAdmin.requireTokenConfigExport(mfa(post(ovpnAdmin.userShowConfigHandler)))))
 	http.HandleFunc(*listenBaseUrl+"api/user/statistic", auth(post(ovpnAdmin.userStatisticHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/user/ccd", auth(post(ovpnAdmin.userShowCcdHandler)))
 	http.HandleFunc(*listenBaseUrl+"api/server-config/test", auth(post(ovpnAdmin.serverConfigTestHandler)))

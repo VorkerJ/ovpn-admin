@@ -43,6 +43,13 @@ type apiToken struct {
 	CreatedAt  string `json:"created_at"`
 	CreatedBy  string `json:"created_by"`
 	LastUsedAt string `json:"last_used_at,omitempty"`
+	// AllowConfigExport, when true, opts this token into the client
+	// config/private-key export endpoint (/api/user/config/show, which embeds
+	// the client PRIVATE KEY). It is default-DENY: an ordinary automation token
+	// can create/manage users and routes but must NOT be able to download every
+	// user's private key. Grant it only to tokens that genuinely need to hand out
+	// full client configs. See create() for where token issuance would set it.
+	AllowConfigExport bool `json:"allow_config_export,omitempty"`
 }
 
 type apiTokenStore struct {
@@ -118,6 +125,9 @@ func (s *apiTokenStore) create(name, by string) (string, *apiToken, error) {
 		Hash:      sha256hex(plaintext),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		CreatedBy: by,
+		// AllowConfigExport is deliberately left false here: config/private-key
+		// export is opt-in and off by default. When token issuance grows a way to
+		// grant that capability (an API/UI flag on creation), set it on t here.
 	}
 	s.mu.Lock()
 	s.tokens[t.ID] = t
@@ -224,6 +234,39 @@ func apiTokenPathAllowed(path string) bool {
 		}
 	}
 	return false
+}
+
+// requireTokenConfigExport gates the client config/private-key export endpoint
+// for BEARER-TOKEN (service-account) callers only. It is default-DENY: a service
+// account may reach it only if its token has AllowConfigExport set.
+//
+// Human (session) callers pass through untouched — their access to config export
+// is governed by the session + MFA gates, not by this capability. Only automation
+// tokens are held here, so an ordinary integration token that can create users
+// and routes cannot also download every user's private key.
+//
+// MUST be wrapped INSIDE auth(...) so requireAuth has already validated the token
+// and stamped the service-account identity onto the request context. requireAuth
+// records only the token's NAME in the context (it cannot be widened without
+// touching auth.go), so we re-resolve the exact token from the presented bearer
+// credential to read its capability.
+func (oAdmin *OvpnAdmin) requireTokenConfigExport(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isServiceAccount(r) {
+			next(w, r) // human/session caller — not subject to the token capability
+			return
+		}
+		if oAdmin.apiTokens == nil {
+			writeJSONError(w, http.StatusForbidden, "this API token is not permitted to export client configs")
+			return
+		}
+		at, ok := oAdmin.apiTokens.verify(bearerToken(r))
+		if !ok || !at.AllowConfigExport {
+			writeJSONError(w, http.StatusForbidden, "this API token is not permitted to export client configs (private keys)")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // ── management handlers (session + MFA gated; tokens can't reach them) ───────

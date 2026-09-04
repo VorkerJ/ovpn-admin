@@ -229,15 +229,43 @@ func (oAdmin *OvpnAdmin) setState() {
 	}
 	defer atomic.StoreInt32(&oAdmin.setStateInFlight, 0)
 
-	active, _ := oAdmin.mgmtGetActiveClients()
+	active, ok := oAdmin.mgmtGetActiveClients()
+	// On a failed poll (ok==false) `active` is empty/partial because a mgmt
+	// interface was unreachable — do NOT let that overwrite the cached snapshot
+	// or feed traffic accounting (that would look like every client disconnected
+	// and corrupt traffic totals). applyActiveClientsPoll keeps the last-known
+	// set intact in that case.
+	oAdmin.applyActiveClientsPoll(active, ok)
+
+	// The CA-cert-expire metric does not depend on the client list, so refresh it
+	// regardless of whether the mgmt poll succeeded.
+	ovpnServerCaCertExpire.Set(float64((getOvpnCaCertExpireDate().Unix() - time.Now().Unix()) / 3600 / 24))
+
+	// Rebuild the on-disk client list. usersList annotates each client with the
+	// cached active-clients snapshot, so on a failed poll it uses the preserved
+	// last-known set rather than a bogus empty one.
+	oAdmin.updateClients()
+}
+
+// applyActiveClientsPoll folds one mgmt poll result into the cached
+// active-clients snapshot and traffic accounting.
+//
+// When ok is false the poll failed: a mgmt interface was unreachable, so
+// `active` is empty or partial. In that case the cached snapshot and traffic
+// totals are LEFT UNTOUCHED and the function returns false — overwriting them
+// with a bogus empty set would fabricate disconnects for every client and
+// corrupt traffic accounting. On a successful poll the snapshot is replaced,
+// traffic is updated/persisted, and it returns true.
+func (oAdmin *OvpnAdmin) applyActiveClientsPoll(active []clientStatus, ok bool) bool {
+	if !ok {
+		return false
+	}
 	oAdmin.setActiveClients(active)
 	if oAdmin.traffic != nil {
 		oAdmin.traffic.update(active)
 		oAdmin.traffic.persist()
 	}
-	oAdmin.updateClients()
-
-	ovpnServerCaCertExpire.Set(float64((getOvpnCaCertExpireDate().Unix() - time.Now().Unix()) / 3600 / 24))
+	return true
 }
 
 func (oAdmin *OvpnAdmin) updateState() {

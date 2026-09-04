@@ -126,3 +126,76 @@ func TestServiceAccountBypassesMfa(t *testing.T) {
 		t.Fatal("service-account request must bypass the MFA gate")
 	}
 }
+
+// TestRequireTokenConfigExport locks FINDING #4: the client config/private-key
+// export endpoint is default-DENY for service-account tokens. Only a token with
+// AllowConfigExport may reach it; human (session) callers pass through untouched.
+func TestRequireTokenConfigExport(t *testing.T) {
+	app := &OvpnAdmin{}
+	app.apiTokens = newAPITokenStore(filepath.Join(t.TempDir(), "tokens.json"))
+
+	// A plain automation token — no export capability (the default).
+	plainNo, _, err := app.apiTokens.create("automation", "admin")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A token explicitly granted the export capability.
+	plainYes, tokYes, err := app.apiTokens.create("configbot", "admin")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	app.apiTokens.mu.Lock()
+	app.apiTokens.tokens[tokYes.ID].AllowConfigExport = true
+	app.apiTokens.mu.Unlock()
+
+	var reached bool
+	inner := func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}
+	h := app.requireTokenConfigExport(inner)
+
+	// svcReq models how requireAuth presents a verified service account: the
+	// bearer credential in the header + the service-account name in the context.
+	svcReq := func(plaintext, name string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/user/config/show", nil)
+		r.Header.Set("Authorization", "Bearer "+plaintext)
+		return withServiceAccount(r, name)
+	}
+
+	// 1) token WITHOUT capability → 403, handler never runs.
+	reached = false
+	rec := httptest.NewRecorder()
+	h(rec, svcReq(plainNo, "automation"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("token without AllowConfigExport: want 403, got %d", rec.Code)
+	}
+	if reached {
+		t.Fatal("denied token must not reach the config-export handler")
+	}
+
+	// 2) token WITH capability → allowed.
+	reached = false
+	rec = httptest.NewRecorder()
+	h(rec, svcReq(plainYes, "configbot"))
+	if rec.Code != http.StatusOK || !reached {
+		t.Fatalf("token with AllowConfigExport: want 200 & handler reached, got %d reached=%v", rec.Code, reached)
+	}
+
+	// 3) human (non-service-account) caller → passes untouched. Their access is
+	//    governed by the session + MFA gates, not by this token capability.
+	reached = false
+	rec = httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodPost, "/api/user/config/show", nil))
+	if rec.Code != http.StatusOK || !reached {
+		t.Fatalf("human caller must pass through, got %d reached=%v", rec.Code, reached)
+	}
+
+	// 4) an allowed op (list/create) is not behind this gate at all — its scope
+	//    is governed by apiTokenPathAllowed, which still permits tokens through.
+	for _, p := range []string{"/api/users/list", "/api/user/create"} {
+		if !apiTokenPathAllowed(p) {
+			t.Errorf("%q must remain allowed for a token", p)
+		}
+	}
+}
