@@ -387,6 +387,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaGetClientCert(commonName string) (cert, key
 	secret, err := openVPNPKI.secretGetByLabels("name=" + commonName)
 	if err != nil {
 		log.Error(err)
+		return
 	}
 
 	cert = string(secret.Data[certFileName])
@@ -399,6 +400,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRevoke(commonName string) (err error) {
 	secret, err := openVPNPKI.secretGetByLabels("name=" + commonName)
 	if err != nil {
 		log.Error(err)
+		return
 	}
 
 	if secret.Annotations["revokedAt"] != "" {
@@ -437,6 +439,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaUnrevoke(commonName string) (err error) {
 	secret, err := openVPNPKI.secretGetByLabels("name=" + commonName)
 	if err != nil {
 		log.Error(err)
+		return
 	}
 
 	secret.Annotations["revokedAt"] = ""
@@ -470,6 +473,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRotate(commonName, newPassword string) (err
 	secret, err := openVPNPKI.secretGetByLabels("name=" + commonName)
 	if err != nil {
 		log.Error(err)
+		return
 	}
 	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 	secret.Annotations["commonName"] = "REVOKED-" + commonName + "-" + uniqHash
@@ -513,6 +517,7 @@ func (openVPNPKI *OpenVPNPKI) easyrsaDelete(commonName string) (err error) {
 	secret, err := openVPNPKI.secretGetByLabels("name=" + commonName)
 	if err != nil {
 		log.Error(err)
+		return
 	}
 	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 	secret.Annotations["commonName"] = "REVOKED-" + commonName + "-" + uniqHash
@@ -696,23 +701,27 @@ func (openVPNPKI *OpenVPNPKI) secretGetCcd(commonName string) (ccd string) {
 	return
 }
 
-func (openVPNPKI *OpenVPNPKI) secretUpdateCcd(commonName string, ccd []byte) {
+func (openVPNPKI *OpenVPNPKI) secretUpdateCcd(commonName string, ccd []byte) error {
 	secret, err := openVPNPKI.secretGetByLabels("name=" + commonName)
 	if err != nil {
 		log.Error(err)
-		return
+		return err
 	}
 	secret.Data["ccd"] = ccd
 
 	err = openVPNPKI.secretUpdate(secret.ObjectMeta, secret.Data, v1.SecretTypeTLS)
 	if err != nil {
 		log.Errorf("secret (%s) update error: %s", secret.Name, err.Error())
+		return err
 	}
 
 	err = openVPNPKI.updateCcdOnDisk()
 	if err != nil {
 		log.Error(err)
+		return err
 	}
+
+	return nil
 }
 
 func (openVPNPKI *OpenVPNPKI) updateCcdOnDisk() (err error) {
@@ -902,7 +911,5 @@ func (openVPNPKI *OpenVPNPKI) transferRoutes(revokedSecret *v1.Secret, newNameCe
 		return nil
 	}
 
-	openVPNPKI.secretUpdateCcd(newNameCert, ccd)
-
-	return nil
+	return openVPNPKI.secretUpdateCcd(newNameCert, ccd)
 }

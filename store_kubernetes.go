@@ -46,9 +46,7 @@ func (s *kubernetesStore) GetCcd(commonName string) string {
 }
 
 func (s *kubernetesStore) SaveCcd(commonName string, data []byte) error {
-	// secretUpdateCcd does not return an error; it logs internally.
-	s.pki.secretUpdateCcd(commonName, data)
-	return nil
+	return s.pki.secretUpdateCcd(commonName, data)
 }
 
 func (s *kubernetesStore) ListCcdSecrets() ([]storage.CcdSecret, error) {
