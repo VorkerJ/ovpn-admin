@@ -5,6 +5,21 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.55] — 2026-09-04
+
+Security review follow-up (findings by an external reviewer, verified against the code).
+
+### Security
+
+- **Unauthenticated logout could exhaust memory/disk (DoS).** `revokeToken` blacklisted the MAC + expiry from an *unverified* cookie, and `/api/logout` is public — so anyone could flood it with unique bogus tokens carrying far-future expiries, growing the in-memory blacklist unboundedly and rewriting `.session_blacklist.json` each request. It now verifies the session (HMAC + purpose + expiry + epoch) before blacklisting, uses the verified expiry clamped to the max session TTL, and caps the blacklist.
+- **MFA gate now binds to the session, not just the account.** The admin-MFA check returned `mfaStore.isEnabled(user)`, so a password-only session issued before MFA was enabled kept full access afterwards, and enabling MFA / changing the password didn't invalidate old sessions. Sessions now carry an `mfa` flag (true only after a second factor cleared) and a per-user `epoch`; the check requires the session flag, and enabling MFA or changing the admin password bumps the epoch, invalidating all prior sessions. NOTE: enabling MFA / changing password now logs the current session out (re-login required) — intended.
+
+### Fixed
+
+- **Firewall could fail OPEN.** Per-user ACCEPT rules were applied by removing the catch-all DROP, appending, then re-adding it — a mid-sequence failure could leave the VPN subnet unfiltered, and the session was still marked installed so reconcile never repaired it. ACCEPTs are now inserted *above* the DROP (which is never removed → fail-closed), and a failed install no longer marks the session installed.
+- **Kubernetes backend hid save errors and could panic.** `SaveCcd` always returned nil though the Secret update could fail; several PKI ops logged a failed Secret lookup then dereferenced a nil Secret. Errors now propagate (SaveCcd → caller) and every lookup returns before a possible nil deref.
+- **Concurrent Common Routes edits could be lost.** Handlers did snapshot→mutate→replace with no locking, so parallel requests clobbered each other, and memory was mutated before the disk write. Reads-modify-writes are now atomic under a lock and persisted before the in-memory state is published.
+
 ## [2.0.54] — 2026-08-26
 
 ### Fixed
