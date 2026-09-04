@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -102,12 +103,31 @@ var (
 	loginAttempts        sync.Map // map[string]*loginTracker
 	maxLoginAttempts     = 5
 	loginLockoutDuration = 15 * time.Minute
+
+	// accountLockDistinctIPs is how many DISTINCT source IPs must contribute
+	// failures before an account (user:<name>) bucket is hard-locked. A single
+	// remote IP hammering a known admin username therefore can NOT lock that
+	// account out (it only locks its own IP bucket) — closing the free
+	// remote-lockout DoS — while a distributed / IP-rotating brute force against
+	// one account still trips the account lock.
+	accountLockDistinctIPs = 3
+
+	// maxLoginTrackerEntries caps the number of tracked rate-limit entries so a
+	// flood of unique usernames/IPs can't grow the map without bound. The
+	// janitor evicts the oldest entries (non-locked first) once this is exceeded.
+	// A var (not const) so tests can lower it deterministically.
+	maxLoginTrackerEntries = 10000
 )
 
 type loginTracker struct {
-	mu       sync.Mutex
-	failures int
-	lockedAt time.Time
+	mu        sync.Mutex
+	failures  int
+	lockedAt  time.Time
+	updatedAt time.Time // last time this entry was touched — drives the janitor TTL
+	// srcIPs records the distinct source IPs that contributed failures to an
+	// account (user:<name>) bucket. Nil/unused for IP buckets. See
+	// bumpAccountFailure for why account lockout is gated on distinct-IP count.
+	srcIPs map[string]struct{}
 }
 
 // checkLoginRateLimitKey returns false if the given key (IP or "user:<name>")
@@ -124,6 +144,7 @@ func checkLoginRateLimitKey(key string) bool {
 	if !tracker.lockedAt.IsZero() && time.Since(tracker.lockedAt) >= loginLockoutDuration {
 		tracker.failures = 0
 		tracker.lockedAt = time.Time{}
+		tracker.srcIPs = nil
 	}
 	return true
 }
@@ -147,15 +168,50 @@ func checkLoginRateLimit(ip string, usernames ...string) bool {
 	return true
 }
 
+// bumpFailures records a failure against an IP bucket and hard-locks it once
+// maxLoginAttempts is reached. This per-IP limiter is the PRIMARY brute-force
+// defense: it directly throttles the source doing the guessing.
 func bumpFailures(key string) {
 	val, _ := loginAttempts.LoadOrStore(key, &loginTracker{})
 	tracker := val.(*loginTracker)
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	tracker.failures++
+	tracker.updatedAt = time.Now()
 	if tracker.failures >= maxLoginAttempts {
 		tracker.lockedAt = time.Now()
 		log.Warnf("Login rate limit: key %s locked out for %v after %d failures", key, loginLockoutDuration, tracker.failures)
+	}
+}
+
+// bumpAccountFailure records a failure against an account (user:<name>) bucket.
+//
+// Unlike the IP bucket, an account is only hard-locked once failures have come
+// from accountLockDistinctIPs DISTINCT source IPs. Rationale: the username is
+// attacker-controlled on an unauthenticated endpoint, so hard-locking an account
+// on failures from a single IP would hand any remote client a trivial way to
+// lock a known admin out for the whole lockout window (a DoS). Gating on
+// distinct IPs means one attacker IP can never lock the victim (it only locks
+// its own IP bucket, and the legit admin from another IP is unaffected), while a
+// distributed / IP-rotating brute force against one account is still stopped.
+func bumpAccountFailure(user, srcIP string) {
+	key := "user:" + user
+	val, _ := loginAttempts.LoadOrStore(key, &loginTracker{})
+	tracker := val.(*loginTracker)
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.failures++
+	tracker.updatedAt = time.Now()
+	if tracker.srcIPs == nil {
+		tracker.srcIPs = make(map[string]struct{})
+	}
+	if srcIP != "" {
+		tracker.srcIPs[srcIP] = struct{}{}
+	}
+	if tracker.failures >= maxLoginAttempts && len(tracker.srcIPs) >= accountLockDistinctIPs {
+		tracker.lockedAt = time.Now()
+		log.Warnf("Login rate limit: account %s locked out for %v after %d failures from %d distinct IPs",
+			user, loginLockoutDuration, tracker.failures, len(tracker.srcIPs))
 	}
 }
 
@@ -163,7 +219,7 @@ func recordLoginFailure(ip string, usernames ...string) {
 	bumpFailures(ip)
 	for _, u := range usernames {
 		if u != "" {
-			bumpFailures("user:" + u)
+			bumpAccountFailure(u, ip)
 		}
 	}
 }
@@ -178,9 +234,17 @@ func recordLoginSuccess(ip string, usernames ...string) {
 }
 
 // clientIP returns the originating client IP for r. If the connecting peer is
-// a trusted reverse proxy, the leftmost X-Forwarded-For entry is returned;
-// otherwise the direct peer address is used. Loopback is always trusted so
-// SSH-tunnel deployments keep working out of the box.
+// a trusted reverse proxy, the X-Forwarded-For chain is walked RIGHT-to-LEFT and
+// the first address that is not itself a trusted proxy is returned; otherwise
+// the direct peer address is used. Loopback is always trusted so SSH-tunnel
+// deployments keep working out of the box.
+//
+// Right-to-left is deliberate. The rightmost XFF entries are appended by the
+// hops closest to us and are therefore trustworthy; the leftmost entry is
+// whatever the original client sent and is fully attacker-controlled. A client
+// that emits its own X-Forwarded-For, or a proxy that APPENDS rather than
+// replaces, would let an attacker prepend a spoofed address — taking the
+// leftmost value would then attribute failures/rate-limit state to a forged IP.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -189,9 +253,20 @@ func clientIP(r *http.Request) string {
 	if isTrustedProxy(host) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			candidate := strings.TrimSpace(parts[0])
-			if candidate != "" {
+			// Closest hop first: return the first non-trusted-proxy address.
+			for i := len(parts) - 1; i >= 0; i-- {
+				candidate := strings.TrimSpace(parts[i])
+				if candidate == "" || isTrustedProxy(candidate) {
+					continue
+				}
 				return candidate
+			}
+			// Every hop in the chain is itself a trusted proxy (or blank) — fall
+			// back to the leftmost non-empty entry, the earliest recorded client.
+			for _, p := range parts {
+				if c := strings.TrimSpace(p); c != "" {
+					return c
+				}
 			}
 		}
 	}
@@ -493,34 +568,76 @@ func copyFileIfAbsent(src, dst string) (bool, error) {
 	return true, nil
 }
 
-// loginAttemptsJanitor periodically evicts stale or expired loginTracker
-// entries from loginAttempts so the map does not grow without bound.
-//
-// An entry is considered evictable when either:
-//   - no failures have been recorded and the tracker is not currently locked
-//     (a defensive race remnant — e.g. LoadOrStore landed but bumpFailures
-//     never followed), OR
-//   - the lockout window has elapsed and bumpFailures cleared the counters
-//     (rare since checkLoginRateLimitKey already does opportunistic reset on
-//     the read path, but this catches keys that are never read again).
+// loginAttemptsJanitor periodically evicts stale/expired loginTracker entries
+// and enforces the global entry cap so loginAttempts does not grow without
+// bound. See cleanupLoginAttempts for the eviction rules.
 func loginAttemptsJanitor() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		now := time.Now()
-		loginAttempts.Range(func(k, v interface{}) bool {
-			tracker := v.(*loginTracker)
-			tracker.mu.Lock()
-			stale := tracker.failures == 0 && tracker.lockedAt.IsZero()
-			expired := !tracker.lockedAt.IsZero() &&
-				now.Sub(tracker.lockedAt) > loginLockoutDuration &&
-				tracker.failures == 0
-			tracker.mu.Unlock()
-			if stale || expired {
-				loginAttempts.Delete(k)
-			}
+		cleanupLoginAttempts(time.Now())
+	}
+}
+
+// cleanupLoginAttempts is the janitor body, split out so tests can drive it
+// deterministically with a controlled `now`.
+//
+// An entry is evicted when any of:
+//   - stale: no failures recorded and not locked (a defensive race remnant —
+//     LoadOrStore landed but no bump followed);
+//   - lock expired: the lockout window has fully elapsed;
+//   - TTL expired: it holds partial (1–4) failures but has not been touched
+//     within the lockout window. Without this, an entry that never reaches the
+//     lockout threshold would live forever — one per unique username/IP — so a
+//     steady trickle of failed logins from unique sources leaks memory
+//     unboundedly (the old janitor only removed entries with failures == 0).
+//
+// After eviction, if the map still exceeds maxLoginTrackerEntries, the oldest
+// entries (by last activity, non-locked first so active lockouts are preserved
+// as long as possible) are dropped to bring it back under the cap.
+func cleanupLoginAttempts(now time.Time) {
+	type liveEntry struct {
+		key    interface{}
+		last   time.Time
+		locked bool
+	}
+	var live []liveEntry
+
+	loginAttempts.Range(func(k, v interface{}) bool {
+		tracker := v.(*loginTracker)
+		tracker.mu.Lock()
+		failures := tracker.failures
+		lockedAt := tracker.lockedAt
+		updatedAt := tracker.updatedAt
+		tracker.mu.Unlock()
+
+		locked := !lockedAt.IsZero() && now.Sub(lockedAt) < loginLockoutDuration
+		stale := failures == 0 && lockedAt.IsZero()
+		lockExpired := !lockedAt.IsZero() && now.Sub(lockedAt) >= loginLockoutDuration
+		ttlExpired := lockedAt.IsZero() && !updatedAt.IsZero() && now.Sub(updatedAt) > loginLockoutDuration
+
+		if stale || lockExpired || ttlExpired {
+			loginAttempts.Delete(k)
 			return true
+		}
+		last := updatedAt
+		if last.IsZero() {
+			last = lockedAt
+		}
+		live = append(live, liveEntry{key: k, last: last, locked: locked})
+		return true
+	})
+
+	if len(live) > maxLoginTrackerEntries {
+		sort.Slice(live, func(i, j int) bool {
+			if live[i].locked != live[j].locked {
+				return !live[i].locked // evict non-locked entries first
+			}
+			return live[i].last.Before(live[j].last) // then oldest first
 		})
+		for i := 0; i < len(live)-maxLoginTrackerEntries; i++ {
+			loginAttempts.Delete(live[i].key)
+		}
 	}
 }
 
@@ -534,22 +651,45 @@ func loginAttemptsJanitor() {
 // decryption of stored MFA secrets (mfaEncKey derives from the signing key).
 // Operator must explicitly delete the file to opt into rotation.
 func loadOrGenerateSigningKey() error {
-	data, err := os.ReadFile(sessionSigningKeyFile)
-	if err == nil {
+	// Lstat first (does not follow symlinks) to decide exists-vs-not without
+	// dereferencing a planted symlink.
+	if _, err := os.Lstat(sessionSigningKeyFile); err == nil {
+		// The file exists — before trusting it as key material, enforce the same
+		// strict ownership/permission checks used for the admin credential file.
+		//
+		// SECURITY: without an explicit --session.state-dir the state dir falls
+		// back to /tmp (world-writable, sticky). A local user could otherwise
+		// pre-create /tmp/.session_signing_key with bytes they know and we would
+		// silently adopt them — letting them forge session/MFA tokens and decrypt
+		// stored MFA secrets (the MFA encryption key derives from this key). Fail
+		// CLOSED on any violation (symlink, non-regular, wrong owner, or any
+		// group/world permission bit) rather than trusting the file.
+		if !isOwnerOnlyCredFile(sessionSigningKeyFile) {
+			return fmt.Errorf("signing key file %s failed strict ownership/permission checks "+
+				"(must be a regular file, owned by this process, mode 0600 with no group/world access, not a symlink); "+
+				"refusing to use it — fix its ownership/permissions or delete it to rotate the key",
+				sessionSigningKeyFile)
+		}
+		data, err := os.ReadFile(sessionSigningKeyFile)
+		if err != nil {
+			return fmt.Errorf("read signing key: %w", err)
+		}
 		if len(data) == 64 {
 			sessionSigningKey = data
 			return nil
 		}
 		return fmt.Errorf("signing key file %s has invalid length %d (expected 64); delete the file to rotate the key", sessionSigningKeyFile, len(data))
-	}
-	if !os.IsNotExist(err) {
-		return fmt.Errorf("read signing key: %w", err)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("lstat signing key: %w", err)
 	}
 	// File doesn't exist — generate a fresh key.
 	sessionSigningKey = make([]byte, 64)
 	if _, err := rand.Read(sessionSigningKey); err != nil {
 		return err
 	}
+	// Create the containing dir 0700 (owner-only). On the /tmp fallback this is a
+	// no-op for the pre-existing dir, but the strict file checks above still
+	// guard the key file itself there.
 	if err := os.MkdirAll(filepath.Dir(sessionSigningKeyFile), 0o700); err != nil {
 		return err
 	}
@@ -1043,24 +1183,33 @@ func validateAdminPassword(p string) error {
 	return nil
 }
 
-// isOwnerOnlyCredFile reports whether path is safe to load admin credentials
-// from: a regular file, owned by our effective uid, with no group/world
-// permission bits. Guards the /tmp persist path against a planted-file attack.
+// isOwnerOnlyCredFile reports whether path is safe to load secret material from
+// (admin credentials or the session signing key): a regular file — not a
+// symlink — owned by our effective uid, with no group/world permission bits.
+// Guards the /tmp fallback path against a planted-file / symlink attack.
+//
+// Uses Lstat (NOT Stat) so a symlink is detected instead of transparently
+// followed: on a shared /tmp a local user could otherwise plant a symlink to a
+// file they control and have us trust its contents.
 func isOwnerOnlyCredFile(path string) bool {
-	fi, err := os.Stat(path)
+	fi, err := os.Lstat(path)
 	if err != nil {
-		return false // missing/unreadable — treat as "no persisted password"
+		return false // missing/unreadable — treat as "no persisted secret"
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		log.Warnf("credential file %s is a symlink — refusing to trust it", path)
+		return false
 	}
 	if !fi.Mode().IsRegular() {
-		log.Warnf("persisted admin cred %s is not a regular file — ignoring", path)
+		log.Warnf("credential file %s is not a regular file — ignoring", path)
 		return false
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
-		log.Warnf("persisted admin cred %s is group/world-accessible (%#o) — ignoring and regenerating temp password", path, fi.Mode().Perm())
+		log.Warnf("credential file %s is group/world-accessible (%#o) — refusing to trust it", path, fi.Mode().Perm())
 		return false
 	}
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
-		log.Warnf("persisted admin cred %s not owned by current uid — ignoring and regenerating temp password", path)
+		log.Warnf("credential file %s not owned by the current uid — refusing to trust it", path)
 		return false
 	}
 	return true
