@@ -5,6 +5,21 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.57] — 2026-09-04
+
+Security-review follow-up, part 3 (final — all reviewer findings addressed).
+
+### Fixed
+
+- **`--listen.base-url` now works end to end.** A few frontend calls
+  (auth-check, logout, login) used absolute `/api/...` paths, bypassing the
+  relative API base the rest of the app uses, and the common-routes item handler
+  stripped a hardcoded `/api/common-routes/` prefix. Under a non-root base URL
+  (e.g. `/admin/`) login/logout/auth-check and common-route update/delete broke.
+  The three calls now go through shared `api.js` helpers (relative paths), and
+  the handler strips the configured `listenBaseUrl+"api/common-routes/"` prefix.
+  Added a handler test covering `/` and `/admin/`.
+
 ## [2.0.56] — 2026-09-04
 
 Security-review follow-up, part 2.
