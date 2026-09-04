@@ -231,7 +231,7 @@ func TestConnect_DoesNotMarkSessionInstalledOnError(t *testing.T) {
 	fc.handleEvent(fwEvent{Kind: EvConnect, CN: "alice", VpnIP: "172.16.100.5"})
 
 	fc.mu.Lock()
-	_, ok := fc.sessions["alice"]
+	_, ok := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]
 	fc.mu.Unlock()
 	if ok {
 		t.Fatal("session must NOT be recorded when installRulesFor fails (so reconcile retries)")
@@ -249,8 +249,10 @@ func TestUninstallRulesFor_RemovesAllEntries(t *testing.T) {
 	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
 
 	cidrs := []string{"10.0.0.0/8", "8.8.8.8/32"}
-	if err := fc.uninstallRulesFor("alice", "172.16.100.5", cidrs); err != nil {
+	if remaining, err := fc.uninstallRulesFor("alice", "172.16.100.5", cidrs); err != nil {
 		t.Fatalf("uninstallRulesFor: %v", err)
+	} else if len(remaining) != 0 {
+		t.Fatalf("expected no remaining CIDRs on success, got %v", remaining)
 	}
 
 	if len(cmds) != len(cidrs) {
@@ -568,7 +570,7 @@ func TestEventHandlerLoop_ConnectThenDisconnect(t *testing.T) {
 	waitForCalls(t, &calls, 1, 2*time.Second)
 
 	fc.mu.Lock()
-	if _, ok := fc.sessions["alice"]; !ok {
+	if _, ok := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]; !ok {
 		fc.mu.Unlock()
 		t.Fatal("session for alice not registered after Connect")
 	}
@@ -579,7 +581,7 @@ func TestEventHandlerLoop_ConnectThenDisconnect(t *testing.T) {
 	waitForCalls(t, &calls, prev+1, 2*time.Second)
 
 	fc.mu.Lock()
-	if _, ok := fc.sessions["alice"]; ok {
+	if _, ok := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]; ok {
 		fc.mu.Unlock()
 		t.Fatal("session for alice not removed after Disconnect")
 	}
@@ -674,10 +676,10 @@ func TestReconcile_FromMgmtSnapshot(t *testing.T) {
 	if len(fc.sessions) != 2 {
 		t.Errorf("expected 2 sessions after reconcile, got %d", len(fc.sessions))
 	}
-	if _, ok := fc.sessions["alice"]; !ok {
+	if _, ok := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]; !ok {
 		t.Errorf("alice missing from sessions")
 	}
-	if _, ok := fc.sessions["bob"]; !ok {
+	if _, ok := fc.sessions[sessionKey{CN: "bob", VpnIP: "172.16.100.6"}]; !ok {
 		t.Errorf("bob missing from sessions")
 	}
 }
@@ -691,14 +693,15 @@ func TestReconcile_DriftCorrection(t *testing.T) {
 	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
 
 	// pre-seed: ghost session не существующая в mgmt
-	fc.sessions["ghost"] = &fwSession{CN: "ghost", VpnIP: "172.16.100.99", AllowedCIDRs: []string{"10.0.0.0/8"}}
+	ghostKey := sessionKey{CN: "ghost", VpnIP: "172.16.100.99"}
+	fc.sessions[ghostKey] = &fwSession{CN: "ghost", VpnIP: "172.16.100.99", AllowedCIDRs: []string{"10.0.0.0/8"}}
 	fc.mgmtSnapshot = func() ([]clientStatus, bool) { return nil, true } // mgmt видит 0 клиентов
 
 	fc.mu.Lock()
 	fc.reconcileLocked()
 	fc.mu.Unlock()
 
-	if _, ok := fc.sessions["ghost"]; ok {
+	if _, ok := fc.sessions[ghostKey]; ok {
 		t.Errorf("ghost session should have been removed by reconcile")
 	}
 }
@@ -740,7 +743,7 @@ func TestSubscribeAndPump_ParsesMultipleEvents(t *testing.T) {
 
 	// После CONNECT+DISCONNECT alice должна отсутствовать
 	fc.mu.Lock()
-	_, exists := fc.sessions["alice"]
+	_, exists := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]
 	fc.mu.Unlock()
 	if exists {
 		t.Errorf("alice should have been disconnected by end of stream")
@@ -804,7 +807,252 @@ func TestStop_RunsCleanup(t *testing.T) {
 	}
 }
 
+// fakeCcdReader is a minimal CcdReader for tests that need to inject arbitrary
+// CustomRoutes (e.g. domain routes with ResolvedIPs) without going through the
+// on-disk CCD format.
+type fakeCcdReader struct {
+	ccd    Ccd
+	common CommonRoutesConfig
+}
+
+func (f fakeCcdReader) getCcd(string) Ccd                        { return f.ccd }
+func (f fakeCcdReader) commonRoutesSnapshot() CommonRoutesConfig { return f.common }
+
+// TestFirewallApplyDiff_DeleteFailureStaysTrackedAndRetried proves a failed `-D`
+// keeps the CIDR in AllowedCIDRs (fail-closed), records it in pendingDeletes, and
+// retries it on the next applyDiff until iptables finally removes the rule.
+func TestFirewallApplyDiff_DeleteFailureStaysTrackedAndRetried(t *testing.T) {
+	t.Parallel()
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	failDelete := true
+	delAttempts := 0
+	iptMock := func(args ...string) error {
+		if len(args) > 0 && args[0] == "-D" && containsAll(joinSpace(args), "-d 8.8.8.8/32") {
+			delAttempts++
+			if failDelete {
+				return fmt.Errorf("iptables: simulated -D failure")
+			}
+		}
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+	s := &fwSession{CN: "alice", VpnIP: "172.16.100.5", AllowedCIDRs: []string{"10.0.0.0/8", "8.8.8.8/32"}}
+
+	// First diff: remove 8.8.8.8/32 but -D fails → kept + tracked, error returned.
+	if err := fc.applyDiff(s, []string{"10.0.0.0/8"}); err == nil {
+		t.Fatal("expected applyDiff to return the -D failure")
+	}
+	if !cidrsContain(s.AllowedCIDRs, "8.8.8.8/32") {
+		t.Errorf("failed-delete CIDR must stay in AllowedCIDRs (fail-closed), got %v", s.AllowedCIDRs)
+	}
+	if _, ok := s.pendingDeletes["8.8.8.8/32"]; !ok {
+		t.Errorf("failed-delete CIDR must be recorded in pendingDeletes, got %v", s.pendingDeletes)
+	}
+
+	// Second diff (same desired set): -D now succeeds → retried and cleaned up.
+	failDelete = false
+	if err := fc.applyDiff(s, []string{"10.0.0.0/8"}); err != nil {
+		t.Fatalf("retry applyDiff: %v", err)
+	}
+	if delAttempts < 2 {
+		t.Errorf("expected the stuck -D to be retried, attempts=%d", delAttempts)
+	}
+	if cidrsContain(s.AllowedCIDRs, "8.8.8.8/32") {
+		t.Errorf("CIDR should be gone after successful retry, got %v", s.AllowedCIDRs)
+	}
+	if len(s.pendingDeletes) != 0 {
+		t.Errorf("pendingDeletes should be empty after successful retry, got %v", s.pendingDeletes)
+	}
+}
+
+// TestFirewallApplyDiff_AddFailureNotMarkedApplied proves a failed `-I` is NOT
+// recorded in AllowedCIDRs, so the next applyDiff/reconcile retries the add.
+func TestFirewallApplyDiff_AddFailureNotMarkedApplied(t *testing.T) {
+	t.Parallel()
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	iptMock := func(args ...string) error {
+		if len(args) > 0 && args[0] == "-I" && containsAll(joinSpace(args), "-d 8.8.8.8/32") {
+			return fmt.Errorf("iptables: simulated -I failure")
+		}
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+	s := &fwSession{CN: "alice", VpnIP: "172.16.100.5", AllowedCIDRs: []string{"10.0.0.0/8"}}
+
+	if err := fc.applyDiff(s, []string{"10.0.0.0/8", "8.8.8.8/32"}); err == nil {
+		t.Fatal("expected applyDiff to return the -I failure")
+	}
+	if cidrsContain(s.AllowedCIDRs, "8.8.8.8/32") {
+		t.Errorf("failed-add CIDR must NOT be recorded as applied, got %v", s.AllowedCIDRs)
+	}
+	if !cidrsContain(s.AllowedCIDRs, "10.0.0.0/8") {
+		t.Errorf("existing CIDR must remain applied, got %v", s.AllowedCIDRs)
+	}
+}
+
+// TestFirewallDisconnect_KeepsSessionOnUninstallFailure proves a disconnect whose
+// rule removal fails KEEPS the session (with the stuck CIDRs) so a later reconcile
+// retries, instead of dropping the session and orphaning live ACCEPT rules.
+func TestFirewallDisconnect_KeepsSessionOnUninstallFailure(t *testing.T) {
+	t.Parallel()
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}, store: testFilesystemStore(t.TempDir())}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	iptMock := func(args ...string) error {
+		if len(args) > 0 && args[0] == "-D" && containsAll(joinSpace(args), "-j ACCEPT") {
+			return fmt.Errorf("iptables: simulated -D failure")
+		}
+		return nil
+	}
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+	key := sessionKey{CN: "alice", VpnIP: "172.16.100.5"}
+	fc.sessions[key] = &fwSession{CN: "alice", VpnIP: "172.16.100.5", AllowedCIDRs: []string{"10.0.0.0/8", "8.8.8.8/32"}}
+
+	fc.handleEvent(fwEvent{Kind: EvDisconnect, CN: "alice", VpnIP: "172.16.100.5"})
+
+	fc.mu.Lock()
+	s, ok := fc.sessions[key]
+	fc.mu.Unlock()
+	if !ok {
+		t.Fatal("session must be KEPT when uninstall fails (so reconcile retries)")
+	}
+	if len(s.AllowedCIDRs) != 2 {
+		t.Errorf("kept session should retain the stuck CIDRs, got %v", s.AllowedCIDRs)
+	}
+}
+
+// TestFirewallDomainRoute_EmitsHostCIDRs proves a CustomRoute with Kind=="domain"
+// (no Address/Mask) yields one host CIDR per ResolvedIP: /32 for IPv4, /128 for IPv6.
+func TestFirewallDomainRoute_EmitsHostCIDRs(t *testing.T) {
+	t.Parallel()
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	reader := fakeCcdReader{
+		ccd: Ccd{CustomRoutes: []ccdRoute{
+			{Kind: "domain", Domain: "example.com", ResolvedIPs: []string{"93.184.216.34", "2001:db8::1"}},
+		}},
+	}
+	fc := newFirewallController(reader, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
+
+	cidrs, err := fc.computeAllowedCIDRs("alice")
+	if err != nil {
+		t.Fatalf("computeAllowedCIDRs: %v", err)
+	}
+	want := map[string]bool{"93.184.216.34/32": true, "2001:db8::1/128": true}
+	if len(cidrs) != len(want) {
+		t.Fatalf("expected %d host CIDRs, got %v", len(want), cidrs)
+	}
+	for _, c := range cidrs {
+		if !want[c] {
+			t.Errorf("unexpected CIDR %q", c)
+		}
+		delete(want, c)
+	}
+	if len(want) > 0 {
+		t.Errorf("missing host CIDRs: %v", want)
+	}
+}
+
+// TestFirewallSessionKey_DistinctVpnIPsTrackedSeparately proves one CN with two
+// VPN IPs (duplicate-cn) is tracked as two independent sessions, and a disconnect
+// carrying a VPN IP only removes that one session.
+func TestFirewallSessionKey_DistinctVpnIPsTrackedSeparately(t *testing.T) {
+	t.Parallel()
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
+	}}}, store: testFilesystemStore(t.TempDir())}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, func(args ...string) error { return nil })
+
+	fc.handleEvent(fwEvent{Kind: EvConnect, CN: "alice", VpnIP: "172.16.100.5"})
+	fc.handleEvent(fwEvent{Kind: EvConnect, CN: "alice", VpnIP: "172.16.100.6"})
+
+	fc.mu.Lock()
+	n := len(fc.sessions)
+	_, ok5 := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]
+	_, ok6 := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.6"}]
+	fc.mu.Unlock()
+	if n != 2 || !ok5 || !ok6 {
+		t.Fatalf("expected two distinct (CN,VPN-IP) sessions, got n=%d ok5=%v ok6=%v", n, ok5, ok6)
+	}
+
+	// Disconnect only the .5 session (the event carries its VPN IP).
+	fc.handleEvent(fwEvent{Kind: EvDisconnect, CN: "alice", VpnIP: "172.16.100.5"})
+	fc.mu.Lock()
+	_, still5 := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]
+	_, still6 := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.6"}]
+	fc.mu.Unlock()
+	if still5 {
+		t.Error(".5 session should be gone after targeted disconnect")
+	}
+	if !still6 {
+		t.Error(".6 session must remain after targeted disconnect")
+	}
+}
+
+// TestFirewallVpnIPChange_ReappliesRules proves that when a CN's VPN IP changes,
+// reconcile removes the old-IP rules and installs the new-IP rules.
+func TestFirewallVpnIPChange_ReappliesRules(t *testing.T) {
+	t.Parallel()
+	app := &OvpnAdmin{commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
+	}}}, store: testFilesystemStore(t.TempDir())}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		return nil
+	}
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+
+	oldKey := sessionKey{CN: "alice", VpnIP: "172.16.100.5"}
+	fc.sessions[oldKey] = &fwSession{CN: "alice", VpnIP: "172.16.100.5", AllowedCIDRs: []string{"10.0.0.0/8"}, RulesInstalled: true}
+	fc.mgmtSnapshot = func() ([]clientStatus, bool) {
+		return []clientStatus{{CommonName: "alice", VirtualAddress: "172.16.100.9"}}, true
+	}
+
+	fc.mu.Lock()
+	fc.reconcileLocked()
+	fc.mu.Unlock()
+
+	newKey := sessionKey{CN: "alice", VpnIP: "172.16.100.9"}
+	if _, ok := fc.sessions[oldKey]; ok {
+		t.Error("old-IP session should be removed after VPN-IP change")
+	}
+	s, ok := fc.sessions[newKey]
+	if !ok {
+		t.Fatal("new-IP session should be installed after VPN-IP change")
+	}
+	if s.VpnIP != "172.16.100.9" {
+		t.Errorf("new session VpnIP=%q, want 172.16.100.9", s.VpnIP)
+	}
+
+	var sawOldDel, sawNewIns bool
+	for _, c := range cmds {
+		j := joinSpace(c)
+		if containsAll(j, "-D") && containsAll(j, "-s 172.16.100.5") && containsAll(j, "-j ACCEPT") {
+			sawOldDel = true
+		}
+		if containsAll(j, "-I OVPN_FW 2") && containsAll(j, "-s 172.16.100.9") {
+			sawNewIns = true
+		}
+	}
+	if !sawOldDel {
+		t.Error("expected -D of old-IP (172.16.100.5) rules")
+	}
+	if !sawNewIns {
+		t.Error("expected -I of new-IP (172.16.100.9) rules above DROP")
+	}
+}
+
 // helpers in test file
+func cidrsContain(cidrs []string, want string) bool {
+	for _, c := range cidrs {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
 func joinSpace(parts []string) string {
 	out := ""
 	for i, p := range parts {

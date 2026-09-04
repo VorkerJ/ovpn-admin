@@ -78,6 +78,20 @@ func ipMaskToCIDR(addr, mask string) (string, error) {
 	return fmt.Sprintf("%s/%d", ip.Mask(m).String(), ones), nil
 }
 
+// ipToHostCIDR превращает один IP-адрес в host-CIDR: /32 для IPv4, /128 для IPv6.
+// Используется для domain-маршрутов, у которых нет Address/Mask — только
+// разрезолвленные IP (ResolvedIPs).
+func ipToHostCIDR(ip string) (string, error) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return "", fmt.Errorf("invalid IP: %q", ip)
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return v4.String() + "/32", nil
+	}
+	return parsed.String() + "/128", nil
+}
+
 type fwEventKind int
 
 const (
@@ -95,10 +109,23 @@ type fwEvent struct {
 }
 
 type fwSession struct {
-	CN             string
-	VpnIP          string
-	AllowedCIDRs   []string
+	CN           string
+	VpnIP        string
+	AllowedCIDRs []string
+	// pendingDeletes holds CIDRs whose `-D` failed in a previous applyDiff. They
+	// are folded back into the delete-diff on every subsequent applyDiff so a
+	// stuck delete is retried until iptables finally removes the rule.
+	pendingDeletes map[string]struct{}
 	RulesInstalled bool
+}
+
+// sessionKey identifies a live VPN session. Duplicate-cn is on by default, so a
+// single CN can hold several concurrent sessions on distinct VPN IPs; keying by
+// (CN, VpnIP) keeps their iptables rules independent. A VPN-IP change for a CN
+// then naturally removes the old-IP rules and installs the new-IP rules.
+type sessionKey struct {
+	CN    string
+	VpnIP string
 }
 
 // iptCmdFunc — функция выполнения iptables. Тестово мок-абельна.
@@ -117,7 +144,7 @@ type firewallController struct {
 	chainName string
 	iptBin    string
 	vpnNet    *net.IPNet
-	sessions  map[string]*fwSession
+	sessions  map[sessionKey]*fwSession
 	pending   map[string]fwEvent
 	kick      chan struct{}
 	iptCmd    iptCmdFunc
@@ -135,7 +162,7 @@ func newFirewallController(ccdReader CcdReader, chainName, iptBin string, vpnNet
 		chainName: chainName,
 		iptBin:    iptBin,
 		vpnNet:    vpnNet,
-		sessions:  make(map[string]*fwSession),
+		sessions:  make(map[sessionKey]*fwSession),
 		pending:   make(map[string]fwEvent),
 		kick:      make(chan struct{}, 1),
 		iptCmd:    iptCmd,
@@ -220,26 +247,40 @@ func (fc *firewallController) installRulesFor(cn, vpnIP string, cidrs []string) 
 }
 
 // uninstallRulesFor удаляет ACCEPT-правила сессии. Catch-all DROP не трогаем — он остаётся последним.
-// Best-effort: если какое-то правило уже отсутствует, логируем и продолжаем.
 // Caller должен держать fc.mu.
-func (fc *firewallController) uninstallRulesFor(cn, vpnIP string, cidrs []string) error {
+//
+// Возвращает remaining — CIDR'ы, чьё `-D` ПРОВАЛИЛОСЬ (правило, возможно, всё ещё
+// живёт в цепочке), и первую ошибку. Fail-CLOSED: caller НЕ должен удалять сессию,
+// пока remaining непуст — он оставляет её с AllowedCIDRs=remaining, чтобы следующий
+// reconcile повторил снятие только застрявших правил.
+func (fc *firewallController) uninstallRulesFor(cn, vpnIP string, cidrs []string) (remaining []string, err error) {
 	comment := "ovpn-admin: " + cn
-	var firstErr error
 	for _, cidr := range cidrs {
-		if err := fc.iptCmd("-D", fc.chainName,
+		if e := fc.iptCmd("-D", fc.chainName,
 			"-s", vpnIP, "-d", cidr, "-j", "ACCEPT",
-			"-m", "comment", "--comment", comment); err != nil {
-			log.Debugf("uninstallRulesFor: -D failed (rule may be missing): %v", err)
-			if firstErr == nil {
-				firstErr = err
+			"-m", "comment", "--comment", comment); e != nil {
+			log.Debugf("uninstallRulesFor: -D failed (rule may still be live): %v", e)
+			remaining = append(remaining, cidr)
+			if err == nil {
+				err = e
 			}
 		}
 	}
-	return firstErr
+	return remaining, err
 }
 
 // applyDiff приводит установленные правила сессии к newCIDRs минимальным числом команд.
-// Обновляет s.AllowedCIDRs на newCIDRs при успехе. Caller держит fc.mu.
+//
+// Транзакционно относительно состояния: s.AllowedCIDRs обновляется на ФАКТИЧЕСКИ
+// применённый набор, а НЕ безусловно на newCIDRs. То есть:
+//   - CIDR, чьё `-D` провалилось, СОХРАНЯЕТСЯ в AllowedCIDRs (fail-CLOSED: правило,
+//     возможно, ещё живёт) и запоминается в s.pendingDeletes для повторной попытки;
+//   - CIDR, чей `-I` провалился, НЕ попадает в AllowedCIDRs, поэтому следующий
+//     applyDiff/reconcile повторит его добавление.
+//
+// Ранее застрявшие удаления (s.pendingDeletes) вкладываются обратно в delete-diff
+// на каждом вызове. Возвращает первую ошибку, чтобы caller мог инициировать retry.
+// Caller держит fc.mu.
 func (fc *firewallController) applyDiff(s *fwSession, newCIDRs []string) error {
 	oldSet := make(map[string]struct{}, len(s.AllowedCIDRs))
 	for _, c := range s.AllowedCIDRs {
@@ -256,6 +297,18 @@ func (fc *firewallController) applyDiff(s *fwSession, newCIDRs []string) error {
 			toDel = append(toDel, c)
 		}
 	}
+	// Fold previously-stuck deletes back in so a failed -D is retried until it
+	// finally succeeds. Skip a CIDR that has come back into the allowed set, or
+	// one already queued above (still present in AllowedCIDRs).
+	for c := range s.pendingDeletes {
+		if _, ok := newSet[c]; ok {
+			continue
+		}
+		if _, ok := oldSet[c]; ok {
+			continue
+		}
+		toDel = append(toDel, c)
+	}
 	for c := range newSet {
 		if _, ok := oldSet[c]; !ok {
 			toAdd = append(toAdd, c)
@@ -267,27 +320,54 @@ func (fc *firewallController) applyDiff(s *fwSession, newCIDRs []string) error {
 	}
 
 	comment := "ovpn-admin: " + s.CN
-	// Удаление ACCEPT'ов не трогает catch-all DROP — best-effort.
+	var firstErr error
+
+	// applied — набор CIDR'ов, которые реально считаются установленными после
+	// этого прохода. Начинаем с желаемого набора и корректируем по факту команд.
+	applied := make(map[string]struct{}, len(newSet))
+	for c := range newSet {
+		applied[c] = struct{}{}
+	}
+	newPending := make(map[string]struct{})
+
+	// Удаление ACCEPT'ов не трогает catch-all DROP. Если `-D` провалилось —
+	// оставляем CIDR в applied (правило, возможно, ещё живёт) и запоминаем для
+	// повторной попытки (fail-CLOSED).
 	for _, cidr := range toDel {
 		if err := fc.iptCmd("-D", fc.chainName,
 			"-s", s.VpnIP, "-d", cidr, "-j", "ACCEPT",
 			"-m", "comment", "--comment", comment); err != nil {
 			log.Debugf("applyDiff: -D %s: %v", cidr, err)
+			applied[cidr] = struct{}{}
+			newPending[cidr] = struct{}{}
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	// Fail-CLOSED: новые ACCEPT'ы ВСТАВЛЯЕМ над catch-all DROP (`-I <chain> 2`,
 	// как в installRulesFor). DROP при этом никогда не снимается — цепочка не
-	// может остаться открытой при сбое iptables в середине.
+	// может остаться открытой при сбое iptables в середине. Если `-I` провалилось —
+	// НЕ считаем CIDR установленным, чтобы следующий проход повторил добавление.
 	for _, cidr := range toAdd {
 		if err := fc.iptCmd("-I", fc.chainName, "2",
 			"-s", s.VpnIP, "-d", cidr, "-j", "ACCEPT",
 			"-m", "comment", "--comment", comment); err != nil {
 			log.Warnf("applyDiff: -I %s: %v", cidr, err)
+			delete(applied, cidr)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 
-	s.AllowedCIDRs = append([]string(nil), newCIDRs...)
-	return nil
+	out := make([]string, 0, len(applied))
+	for c := range applied {
+		out = append(out, c)
+	}
+	s.AllowedCIDRs = out
+	s.pendingDeletes = newPending
+	return firstErr
 }
 
 // computeAllowedCIDRs возвращает дедуплицированный набор CIDR'ов, разрешённых для CN.
@@ -298,6 +378,20 @@ func (fc *firewallController) computeAllowedCIDRs(cn string) ([]string, error) {
 	if fc.ccdReader != nil {
 		ccd := fc.ccdReader.getCcd(cn)
 		for _, r := range ccd.CustomRoutes {
+			// Domain routes carry no Address/Mask — only ResolvedIPs. Emit a host
+			// CIDR (/32 IPv4, /128 IPv6) per resolved IP. (Common routes are already
+			// expanded to host CIDRs via expandCommonRoutes below.)
+			if r.Kind == "domain" {
+				for _, ip := range r.ResolvedIPs {
+					cidr, err := ipToHostCIDR(ip)
+					if err != nil {
+						log.Warnf("firewall: invalid resolved IP for domain route %q (%s): %v", r.Domain, cn, err)
+						continue
+					}
+					set[cidr] = struct{}{}
+				}
+				continue
+			}
 			cidr, err := ipMaskToCIDR(r.Address, r.Mask)
 			if err != nil {
 				log.Warnf("firewall: invalid CCD route for %s: %v", cn, err)
@@ -435,41 +529,61 @@ func (fc *firewallController) handleEvent(ev fwEvent) {
 			log.Warnf("firewall: installRulesFor(%s): %v", ev.CN, err)
 			return
 		}
-		fc.sessions[ev.CN] = &fwSession{CN: ev.CN, VpnIP: ev.VpnIP, AllowedCIDRs: cidrs, RulesInstalled: true}
+		fc.sessions[sessionKey{CN: ev.CN, VpnIP: ev.VpnIP}] = &fwSession{CN: ev.CN, VpnIP: ev.VpnIP, AllowedCIDRs: cidrs, RulesInstalled: true}
 
 	case EvDisconnect:
-		s, ok := fc.sessions[ev.CN]
-		if !ok {
-			return
+		// Match by CN; when the event carries a VPN IP, match that session only.
+		// An empty VpnIP disconnects ALL sessions for the CN. Fail-CLOSED: if rule
+		// removal fails we KEEP the session (AllowedCIDRs=remaining) so the next
+		// reconcile retries only the stuck rules.
+		for key, s := range fc.sessions {
+			if key.CN != ev.CN {
+				continue
+			}
+			if ev.VpnIP != "" && key.VpnIP != ev.VpnIP {
+				continue
+			}
+			remaining, err := fc.uninstallRulesFor(s.CN, s.VpnIP, s.AllowedCIDRs)
+			if err != nil {
+				log.Warnf("firewall: uninstallRulesFor(%s): %v", ev.CN, err)
+				s.AllowedCIDRs = remaining
+				continue
+			}
+			delete(fc.sessions, key)
 		}
-		if err := fc.uninstallRulesFor(s.CN, s.VpnIP, s.AllowedCIDRs); err != nil {
-			log.Warnf("firewall: uninstallRulesFor(%s): %v", ev.CN, err)
-		}
-		delete(fc.sessions, ev.CN)
 
 	case EvUserChanged:
-		s, ok := fc.sessions[ev.CN]
-		if !ok {
-			return
-		}
-		newCIDRs, err := fc.computeAllowedCIDRs(ev.CN)
-		if err != nil {
-			log.Warnf("firewall: computeAllowedCIDRs(%s) on user-changed: %v", ev.CN, err)
-			return
-		}
-		if err := fc.applyDiff(s, newCIDRs); err != nil {
-			log.Warnf("firewall: applyDiff(%s): %v", ev.CN, err)
+		// A CN may hold several sessions (duplicate-cn). Recompute once and apply
+		// the diff to every session of that CN.
+		var newCIDRs []string
+		computed := false
+		for key, s := range fc.sessions {
+			if key.CN != ev.CN {
+				continue
+			}
+			if !computed {
+				c, err := fc.computeAllowedCIDRs(ev.CN)
+				if err != nil {
+					log.Warnf("firewall: computeAllowedCIDRs(%s) on user-changed: %v", ev.CN, err)
+					return
+				}
+				newCIDRs = c
+				computed = true
+			}
+			if err := fc.applyDiff(s, newCIDRs); err != nil {
+				log.Warnf("firewall: applyDiff(%s): %v", ev.CN, err)
+			}
 		}
 
 	case EvCommonChanged:
-		for cn, s := range fc.sessions {
-			newCIDRs, err := fc.computeAllowedCIDRs(cn)
+		for _, s := range fc.sessions {
+			newCIDRs, err := fc.computeAllowedCIDRs(s.CN)
 			if err != nil {
-				log.Warnf("firewall: computeAllowedCIDRs(%s) on common-changed: %v", cn, err)
+				log.Warnf("firewall: computeAllowedCIDRs(%s) on common-changed: %v", s.CN, err)
 				continue
 			}
 			if err := fc.applyDiff(s, newCIDRs); err != nil {
-				log.Warnf("firewall: applyDiff(%s): %v", cn, err)
+				log.Warnf("firewall: applyDiff(%s): %v", s.CN, err)
 			}
 		}
 
@@ -480,6 +594,13 @@ func (fc *firewallController) handleEvent(ev fwEvent) {
 
 // reconcileLocked полностью сверяет fc.sessions с реальностью из mgmt-snapshot'а.
 // Caller держит fc.mu. Используется при старте, при обрыве mgmt-стрима и периодически.
+//
+// TODO(firewall): this reconcile compares fc.sessions against the mgmt `status`
+// snapshot (which clients are connected), NOT against the live iptables chain.
+// A true live-iptables reconcile would parse `iptables -S <chain>` and re-add any
+// ACCEPT/DROP that drifted out of the kernel table. That is deferred because the
+// iptCmd abstraction returns no stdout (only an error), so there is nothing to
+// diff against; wiring it up needs an iptCmd variant that captures output.
 func (fc *firewallController) reconcileLocked() {
 	snapshot, ok := fc.mgmtSnapshot()
 	if !ok {
@@ -488,34 +609,44 @@ func (fc *firewallController) reconcileLocked() {
 		// still-connected users. The next poll (firewallReconcilePoll) retries.
 		return
 	}
-	live := make(map[string]*clientStatus)
+	// Key live sessions by (CN, VPN IP): duplicate-cn lets one CN hold several
+	// sessions, and a VPN-IP change shows up here as an old key disappearing and
+	// a new key appearing — old-IP rules are removed, new-IP rules installed.
+	live := make(map[sessionKey]*clientStatus)
 	for i := range snapshot {
-		live[snapshot[i].CommonName] = &snapshot[i]
+		k := sessionKey{CN: snapshot[i].CommonName, VpnIP: snapshot[i].VirtualAddress}
+		live[k] = &snapshot[i]
 	}
-	// Закрываем sessions которых нет в live — uninstall
-	for cn, s := range fc.sessions {
-		if _, ok := live[cn]; !ok {
-			if err := fc.uninstallRulesFor(s.CN, s.VpnIP, s.AllowedCIDRs); err != nil {
-				log.Warnf("firewall: reconcile uninstall(%s): %v", cn, err)
-			}
-			delete(fc.sessions, cn)
+	// Закрываем sessions которых нет в live — uninstall. Fail-CLOSED: если снятие
+	// правил провалилось, СОХРАНЯЕМ сессию (AllowedCIDRs=remaining), чтобы следующий
+	// reconcile повторил только застрявшие правила, а не потерял их из учёта.
+	for key, s := range fc.sessions {
+		if _, ok := live[key]; ok {
+			continue
 		}
+		remaining, err := fc.uninstallRulesFor(s.CN, s.VpnIP, s.AllowedCIDRs)
+		if err != nil {
+			log.Warnf("firewall: reconcile uninstall(%s): %v", key.CN, err)
+			s.AllowedCIDRs = remaining
+			continue
+		}
+		delete(fc.sessions, key)
 	}
 	// Добавляем тех, кто есть в live, но нет в fc.sessions
-	for cn, c := range live {
-		if _, ok := fc.sessions[cn]; ok {
+	for key, c := range live {
+		if _, ok := fc.sessions[key]; ok {
 			continue
 		}
-		cidrs, err := fc.computeAllowedCIDRs(cn)
+		cidrs, err := fc.computeAllowedCIDRs(key.CN)
 		if err != nil {
-			log.Warnf("firewall: reconcile compute(%s): %v", cn, err)
+			log.Warnf("firewall: reconcile compute(%s): %v", key.CN, err)
 			continue
 		}
-		if err := fc.installRulesFor(cn, c.VirtualAddress, cidrs); err != nil {
-			log.Warnf("firewall: reconcile install(%s): %v", cn, err)
+		if err := fc.installRulesFor(key.CN, c.VirtualAddress, cidrs); err != nil {
+			log.Warnf("firewall: reconcile install(%s): %v", key.CN, err)
 			continue
 		}
-		fc.sessions[cn] = &fwSession{CN: cn, VpnIP: c.VirtualAddress, AllowedCIDRs: cidrs, RulesInstalled: true}
+		fc.sessions[key] = &fwSession{CN: key.CN, VpnIP: c.VirtualAddress, AllowedCIDRs: cidrs, RulesInstalled: true}
 	}
 	ovpnFirewallReconciles.Inc()
 }
