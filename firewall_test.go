@@ -141,7 +141,7 @@ func TestInitChain_IdempotentOnExistingChain(t *testing.T) {
 	}
 }
 
-func TestInstallRulesFor_PivotsCatchAllDrop(t *testing.T) {
+func TestInstallRulesFor_InsertsAboveCatchAllDrop(t *testing.T) {
 	t.Parallel()
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	var cmds [][]string
@@ -156,25 +156,85 @@ func TestInstallRulesFor_PivotsCatchAllDrop(t *testing.T) {
 		t.Fatalf("installRulesFor: %v", err)
 	}
 
-	// Expected sequence:
-	// 1. -D catch-all (pivot)
-	// 2. -A OVPN_FW -s 172.16.100.5 -d 10.0.0.0/8 -j ACCEPT ovpn-admin: alice
-	// 3. -A OVPN_FW -s 172.16.100.5 -d 8.8.8.8/32 -j ACCEPT ovpn-admin: alice
-	// 4. -A catch-all DROP back
-	if len(cmds) != 4 {
-		t.Fatalf("expected 4 commands, got %d: %v", len(cmds), cmds)
-	}
-	if !containsAll(joinSpace(cmds[0]), "-D OVPN_FW") || !containsAll(joinSpace(cmds[0]), "-j DROP") {
-		t.Errorf("command[0] should remove catch-all DROP, got %v", cmds[0])
+	// Fail-CLOSED: exactly one `-I <chain> 2` ACCEPT per CIDR, inserted ABOVE the
+	// catch-all DROP. The DROP is NEVER removed or re-appended, so no command
+	// touches `-j DROP`.
+	if len(cmds) != len(cidrs) {
+		t.Fatalf("expected %d commands, got %d: %v", len(cidrs), len(cmds), cmds)
 	}
 	for i, cidr := range cidrs {
-		c := joinSpace(cmds[i+1])
-		if !containsAll(c, "-A OVPN_FW") || !containsAll(c, "-s 172.16.100.5") || !containsAll(c, "-d "+cidr) || !containsAll(c, "ovpn-admin: alice") {
-			t.Errorf("command[%d] missing expected pattern: %v", i+1, cmds[i+1])
+		c := joinSpace(cmds[i])
+		if !containsAll(c, "-I OVPN_FW 2") || !containsAll(c, "-s 172.16.100.5") || !containsAll(c, "-d "+cidr) || !containsAll(c, "-j ACCEPT") || !containsAll(c, "ovpn-admin: alice") {
+			t.Errorf("command[%d] should insert ACCEPT above DROP, got %v", i, cmds[i])
 		}
 	}
-	if !containsAll(joinSpace(cmds[3]), "-A OVPN_FW") || !containsAll(joinSpace(cmds[3]), "-j DROP") {
-		t.Errorf("command[3] should restore catch-all DROP, got %v", cmds[3])
+	for _, c := range cmds {
+		if containsAll(joinSpace(c), "-j DROP") {
+			t.Errorf("installRulesFor must never touch the catch-all DROP, got %v", c)
+		}
+	}
+}
+
+// TestInstallRulesFor_FailClosedOnError proves the fix for the fail-OPEN finding:
+// when an iptables invocation fails mid-way, (a) the error is propagated so the
+// caller won't mark the session installed, and (b) the catch-all DROP is never
+// removed, so the subnet is never left unfiltered.
+func TestInstallRulesFor_FailClosedOnError(t *testing.T) {
+	t.Parallel()
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	var cmds [][]string
+	iptMock := func(args ...string) error {
+		cmds = append(cmds, append([]string(nil), args...))
+		// Fail while inserting the SECOND ACCEPT rule.
+		if containsAll(joinSpace(args), "-d 8.8.8.8/32") {
+			return fmt.Errorf("iptables: simulated failure")
+		}
+		return nil
+	}
+	fc := newFirewallController(nil, "OVPN_FW", "iptables", vpnNet, iptMock)
+
+	err := fc.installRulesFor("alice", "172.16.100.5", []string{"10.0.0.0/8", "8.8.8.8/32"})
+	if err == nil {
+		t.Fatal("expected installRulesFor to return an error on iptables failure")
+	}
+	// (a) The catch-all DROP must never have been removed at any point.
+	for _, c := range cmds {
+		j := joinSpace(c)
+		if containsAll(j, "-D") && containsAll(j, "-j DROP") {
+			t.Errorf("catch-all DROP must not be removed on failure, got %v", c)
+		}
+	}
+}
+
+// TestConnect_DoesNotMarkSessionInstalledOnError proves the caller no longer
+// records a session as installed when installRulesFor fails — so a later
+// reconcile retries instead of skipping it forever.
+func TestConnect_DoesNotMarkSessionInstalledOnError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	app := &OvpnAdmin{
+		commonRoutes: &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{
+			{ID: "x", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
+		}}},
+		store: testFilesystemStore(dir),
+	}
+	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
+	iptMock := func(args ...string) error {
+		// Any ACCEPT insert fails → installRulesFor errors.
+		if len(args) > 0 && args[0] == "-I" {
+			return fmt.Errorf("iptables: simulated failure")
+		}
+		return nil
+	}
+	fc := newFirewallController(app, "OVPN_FW", "iptables", vpnNet, iptMock)
+
+	fc.handleEvent(fwEvent{Kind: EvConnect, CN: "alice", VpnIP: "172.16.100.5"})
+
+	fc.mu.Lock()
+	_, ok := fc.sessions["alice"]
+	fc.mu.Unlock()
+	if ok {
+		t.Fatal("session must NOT be recorded when installRulesFor fails (so reconcile retries)")
 	}
 }
 
@@ -219,14 +279,17 @@ func TestApplyDiff_Add(t *testing.T) {
 		t.Fatalf("applyDiff: %v", err)
 	}
 
-	// Expected: -D catch-all, -A для 8.8.8.8/32, -A catch-all
-	// Удалений нет — 10.0.0.0/8 в обоих set'ах.
-	if len(cmds) != 3 {
-		t.Fatalf("expected 3 commands, got %d: %v", len(cmds), cmds)
+	// Fail-CLOSED: no DROP pivot. Only one command — the ACCEPT for 8.8.8.8/32
+	// inserted above the DROP. Удалений нет — 10.0.0.0/8 в обоих set'ах.
+	if len(cmds) != 1 {
+		t.Fatalf("expected 1 command, got %d: %v", len(cmds), cmds)
 	}
-	added := joinSpace(cmds[1])
-	if !containsAll(added, "-A OVPN_FW") || !containsAll(added, "-d 8.8.8.8/32") {
-		t.Errorf("expected -A for 8.8.8.8/32, got %v", cmds[1])
+	added := joinSpace(cmds[0])
+	if !containsAll(added, "-I OVPN_FW 2") || !containsAll(added, "-d 8.8.8.8/32") || !containsAll(added, "-j ACCEPT") {
+		t.Errorf("expected -I above DROP for 8.8.8.8/32, got %v", cmds[0])
+	}
+	if containsAll(added, "-j DROP") {
+		t.Errorf("applyDiff must never touch the catch-all DROP, got %v", cmds[0])
 	}
 }
 
@@ -245,9 +308,10 @@ func TestApplyDiff_Remove(t *testing.T) {
 		t.Fatalf("applyDiff: %v", err)
 	}
 
-	// Expected: -D catch-all, -D for 8.8.8.8/32, -D for 1.1.1.1/32, -A catch-all
-	if len(cmds) != 4 {
-		t.Fatalf("expected 4 commands, got %d: %v", len(cmds), cmds)
+	// Fail-CLOSED: no DROP pivot. Only the two ACCEPT deletions (8.8.8.8/32,
+	// 1.1.1.1/32); the catch-all DROP is never removed or re-appended.
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d: %v", len(cmds), cmds)
 	}
 	deletedAccepts := 0
 	for _, c := range cmds {
@@ -276,9 +340,9 @@ func TestApplyDiff_Mixed(t *testing.T) {
 		t.Fatalf("applyDiff: %v", err)
 	}
 
-	// -D catch-all, -D 1.1.1.1, -A 8.8.8.8, -A catch-all
-	if len(cmds) != 4 {
-		t.Fatalf("expected 4 commands, got %d: %v", len(cmds), cmds)
+	// Fail-CLOSED: no DROP pivot. -D 1.1.1.1 (removed), -I 8.8.8.8 (added above DROP).
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d: %v", len(cmds), cmds)
 	}
 	if len(s.AllowedCIDRs) != 2 {
 		t.Errorf("expected 2 CIDRs after diff, got %d: %v", len(s.AllowedCIDRs), s.AllowedCIDRs)

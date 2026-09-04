@@ -196,33 +196,27 @@ func (fc *firewallController) installCatchAllDrop() error {
 		"-m", "comment", "--comment", "ovpn-admin: default-deny")
 }
 
-// removeCatchAllDrop снимает финальное DROP-правило (нужно для pivot'а при добавлении новых правил).
-func (fc *firewallController) removeCatchAllDrop() error {
-	return fc.iptCmd("-D", fc.chainName,
-		"-s", fc.vpnNet.String(),
-		"-j", "DROP",
-		"-m", "comment", "--comment", "ovpn-admin: default-deny")
-}
-
 // installRulesFor добавляет ACCEPT-правила для одной сессии (CN, VPN_IP, набор разрешённых CIDR).
-// Атомарно через pivot: снимает catch-all DROP → добавляет ACCEPT'ы → возвращает catch-all DROP.
-// Caller должен держать fc.mu.
+//
+// Fail-CLOSED: каждое ACCEPT-правило ВСТАВЛЯЕТСЯ над catch-all DROP через
+// `-I <chain> 2` (позиция 2 = сразу после stateful-return, который initChain
+// ставит первым правилом). Финальный DROP при этом НИКОГДА не снимается, поэтому
+// сбой iptables в середине может оставить лишь МЕНЬШЕ ACCEPT'ов, но не открытую
+// подсеть. Прежний вариант (снять DROP → добавить ACCEPT'ы → вернуть DROP) мог
+// оставить цепочку без защитного DROP при ошибке в середине (fail-OPEN).
+//
+// При любой ошибке возвращаем её — caller НЕ должен помечать сессию установленной,
+// чтобы следующий reconcile повторил установку. Caller должен держать fc.mu.
 func (fc *firewallController) installRulesFor(cn, vpnIP string, cidrs []string) error {
 	comment := "ovpn-admin: " + cn
-	if err := fc.removeCatchAllDrop(); err != nil {
-		// Catch-all может отсутствовать в момент install (например, при первичной reconcile).
-		log.Debugf("installRulesFor: removeCatchAllDrop (might not exist): %v", err)
-	}
 	for _, cidr := range cidrs {
-		if err := fc.iptCmd("-A", fc.chainName,
+		if err := fc.iptCmd("-I", fc.chainName, "2",
 			"-s", vpnIP, "-d", cidr, "-j", "ACCEPT",
 			"-m", "comment", "--comment", comment); err != nil {
-			// При ошибке пытаемся восстановить catch-all и пробрасываем
-			_ = fc.installCatchAllDrop()
 			return fmt.Errorf("install rule %s→%s: %w", vpnIP, cidr, err)
 		}
 	}
-	return fc.installCatchAllDrop()
+	return nil
 }
 
 // uninstallRulesFor удаляет ACCEPT-правила сессии. Catch-all DROP не трогаем — он остаётся последним.
@@ -272,11 +266,8 @@ func (fc *firewallController) applyDiff(s *fwSession, newCIDRs []string) error {
 		return nil
 	}
 
-	if err := fc.removeCatchAllDrop(); err != nil {
-		log.Debugf("applyDiff: removeCatchAllDrop: %v", err)
-	}
-
 	comment := "ovpn-admin: " + s.CN
+	// Удаление ACCEPT'ов не трогает catch-all DROP — best-effort.
 	for _, cidr := range toDel {
 		if err := fc.iptCmd("-D", fc.chainName,
 			"-s", s.VpnIP, "-d", cidr, "-j", "ACCEPT",
@@ -284,16 +275,15 @@ func (fc *firewallController) applyDiff(s *fwSession, newCIDRs []string) error {
 			log.Debugf("applyDiff: -D %s: %v", cidr, err)
 		}
 	}
+	// Fail-CLOSED: новые ACCEPT'ы ВСТАВЛЯЕМ над catch-all DROP (`-I <chain> 2`,
+	// как в installRulesFor). DROP при этом никогда не снимается — цепочка не
+	// может остаться открытой при сбое iptables в середине.
 	for _, cidr := range toAdd {
-		if err := fc.iptCmd("-A", fc.chainName,
+		if err := fc.iptCmd("-I", fc.chainName, "2",
 			"-s", s.VpnIP, "-d", cidr, "-j", "ACCEPT",
 			"-m", "comment", "--comment", comment); err != nil {
-			log.Warnf("applyDiff: -A %s: %v", cidr, err)
+			log.Warnf("applyDiff: -I %s: %v", cidr, err)
 		}
-	}
-
-	if err := fc.installCatchAllDrop(); err != nil {
-		return fmt.Errorf("restore catch-all DROP: %w", err)
 	}
 
 	s.AllowedCIDRs = append([]string(nil), newCIDRs...)
@@ -439,7 +429,11 @@ func (fc *firewallController) handleEvent(ev fwEvent) {
 			return
 		}
 		if err := fc.installRulesFor(ev.CN, ev.VpnIP, cidrs); err != nil {
+			// Fail-CLOSED: НЕ помечаем сессию установленной. Оставляем её вне
+			// fc.sessions, чтобы следующий reconcile (selfHealLoop) повторил
+			// установку правил, вместо того чтобы навсегда пропустить её.
 			log.Warnf("firewall: installRulesFor(%s): %v", ev.CN, err)
+			return
 		}
 		fc.sessions[ev.CN] = &fwSession{CN: ev.CN, VpnIP: ev.VpnIP, AllowedCIDRs: cidrs, RulesInstalled: true}
 
