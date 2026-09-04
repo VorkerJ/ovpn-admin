@@ -17,6 +17,11 @@ import (
 // decode certificate from PEM to x509
 func decodeCert(certPEMBytes []byte) (cert *x509.Certificate, err error) {
 	certPem, _ := pem.Decode(certPEMBytes)
+	// pem.Decode returns nil when the input holds no PEM block (empty/corrupt
+	// data). Guard before dereferencing .Bytes to avoid a nil-pointer panic.
+	if certPem == nil {
+		return nil, errors.New("failed to decode certificate: no PEM block found")
+	}
 	certPemBytes := certPem.Bytes
 
 	cert, err = x509.ParseCertificate(certPemBytes)
@@ -30,6 +35,10 @@ func decodeCert(certPEMBytes []byte) (cert *x509.Certificate, err error) {
 // decode private key from PEM to RSA format
 func decodePrivKey(privKey []byte) (key *rsa.PrivateKey, err error) {
 	privKeyPem, _ := pem.Decode(privKey)
+	// Guard against a nil block (no PEM data) before dereferencing .Bytes.
+	if privKeyPem == nil {
+		return nil, errors.New("failed to decode private key: no PEM block found")
+	}
 	key, err = x509.ParsePKCS1PrivateKey(privKeyPem.Bytes)
 	if err == nil {
 		return

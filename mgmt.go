@@ -60,6 +60,13 @@ func (oAdmin *OvpnAdmin) mgmtConnectedUsersParser(text, serverName string) []cli
 		}
 		if isClientList {
 			user := strings.Split(txt, ",")
+			// A client-list row is: Common Name,Real Address,Bytes Received,
+			// Bytes Sent,Connected Since (indices 0..4). Guard the field count
+			// so a truncated/corrupt row skips instead of panicking on user[4].
+			if len(user) < 5 {
+				log.Warnf("mgmtConnectedUsersParser: skipping malformed client row: %q", txt)
+				continue
+			}
 
 			userName := user[0]
 			if isPhantomCN(userName) {
@@ -84,6 +91,12 @@ func (oAdmin *OvpnAdmin) mgmtConnectedUsersParser(text, serverName string) []cli
 		}
 		if isRouteTable {
 			user := strings.Split(txt, ",")
+			// A routing-table row is: Virtual Address,Common Name,Real
+			// Address,Last Ref (indices 0..3). Guard before user[1]/user[3].
+			if len(user) < 4 {
+				log.Warnf("mgmtConnectedUsersParser: skipping malformed route row: %q", txt)
+				continue
+			}
 			for i := range u {
 				if u[i].CommonName == user[1] {
 					u[i].VirtualAddress = user[0]
@@ -130,12 +143,18 @@ func (oAdmin *OvpnAdmin) mgmtGetActiveClients() ([]clientStatus, bool) {
 	ok := true
 
 	for srv, addr := range oAdmin.mgmtInterfaces {
-		conn, err := net.Dial("tcp", addr)
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
 			log.Warnf("openvpn mgmt interface for %s is not reachable by addr %s", srv, addr)
 			ok = false
 			continue
 		}
+		// Bound the whole exchange (welcome read + "status 1" write + status
+		// read). Without an absolute deadline a hung/half-open mgmt console
+		// would block mgmtRead's blocking conn.Read forever, and this runs on
+		// the 28s poll — a stuck poll would otherwise pin a goroutine and, via
+		// the single-flight guard, stall every later tick.
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 		oAdmin.mgmtRead(conn)            // read welcome message
 		conn.Write([]byte("status 1\n")) //nolint:errcheck
 		activeClients = append(activeClients, oAdmin.mgmtConnectedUsersParser(oAdmin.mgmtRead(conn), srv)...)
@@ -161,7 +180,7 @@ func (oAdmin *OvpnAdmin) mgmtSetTimeFormat() {
 		var conn net.Conn
 		var err error
 		for connAttempt := 0; connAttempt < 10; connAttempt++ {
-			conn, err = net.Dial("tcp", addr)
+			conn, err = net.DialTimeout("tcp", addr, 5*time.Second)
 			if err == nil {
 				log.Debugf("mgmtSetTimeFormat: successful connection to %s/%s", srv, addr)
 				break
@@ -173,6 +192,9 @@ func (oAdmin *OvpnAdmin) mgmtSetTimeFormat() {
 			break
 		}
 
+		// Bound the welcome+version exchange so a half-open console can't hang
+		// startup indefinitely in mgmtRead's blocking read.
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 		oAdmin.mgmtRead(conn)           // read welcome message
 		conn.Write([]byte("version\n")) //nolint:errcheck
 		out := oAdmin.mgmtRead(conn)
@@ -287,7 +309,10 @@ func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(serverName, addr string) error {
 	reader := bufio.NewReader(conn)
 
 	// Drain the welcome banner (OpenVPN prints a help-hint line at start).
-	if err := drainWelcome(reader, 5*time.Second); err != nil {
+	// The deadline is enforced on the underlying conn so a peer that never
+	// sends the banner cannot wedge us in ReadString; it is cleared once the
+	// banner arrives because the loop below legitimately blocks between events.
+	if err := drainWelcome(conn, reader, 5*time.Second); err != nil {
 		return fmt.Errorf("welcome: %w", err)
 	}
 
@@ -407,14 +432,17 @@ func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(serverName, addr string) error {
 }
 
 // drainWelcome reads until OpenVPN's banner line that ends with the
-// "type 'help'" hint, or until the deadline fires. The connection stays
-// open after this returns.
-func drainWelcome(r *bufio.Reader, timeout time.Duration) error {
+// "type 'help'" hint, or until the deadline fires. It sets a real read
+// deadline on the underlying conn so a blocking ReadString cannot hang
+// forever, then clears it before returning so the caller's long-lived event
+// loop can block between events. The connection stays open after this returns.
+func drainWelcome(conn net.Conn, r *bufio.Reader, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	_ = conn.SetReadDeadline(deadline)
+	// Clear the read deadline on the way out — the caller reads events
+	// indefinitely after the banner and must not inherit our deadline.
+	defer conn.SetReadDeadline(time.Time{}) //nolint:errcheck
 	for time.Now().Before(deadline) {
-		// SetReadDeadline only works on the underlying net.Conn — bufio
-		// will inherit it. We don't have a direct handle here, so we
-		// approximate by short reads.
 		line, err := r.ReadString('\n')
 		if err != nil {
 			return err

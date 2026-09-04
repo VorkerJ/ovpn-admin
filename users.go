@@ -31,8 +31,12 @@ func ovpnUserInitDb() {
 	// runBash(fmt.Sprintf(...)). Shell interpolation of *authDatabase was a
 	// command-injection vector if the operator pointed --auth-database at a
 	// path containing shell metacharacters.
-	log.Debug(runOpenvpnUser("--db.path", *authDatabase, "db-init"))
-	log.Debug(runOpenvpnUser("--db.path", *authDatabase, "db-migrate"))
+	// Init failures are non-fatal (subsequent password ops will surface a real
+	// error); just log at debug.
+	o, _ := runOpenvpnUser("--db.path", *authDatabase, "db-init")
+	log.Debug(o)
+	o, _ = runOpenvpnUser("--db.path", *authDatabase, "db-migrate")
+	log.Debug(o)
 }
 
 // mustJSONMsg encodes a "msg" envelope safely. Inline string concatenation in
@@ -50,15 +54,23 @@ func mustJSONMsg(msg string) string {
 	return string(data)
 }
 
-func runOpenvpnUser(args ...string) string {
+// runOpenvpnUser executes the openvpn-user CLI and returns its trimmed output
+// together with the process error. Callers on the password-auth path MUST check
+// the error and propagate it — otherwise a failed openvpn-user step (e.g. a
+// locked/permission-denied users.db) is silently swallowed and the API reports
+// success while the user's password state is wrong.
+//
+// It is a package var so tests can substitute a fake runner without spawning
+// the real binary.
+//
+// NOTE: the password is still passed as an argv --password flag (visible in
+// `ps aux` while the subprocess runs). Migrating it to stdin/env requires
+// upstream openvpn-user support we cannot verify here — a known limitation.
+var runOpenvpnUser = func(args ...string) (string, error) {
 	cmd := exec.Command("openvpn-user", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Redact --password values from logged args.
-		// NOTE: this only protects log streams; the password is still visible in
-		// `ps aux` while the subprocess runs because openvpn-user takes the
-		// password as an argv flag. Migrating to stdin/env requires upstream
-		// support that we cannot verify here.
 		safeArgs := make([]string, len(args))
 		copy(safeArgs, args)
 		for i, a := range safeArgs {
@@ -72,7 +84,7 @@ func runOpenvpnUser(args ...string) string {
 		}
 		log.Warnf("openvpn-user %v: %v: %s", head, err, string(out))
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(string(out)), err
 }
 
 // openvpnUserSucceeds runs openvpn-user and reports whether it exited 0. Used
@@ -337,8 +349,15 @@ func (oAdmin *OvpnAdmin) userRemovePasswordHandler(w http.ResponseWriter, r *htt
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
-	o := runOpenvpnUser("delete", "--db.path", *authDatabase, "--user", req.Username, "--force")
+	o, err := runOpenvpnUser("delete", "--db.path", *authDatabase, "--user", req.Username, "--force")
 	log.Debugf("userRemovePassword %s: %s", req.Username, o)
+	if err != nil {
+		// Don't report success when the openvpn-user delete failed — the user
+		// would keep their password entry while the UI showed it removed.
+		log.Errorf("userRemovePassword %s: %v", req.Username, err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to remove password")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "ok",
 		"message": "Пароль удалён — пользователь снова только по сертификату",
@@ -378,7 +397,7 @@ func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	connected, connections := isUserConnected(req.Username, oAdmin.activeClients)
+	connected, connections := isUserConnected(req.Username, oAdmin.snapshotActiveClients())
 	if !connected {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "disconnected": 0})
 		return
@@ -463,8 +482,15 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 	}
 
 	if *authByPassword {
-		o := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
+		o, err := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
 		log.Debug(o)
+		if err != nil {
+			// The cert is built but the password entry failed: a password-auth
+			// user without a users.db row cannot connect. Report failure rather
+			// than a misleading "created".
+			log.Errorf("userCreate: openvpn-user create %s: %v", username, err)
+			return false, fmt.Sprintf("Не удалось создать пароль пользователя: %v", err)
+		}
 	}
 
 	// Seed a clean CCD with the current Common Routes so the very first
@@ -493,7 +519,10 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 func (oAdmin *OvpnAdmin) userChangePassword(username, password string) (error, string) {
 
 	if checkUserExist(username) {
-		o := runOpenvpnUser("check", "--db.path", *authDatabase, "--user", username)
+		// "check" is a predicate (is there a row for this user?) — a non-nil
+		// error just means "no row", which is expected and handled below, so we
+		// don't propagate it.
+		o, _ := runOpenvpnUser("check", "--db.path", *authDatabase, "--user", username)
 		log.Debug(o)
 
 		if err := validatePassword(password); err != nil {
@@ -502,12 +531,22 @@ func (oAdmin *OvpnAdmin) userChangePassword(username, password string) (error, s
 		}
 
 		if !strings.Contains(o, username) {
-			o = runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
-			log.Debug(o)
+			co, err := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
+			log.Debug(co)
+			if err != nil {
+				log.Errorf("userChangePassword: openvpn-user create %s: %v", username, err)
+				return err, mustJSONMsg("failed to create password entry")
+			}
 		}
 
-		o = runOpenvpnUser("change-password", "--db.path", *authDatabase, "--user", username, "--password", password)
+		o, err := runOpenvpnUser("change-password", "--db.path", *authDatabase, "--user", username, "--password", password)
 		log.Debug(o)
+		if err != nil {
+			// Don't report success on a failed change — the old password would
+			// still be in effect while the UI claimed it changed.
+			log.Errorf("userChangePassword: openvpn-user change-password %s: %v", username, err)
+			return err, mustJSONMsg("failed to change password")
+		}
 
 		log.Infof("Password for user %s was changed", username)
 
@@ -519,7 +558,7 @@ func (oAdmin *OvpnAdmin) userChangePassword(username, password string) (error, s
 
 func (oAdmin *OvpnAdmin) getUserStatistic(username string) []clientStatus {
 	var userStatistic []clientStatus
-	for _, u := range oAdmin.activeClients {
+	for _, u := range oAdmin.snapshotActiveClients() {
 		if u.CommonName == username {
 			userStatistic = append(userStatistic, u)
 		}
@@ -539,12 +578,12 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 		}
 
 		if *authByPassword {
-			o := runOpenvpnUser("revoke", "--db.path", *authDatabase, "--user", username)
+			o, _ := runOpenvpnUser("revoke", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
 
 		crlFix()
-		userConnected, userConnectedTo := isUserConnected(username, oAdmin.activeClients)
+		userConnected, userConnectedTo := isUserConnected(username, oAdmin.snapshotActiveClients())
 		log.Tracef("User %s connected: %t", username, userConnected)
 		if userConnected {
 			for _, connection := range userConnectedTo {
@@ -567,7 +606,7 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 		}
 
 		if *authByPassword {
-			o := runOpenvpnUser("restore", "--db.path", *authDatabase, "--user", username)
+			o, _ := runOpenvpnUser("restore", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
 
@@ -581,7 +620,7 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string) {
 	if checkUserExist(username) {
 		if *authByPassword {
-			o := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
+			o, _ := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
 
@@ -591,7 +630,7 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 		}
 
 		if *authByPassword {
-			o := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", newPassword)
+			o, _ := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", newPassword)
 			log.Debug(o)
 		}
 
@@ -618,7 +657,17 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 		}
 
 		if *authByPassword {
-			_ = runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
+			// Propagate a failed password-DB delete: previously this was
+			// swallowed, so a locked/denied users.db returned 200 while the
+			// user's password entry (and thus VPN access) survived. Abort
+			// before deleting the cert so the state stays consistent and the
+			// handler reports a non-200.
+			if o, err := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username); err != nil {
+				log.Errorf("userDelete: openvpn-user delete %s: %v", username, err)
+				return err, mustJSONMsg(fmt.Sprintf("Failed to delete password entry for user %s: %v", username, err))
+			} else {
+				log.Debug(o)
+			}
 		}
 
 		if err := oAdmin.store.DeleteClient(username); err != nil {

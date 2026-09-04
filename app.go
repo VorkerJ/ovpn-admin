@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
 
@@ -38,9 +39,18 @@ type OvpnAdmin struct {
 	// clients is read by handlers and written by setState()/userListHandler.
 	// All access MUST go through updateClients / snapshotClients to honor
 	// clientsMu; direct access is a race that go test -race will flag.
-	clients              []OpenvpnClient
-	clientsMu            sync.RWMutex
-	activeClients        []clientStatus
+	clients   []OpenvpnClient
+	clientsMu sync.RWMutex
+	// activeClients is the last-polled set of connected clients. It is WRITTEN
+	// by setState (background poll) and READ by handlers; all access MUST go
+	// through setActiveClients / snapshotActiveClients to honor
+	// activeClientsMu — direct access is a race that go test -race will flag.
+	activeClients   []clientStatus
+	activeClientsMu sync.RWMutex
+	// setStateInFlight is a single-flight guard for setState: the 28s ticker
+	// launches setState in a goroutine, so a hung mgmt poll must not let ticks
+	// pile up goroutines. CAS 0->1 on entry, reset to 0 on exit.
+	setStateInFlight     int32
 	promRegistry         *prometheus.Registry
 	mgmtInterfaces       map[string]string
 	templates            fs.FS
@@ -76,6 +86,25 @@ func (oAdmin *OvpnAdmin) snapshotClients() []OpenvpnClient {
 	defer oAdmin.clientsMu.RUnlock()
 	out := make([]OpenvpnClient, len(oAdmin.clients))
 	copy(out, oAdmin.clients)
+	return out
+}
+
+// setActiveClients replaces the cached active-clients slice under
+// activeClientsMu. setState calls this after each mgmt poll.
+func (oAdmin *OvpnAdmin) setActiveClients(list []clientStatus) {
+	oAdmin.activeClientsMu.Lock()
+	oAdmin.activeClients = list
+	oAdmin.activeClientsMu.Unlock()
+}
+
+// snapshotActiveClients returns a defensive copy of the cached active-clients
+// slice. Every reader (handlers, usersList) MUST use this rather than touching
+// oAdmin.activeClients directly, so concurrent setState writes don't race.
+func (oAdmin *OvpnAdmin) snapshotActiveClients() []clientStatus {
+	oAdmin.activeClientsMu.RLock()
+	defer oAdmin.activeClientsMu.RUnlock()
+	out := make([]clientStatus, len(oAdmin.activeClients))
+	copy(out, oAdmin.activeClients)
 	return out
 }
 
@@ -190,9 +219,20 @@ type clientStatus struct {
 }
 
 func (oAdmin *OvpnAdmin) setState() {
-	oAdmin.activeClients, _ = oAdmin.mgmtGetActiveClients()
+	// Single-flight: if a previous setState is still running (e.g. a mgmt poll
+	// is slow), skip this invocation rather than piling up goroutines. Combined
+	// with the DialTimeout/SetDeadline in mgmtGetActiveClients this bounds the
+	// resources one hung mgmt console can consume.
+	if !atomic.CompareAndSwapInt32(&oAdmin.setStateInFlight, 0, 1) {
+		log.Debug("setState: previous run still in flight; skipping this tick")
+		return
+	}
+	defer atomic.StoreInt32(&oAdmin.setStateInFlight, 0)
+
+	active, _ := oAdmin.mgmtGetActiveClients()
+	oAdmin.setActiveClients(active)
 	if oAdmin.traffic != nil {
-		oAdmin.traffic.update(oAdmin.activeClients)
+		oAdmin.traffic.update(active)
 		oAdmin.traffic.persist()
 	}
 	oAdmin.updateClients()
@@ -222,6 +262,10 @@ func (oAdmin *OvpnAdmin) usersList() []OpenvpnClient {
 	connectedUniqUsers := 0
 	totalActiveConnections := 0
 	apochNow := time.Now().Unix()
+
+	// Snapshot the active-clients set once (under lock) for the whole pass so we
+	// neither race the background setState writer nor re-lock per row.
+	activeClients := oAdmin.snapshotActiveClients()
 
 	// Per-user "has VPN password" — one DB read for the whole list, only when
 	// password auth is active (env global or the server-config toggle).
@@ -255,7 +299,7 @@ func (oAdmin *OvpnAdmin) usersList() []OpenvpnClient {
 			ovpnClient.Connections = 0
 			ovpnClient.PasswordRequired = pwUsers[line.Identity]
 
-			userConnected, userConnectedTo := isUserConnected(line.Identity, oAdmin.activeClients)
+			userConnected, userConnectedTo := isUserConnected(line.Identity, activeClients)
 			if userConnected {
 				ovpnClient.ConnectionStatus = "Connected"
 				for range userConnectedTo {
@@ -377,8 +421,21 @@ func indexTxtParser(txt string) []indexTxtLine {
 			switch {
 			// case strings.HasPrefix(str[0], "E"):
 			case strings.HasPrefix(str[0], "V"):
+				// A valid "V" line has: Flag Expiration Serial Filename DN
+				// (indices 0..4). Guard the field count so a short/corrupt
+				// line skips instead of panicking on str[4].
+				if len(str) < 5 {
+					log.Warnf("indexTxtParser: skipping malformed 'V' line: %q", v)
+					continue
+				}
 				indexTxt = append(indexTxt, indexTxtLine{Flag: str[0], ExpirationDate: str[1], SerialNumber: str[2], Filename: str[3], DistinguishedName: str[4], Identity: str[4][strings.Index(str[4], "=")+1:]})
 			case strings.HasPrefix(str[0], "R"):
+				// A valid "R" line has: Flag Expiration Revocation Serial
+				// Filename DN (indices 0..5). Guard before str[5].
+				if len(str) < 6 {
+					log.Warnf("indexTxtParser: skipping malformed 'R' line: %q", v)
+					continue
+				}
 				indexTxt = append(indexTxt, indexTxtLine{Flag: str[0], ExpirationDate: str[1], RevocationDate: str[2], SerialNumber: str[3], Filename: str[4], DistinguishedName: str[5], Identity: str[5][strings.Index(str[5], "=")+1:]})
 			}
 		}
