@@ -115,6 +115,12 @@ func (oAdmin *OvpnAdmin) mfaConfirmHandler(w http.ResponseWriter, r *http.Reques
 	rec.BackupCodes = hashedCodes
 	oAdmin.mfaStore.set(user, rec)
 
+	// Enabling MFA invalidates every prior session for this user. The session
+	// that performed the enrollment was password-only (it predates MFA), so it
+	// must not keep operating as if it had cleared the second factor — the admin
+	// re-logs in through the TOTP step.
+	bumpUserEpoch(user)
+
 	log.Infof("MFA: user %s confirmed TOTP setup", user)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -276,7 +282,9 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 
 	recordLoginSuccess(ip, user)
 
-	token := signSession(user)
+	// mfaSatisfied=true: the second factor was just verified above, so this
+	// session is allowed to pass the MFA gate (adminHasMfa).
+	token := signSession(user, true)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,

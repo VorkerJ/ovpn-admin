@@ -93,7 +93,7 @@ func TestRequireAuth_ForcedChange_BlocksNonAllowlisted(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/users/list", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin")})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin", true)})
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 
@@ -122,7 +122,7 @@ func TestRequireAuth_ForcedChange_AllowsChangeEndpoint(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/change-password", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin")})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin", true)})
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 
@@ -154,7 +154,7 @@ func TestAdminChangePassword_RotatesAndClearsGate(t *testing.T) {
 	// wrong current password → 401, gate stays.
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/change-password",
 		strings.NewReader(`{"current_password":"nope","new_password":"`+newPass+`"}`))
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin")})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin", true)})
 	rec := httptest.NewRecorder()
 	app.adminChangePasswordHandler(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -167,7 +167,7 @@ func TestAdminChangePassword_RotatesAndClearsGate(t *testing.T) {
 	// valid change → 200, gate cleared, old password no longer valid.
 	req = httptest.NewRequest(http.MethodPost, "/api/admin/change-password",
 		strings.NewReader(`{"current_password":"`+oldPass+`","new_password":"`+newPass+`"}`))
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin")})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin", true)})
 	rec = httptest.NewRecorder()
 	app.adminChangePasswordHandler(rec, req)
 	if rec.Code != http.StatusOK {

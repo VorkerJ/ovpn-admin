@@ -487,11 +487,16 @@ func (oAdmin *OvpnAdmin) adminHasMfa(r *http.Request) bool {
 	if mfaRequired != nil && !*mfaRequired {
 		return true // explicit opt-out
 	}
-	user := oAdmin.sessionUser(r)
-	if user == "" {
+	p, ok := sessionPayloadFromRequest(r)
+	if !ok || p.User == "" {
 		return false
 	}
-	return oAdmin.mfaStore.isEnabled(user)
+	// This session is MFA-authorized only if BOTH the account has MFA enabled
+	// AND this particular session actually cleared the second factor when it was
+	// issued (p.MFA). A password-only session — e.g. one minted before MFA was
+	// enabled — fails p.MFA and is not authorized (and once the epoch bump on
+	// enable lands, it fails verification outright and never reaches here).
+	return p.MFA && oAdmin.mfaStore.isEnabled(p.User)
 }
 
 // serverSettingsHandler GET /api/server/settings.

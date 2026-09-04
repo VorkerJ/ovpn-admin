@@ -23,7 +23,7 @@ func TestMfaTokenIsNotASession(t *testing.T) {
 	}
 
 	// A real session must still work, and must NOT be usable as an MFA token.
-	sess := signSession("admin")
+	sess := signSession("admin", true)
 	if u, ok := verifySession(sess); !ok || u != "admin" {
 		t.Fatalf("a genuine session must verify: ok=%v user=%q", ok, u)
 	}

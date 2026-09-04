@@ -249,7 +249,7 @@ func newTestAdminWithMFA(t *testing.T) (*OvpnAdmin, string) {
 func sessionCookie(user string) *http.Cookie {
 	return &http.Cookie{
 		Name:  sessionCookieName,
-		Value: signSession(user),
+		Value: signSession(user, true),
 	}
 }
 
@@ -421,6 +421,11 @@ func TestMfaSetup_Confirm_Cycle(t *testing.T) {
 	if len(backupCodes) != 8 {
 		t.Fatalf("expected 8 backup codes, got %d", len(backupCodes))
 	}
+
+	// Enabling MFA bumps the user's session epoch, so the enrolling session is
+	// now invalid (the real UI re-logs in through the TOTP step). Mint a fresh
+	// post-enrollment cookie before checking status.
+	cookie = sessionCookie("testadmin")
 
 	// Step 3: GET /api/mfa/status → enabled: true
 	req3 := httptest.NewRequest(http.MethodGet, "/api/mfa/status", nil)

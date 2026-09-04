@@ -66,6 +66,25 @@ var revokedTokens = map[string]int64{}
 var revokedTokensMu sync.Mutex
 var revokedTokensFile string
 
+// maxRevokedTokens caps the logout blacklist. revokeToken only ever records a
+// genuine, HMAC-verified session (see there), so this is a belt-and-suspenders
+// bound: even a legitimate user churning through sessions cannot grow the map
+// past a session-TTL worth of entries, and the cap keeps the on-disk JSON
+// bounded regardless.
+const maxRevokedTokens = 10000
+
+// sessionEpochs holds a per-user monotonic session epoch. It is embedded in
+// every issued session token; verifySession rejects any token whose epoch does
+// not match the user's current epoch. Bumping a user's epoch (on password
+// change or MFA enable) therefore invalidates every session issued before the
+// bump — old sessions die instead of silently retaining access.
+//
+// Stored in its own file (not in totp.go's mfaStore) so the auth layer owns its
+// invalidation state end to end.
+var sessionEpochs = map[string]int64{}
+var sessionEpochsMu sync.Mutex
+var sessionEpochsFile string
+
 // sessionSigningKey is a 64-byte random key persisted to disk. It signs
 // session and MFA tokens, and is the input to the MFA-secret encryption key.
 // Decoupled from htpasswd so that a password change does not invalidate
@@ -252,6 +271,54 @@ func loadRevokedTokens() {
 	}
 }
 
+// loadSessionEpochs reads the persisted per-user session epochs from disk.
+func loadSessionEpochs() {
+	if sessionEpochsFile == "" {
+		return
+	}
+	data, err := os.ReadFile(sessionEpochsFile)
+	if err != nil {
+		return // file doesn't exist yet — every user starts at epoch 0
+	}
+	sessionEpochsMu.Lock()
+	defer sessionEpochsMu.Unlock()
+	_ = json.Unmarshal(data, &sessionEpochs)
+}
+
+// saveSessionEpochs persists the per-user session epochs to disk.
+func saveSessionEpochs() {
+	if sessionEpochsFile == "" {
+		return
+	}
+	sessionEpochsMu.Lock()
+	data, _ := json.Marshal(sessionEpochs)
+	sessionEpochsMu.Unlock()
+	if err := writeFileAtomicSecret(sessionEpochsFile, data); err != nil {
+		log.Warnf("failed to persist session epochs: %v", err)
+	}
+}
+
+// getUserEpoch returns the current session epoch for user (0 if never bumped).
+func getUserEpoch(user string) int64 {
+	sessionEpochsMu.Lock()
+	defer sessionEpochsMu.Unlock()
+	return sessionEpochs[user]
+}
+
+// bumpUserEpoch increments the user's session epoch and persists it. Every
+// session token issued before this call embeds the old epoch and is rejected by
+// verifySession afterwards. Called when the admin's password changes and when
+// MFA is enabled, so those actions kill all prior sessions.
+func bumpUserEpoch(user string) {
+	if user == "" {
+		return
+	}
+	sessionEpochsMu.Lock()
+	sessionEpochs[user]++
+	sessionEpochsMu.Unlock()
+	saveSessionEpochs()
+}
+
 // saveRevokedTokens writes the current blacklist to disk.
 func saveRevokedTokens() {
 	if revokedTokensFile == "" {
@@ -351,6 +418,11 @@ func initAuth() {
 
 	loadRevokedTokens()
 
+	// Per-user session epochs — bumped on password change / MFA enable to
+	// invalidate every session issued before the change.
+	sessionEpochsFile = filepath.Join(stateDir, ".session_epochs.json")
+	loadSessionEpochs()
+
 	// Bound memory growth of the loginAttempts map. Entries are created on
 	// every distinct IP and per-username key; without the janitor a constant
 	// trickle of failed logins from unique IPs leaks ~256 bytes forever.
@@ -382,6 +454,7 @@ func migrateLegacyAuthState(stateDir, legacyDir string) {
 		"_mfa_secrets.json",
 		".session_signing_key",
 		".session_blacklist.json",
+		".session_epochs.json",
 		"api_tokens.json",
 		"traffic.json",
 		".ovpn-admin-admin.htpasswd",
@@ -566,14 +639,28 @@ type sessionPayload struct {
 	User    string `json:"u"`
 	Exp     int64  `json:"exp"`
 	Purpose string `json:"p,omitempty"`
+	// MFA records whether the second factor was actually satisfied when THIS
+	// session was minted (true only after a successful TOTP/backup-code verify).
+	// adminHasMfa requires it, so a password-only session issued before the
+	// account enabled MFA can never pass the MFA gate.
+	MFA bool `json:"mfa,omitempty"`
+	// Epoch is the user's session epoch at issue time. verifySession rejects the
+	// token once the user's current epoch advances past it (on password change
+	// or MFA enable), invalidating every session minted before that event.
+	Epoch int64 `json:"e,omitempty"`
 }
 
-func signSession(user string) string {
+// signSession mints a full session token. mfaSatisfied MUST be true only when
+// the caller has actually verified the second factor for this login (or MFA is
+// not applicable); it is embedded in the token and enforced by adminHasMfa.
+func signSession(user string, mfaSatisfied bool) string {
 	secret := sessionSecret()
 	p := sessionPayload{
 		User:    user,
 		Exp:     time.Now().Add(sessionTTL).Unix(),
 		Purpose: "session",
+		MFA:     mfaSatisfied,
+		Epoch:   getUserEpoch(user),
 	}
 	data, _ := json.Marshal(p)
 	enc := base64.RawURLEncoding.EncodeToString(data)
@@ -581,23 +668,27 @@ func signSession(user string) string {
 	return enc + "." + mac
 }
 
-func verifySession(token string) (string, bool) {
+// verifySessionPayload validates a session token's HMAC, purpose, expiry,
+// per-user epoch and revocation state, returning the decoded payload on success.
+// It is the single source of truth for "is this a genuine, currently-valid
+// session"; verifySession, revokeToken and adminHasMfa all route through it.
+func verifySessionPayload(token string) (sessionPayload, bool) {
 	secret := sessionSecret()
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
-		return "", false
+		return sessionPayload{}, false
 	}
 	enc, mac := parts[0], parts[1]
 	if !hmac.Equal([]byte(computeHMAC(enc, secret)), []byte(mac)) {
-		return "", false
+		return sessionPayload{}, false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(enc)
 	if err != nil {
-		return "", false
+		return sessionPayload{}, false
 	}
 	var p sessionPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return "", false
+		return sessionPayload{}, false
 	}
 	// Require an explicit session purpose. An intermediate MFA token serializes
 	// its purpose under a different JSON key ("purpose" vs our "p"), so it parses
@@ -606,45 +697,91 @@ func verifySession(token string) (string, bool) {
 	// Legacy empty-purpose tokens (pre-dating this field) are intentionally no
 	// longer accepted; their holders simply re-login.
 	if p.Purpose != "session" {
-		return "", false
+		return sessionPayload{}, false
 	}
 	if time.Now().Unix() > p.Exp {
-		return "", false
+		return sessionPayload{}, false
+	}
+	// Per-user epoch: a token whose epoch trails the user's current epoch was
+	// minted before a password change or MFA-enable and is no longer valid.
+	if p.Epoch != getUserEpoch(p.User) {
+		return sessionPayload{}, false
 	}
 	// Проверяем blacklist (токен отозван при логауте)
 	revokedTokensMu.Lock()
 	_, revoked := revokedTokens[mac]
 	revokedTokensMu.Unlock()
 	if revoked {
+		return sessionPayload{}, false
+	}
+	return p, true
+}
+
+func verifySession(token string) (string, bool) {
+	p, ok := verifySessionPayload(token)
+	if !ok {
 		return "", false
 	}
 	return p.User, true
 }
 
-// revokeToken добавляет токен в blacklist до истечения его TTL.
+// sessionPayloadFromRequest returns the verified session payload carried by r's
+// session cookie, if any. Used by callers that need more than the username
+// (e.g. the MFA flag) from a validated session.
+func sessionPayloadFromRequest(r *http.Request) (sessionPayload, bool) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return sessionPayload{}, false
+	}
+	return verifySessionPayload(cookie.Value)
+}
+
+// revokeToken blacklists a session token until its TTL expires.
+//
+// SECURITY: the token MUST first pass full session verification (HMAC, purpose,
+// expiry, epoch). /api/logout is a PUBLIC route, so without this gate an
+// unauthenticated attacker could POST arbitrary "enc.mac" values with a
+// far-future exp — growing revokedTokens without bound (the far-future exp
+// never expires out) and rewriting the on-disk blacklist on every request, a
+// cheap DoS. An unverified or absent token is a silent no-op; only genuine,
+// currently-valid server-issued sessions are recorded.
 func revokeToken(token string) {
+	p, ok := verifySessionPayload(token)
+	if !ok {
+		return // not a genuine, currently-valid session — nothing to revoke
+	}
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
 		return
 	}
-	enc, mac := parts[0], parts[1]
-	raw, err := base64.RawURLEncoding.DecodeString(enc)
-	if err != nil {
-		return
+	mac := parts[1]
+
+	// Use the VERIFIED exp, and clamp to the max session TTL so a payload can
+	// never pin an entry in the map beyond how long a real session could live.
+	exp := p.Exp
+	if maxExp := time.Now().Add(sessionTTL).Unix(); exp > maxExp {
+		exp = maxExp
 	}
-	var p sessionPayload
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return
-	}
+
 	revokedTokensMu.Lock()
-	revokedTokens[mac] = p.Exp
 	// Очищаем просроченные записи
 	now := time.Now().Unix()
-	for k, exp := range revokedTokens {
-		if now > exp {
+	for k, e := range revokedTokens {
+		if now > e {
 			delete(revokedTokens, k)
 		}
 	}
+	// Defensive cap (see maxRevokedTokens). Should never trigger in practice
+	// now that only verified sessions are recorded; if it does, drop this
+	// revocation rather than grow unbounded — the session still expires at exp.
+	if len(revokedTokens) >= maxRevokedTokens {
+		if _, already := revokedTokens[mac]; !already {
+			revokedTokensMu.Unlock()
+			log.Warnf("revoked-token blacklist at cap (%d); skipping revocation", maxRevokedTokens)
+			return
+		}
+	}
+	revokedTokens[mac] = exp
 	revokedTokensMu.Unlock()
 
 	saveRevokedTokens()
@@ -721,7 +858,11 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 	// No MFA: full authentication achieved, safe to clear the counters.
 	recordLoginSuccess(ip, user)
 
-	token := signSession(user)
+	// mfaSatisfied=false: this session never cleared a second factor. It stays
+	// fully usable while the account has no MFA, but the moment MFA is enabled
+	// the account's epoch bumps and this token is rejected outright — so it can
+	// never linger as a password-only session with MFA-gated access.
+	token := signSession(user, false)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
@@ -878,6 +1019,11 @@ func (oAdmin *OvpnAdmin) adminChangePasswordHandler(w http.ResponseWriter, r *ht
 	htpasswdUsers[user] = string(hash)
 	adminPasswordMustChange = false
 	adminAuthMu.Unlock()
+
+	// Invalidate every session issued under the old password (including the one
+	// making this request). A stolen pre-change session cookie must not survive
+	// a password rotation.
+	bumpUserEpoch(user)
 
 	if err := saveAdminHtpasswd(adminHtpasswdPersistPath); err != nil {
 		// Non-fatal: the change is live in memory for this process. Surface it

@@ -63,7 +63,7 @@ func TestAdminHasMfa_SessionWithoutMfa(t *testing.T) {
 	mfaRequired = &on
 	defer func() { mfaRequired = prev }()
 
-	token := signSession("testuser")
+	token := signSession("testuser", false)
 	req := httptest.NewRequest(http.MethodPost, "/api/user/create", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 
@@ -72,11 +72,15 @@ func TestAdminHasMfa_SessionWithoutMfa(t *testing.T) {
 	}
 }
 
-// TestAdminHasMfa_SessionWithMfa — валидная сессия + MFA enabled = true.
-func TestAdminHasMfa_SessionWithMfa(t *testing.T) {
+// TestAdminHasMfa_SessionMustHaveClearedSecondFactor asserts the CORRECT
+// behavior: having MFA enabled on the account is not enough — the session
+// itself must have cleared the second factor when it was issued. A password-only
+// session (mfaSatisfied=false) is NOT MFA-authorized even though the account has
+// MFA enabled; only a session minted after a successful TOTP verify is.
+func TestAdminHasMfa_SessionMustHaveClearedSecondFactor(t *testing.T) {
 	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
-	app.mfaStore.set("testuser", mfaRecord{
+	app.mfaStore.set("mfauser_a", mfaRecord{
 		Secret:  "JBSWY3DPEHPK3PXP",
 		Enabled: true,
 	})
@@ -86,12 +90,69 @@ func TestAdminHasMfa_SessionWithMfa(t *testing.T) {
 	mfaRequired = &on
 	defer func() { mfaRequired = prev }()
 
-	token := signSession("testuser")
-	req := httptest.NewRequest(http.MethodPost, "/api/user/create", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	// Password-only session: account has MFA, but this session never cleared it.
+	pwOnly := signSession("mfauser_a", false)
+	reqPw := httptest.NewRequest(http.MethodPost, "/api/user/create", nil)
+	reqPw.AddCookie(&http.Cookie{Name: sessionCookieName, Value: pwOnly})
+	if app.adminHasMfa(reqPw) {
+		t.Fatal("SECURITY: a password-only session must not pass the MFA gate even when the account has MFA enabled")
+	}
 
-	if !app.adminHasMfa(req) {
-		t.Fatal("expected true when user has MFA enabled")
+	// Session minted after a successful second-factor verify: authorized.
+	full := signSession("mfauser_a", true)
+	reqFull := httptest.NewRequest(http.MethodPost, "/api/user/create", nil)
+	reqFull.AddCookie(&http.Cookie{Name: sessionCookieName, Value: full})
+	if !app.adminHasMfa(reqFull) {
+		t.Fatal("expected true for a session that cleared the second factor")
+	}
+}
+
+// TestSessionEpoch_MfaEnableInvalidatesPriorSessions asserts that enabling MFA
+// bumps the user's epoch, so a session issued before the bump no longer
+// verifies (and thus can't retain access). This is the invalidation half of
+// FINDING #3: old password-only sessions die when MFA is turned on.
+func TestSessionEpoch_MfaEnableInvalidatesPriorSessions(t *testing.T) {
+	ensureSigningKey()
+
+	user := "epoch_mfa_user"
+	before := signSession(user, false)
+	if _, ok := verifySession(before); !ok {
+		t.Fatal("session must verify before the epoch bump")
+	}
+
+	// Simulate what mfaConfirmHandler does on enable.
+	bumpUserEpoch(user)
+
+	if _, ok := verifySession(before); ok {
+		t.Fatal("SECURITY: a session issued before MFA enable must be rejected after the epoch bump")
+	}
+	// A freshly minted session (post-bump) must still work.
+	after := signSession(user, true)
+	if _, ok := verifySession(after); !ok {
+		t.Fatal("a session minted after the epoch bump must verify")
+	}
+}
+
+// TestSessionEpoch_PasswordChangeInvalidatesPriorSessions asserts that bumping
+// the epoch (as adminChangePasswordHandler does on a password change) kills
+// sessions issued under the old password.
+func TestSessionEpoch_PasswordChangeInvalidatesPriorSessions(t *testing.T) {
+	ensureSigningKey()
+
+	user := "epoch_pw_user"
+	old := signSession(user, true)
+	if _, ok := verifySession(old); !ok {
+		t.Fatal("session must verify before the password change")
+	}
+
+	bumpUserEpoch(user) // password change invalidates prior sessions
+
+	if _, ok := verifySession(old); ok {
+		t.Fatal("SECURITY: a session issued before a password change must be rejected")
+	}
+	fresh := signSession(user, true)
+	if _, ok := verifySession(fresh); !ok {
+		t.Fatal("a session minted after the password change must verify")
 	}
 }
 
@@ -142,7 +203,7 @@ func TestRequireAdminMfa_PassesThroughWhenEnabled(t *testing.T) {
 	mfaRequired = &on
 	defer func() { mfaRequired = prev }()
 
-	token := signSession("testuser")
+	token := signSession("testuser", true)
 	called := false
 	handler := app.requireAdminMfa(func(w http.ResponseWriter, r *http.Request) {
 		called = true
