@@ -5,6 +5,52 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.58] — 2026-09-04
+
+Second security audit — critical/high findings (P0/P1). P2 quality items tracked separately.
+
+### Security
+
+- **P0 — delete/rotate now cryptographically revoke the certificate.** On the
+  kubernetes.secrets backend, deleting or rotating a user only relabelled the
+  Secret; it never set `revokedAt`, so the old serial never entered the CRL and
+  the removed user could reconnect with their old `.ovpn` (rotate reused the CN,
+  making it worse). Delete/rotate now set `revokedAt` before the Secret update,
+  regenerate the CRL, and VERIFY the revoked serial is actually present in the
+  CRL before returning success. The filesystem backend now distinguishes
+  "already revoked" from a real revoke failure and aborts (instead of reporting
+  a false success) on a genuine error.
+- **P0 — firewall state is transactional and no longer leaks ACCESS.**
+  `applyDiff`/disconnect updated in-memory state even when the iptables command
+  failed, so a failed rule delete was forgotten and a later VPN-IP reuse could
+  inherit stale access. State now changes only for commands that actually
+  succeeded, failed deletes are tracked and retried, sessions are keyed by
+  (CN, VPN-IP) so duplicate-cn connections are tracked independently, and domain
+  routes are enforced via their resolved IPs. (fail-closed rule apply preserved.)
+- **P1 — API tokens can no longer export private keys by default.** A
+  service-account token was allowed on every `/api/user*` path, including
+  `config/show` which returns the client private key. That endpoint is now
+  default-denied for bearer tokens unless the token has an explicit
+  `allow_config_export` capability; human MFA sessions are unaffected.
+- **P1 — session signing key can't be planted via shared /tmp.** The key file is
+  now `Lstat`-checked (symlink rejected) and required to be a regular file owned
+  by the process user with no group/world access before it is trusted; otherwise
+  startup fails closed.
+- **P1 — login rate limiter can't be used to remotely lock out an admin or grow
+  memory unbounded.** An account is locked only after failures from multiple
+  distinct IPs (a single attacker IP can't lock a victim), the janitor now
+  expires stale partial-failure entries with a TTL and caps total tracked
+  entries, and `X-Forwarded-For` is parsed right-to-left to the first untrusted
+  hop.
+
+### Fixed
+
+- **A failed management poll no longer looks like every client disconnecting.**
+  `setState` ignored the ok flag from `mgmtGetActiveClients` and overwrote the
+  cached snapshot with an empty set on a transient mgmt failure, causing false
+  disconnect events and corrupted traffic accounting. It now keeps the
+  last-known snapshot when the poll fails.
+
 ## [2.0.57] — 2026-09-04
 
 Security-review follow-up, part 3 (final — all reviewer findings addressed).
