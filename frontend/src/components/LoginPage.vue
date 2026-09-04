@@ -4,7 +4,7 @@ import { ref } from 'vue'
 import Input from '@/components/ui/Input.vue'
 import OtpInput from '@/components/ui/OtpInput.vue'
 import Button from '@/components/ui/Button.vue'
-import { loginMfa } from '@/api.js'
+import { login, loginMfa } from '@/api.js'
 
 const emit = defineEmits(['login'])
 
@@ -32,24 +32,19 @@ async function submit() {
   }
   loading.value = true
   try {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: username.value, password: password.value }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (res.ok) {
-      if (data.mfa_required) {
-        mfaToken.value = data.mfa_token
-        mfaStep.value = true
-      } else {
-        emit('login')
-      }
+    const data = await login(username.value, password.value)
+    if (data.mfa_required) {
+      mfaToken.value = data.mfa_token
+      mfaStep.value = true
     } else {
-      error.value = data.error || 'Неверный логин или пароль'
+      emit('login')
     }
-  } catch {
-    error.value = 'Ошибка подключения к серверу'
+  } catch (e) {
+    if (e.response) {
+      error.value = e.response.data?.error || 'Неверный логин или пароль'
+    } else {
+      error.value = 'Ошибка подключения к серверу'
+    }
   } finally {
     loading.value = false
   }

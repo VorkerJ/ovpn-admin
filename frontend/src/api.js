@@ -1,5 +1,25 @@
 import axios from 'axios'
 
+// Auth helpers go through the shared axios client (relative `api/...` paths) so
+// the same configured base — the page URL, which honours --listen.base-url —
+// applies here just like every other call. Do NOT use absolute `/api/...`:
+// that bypasses the base and breaks under a non-root base URL.
+export async function authCheck() {
+  await axios.get('api/auth/check')
+  return true
+}
+
+export async function logout() {
+  await axios.post('api/logout')
+}
+
+export async function login(username, password) {
+  const { data } = await axios.post('api/login', JSON.stringify({ username, password }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  return data
+}
+
 export async function fetchUsers() {
   const { data } = await axios.get('api/users/list')
   return Array.isArray(data) ? data : []

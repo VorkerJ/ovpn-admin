@@ -25,6 +25,7 @@ import ServerConfigView from '@/components/ServerConfigView.vue'
 import TrafficView from '@/components/TrafficView.vue'
 
 import {
+  authCheck, logout,
   fetchUsers, fetchServerSettings,
   createUser, revokeUser, unrevokeUser, rotateUser, deleteUser,
   changePassword, removePassword, fetchUserConfig, fetchUserCcd, applyCcd, refreshUserCcdDns, importUserCcd
@@ -36,8 +37,8 @@ const authChecked = ref(false)
 
 async function checkAuth() {
   try {
-    const res = await fetch('/api/auth/check')
-    authenticated.value = res.ok
+    await authCheck()
+    authenticated.value = true
   } catch {
     authenticated.value = false
   }
@@ -49,7 +50,11 @@ async function checkAuth() {
 }
 
 async function handleLogout() {
-  await fetch('/api/logout', { method: 'POST' })
+  try {
+    await logout()
+  } catch {
+    // ignore — drop to the login screen regardless
+  }
   authenticated.value = false
 }
 

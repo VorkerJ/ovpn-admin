@@ -18,6 +18,16 @@ import (
 	"io/fs"
 )
 
+// TestMain mirrors production startup: main() calls kingpin.Parse(), which
+// applies the "/" default to --listen.base-url. Tests never call Parse(), so
+// without this the flag pointer holds "" and prefix-stripping (which now uses
+// the configured *listenBaseUrl) would not match the "/api/..." request paths
+// the handler tests build. Set it once for the whole package.
+func TestMain(m *testing.M) {
+	*listenBaseUrl = "/"
+	os.Exit(m.Run())
+}
+
 func TestValidateCommonRoute_IP_OK(t *testing.T) {
 	t.Parallel()
 	e := CommonRouteEntry{Kind: "ip", Address: "10.0.0.0", Mask: "255.255.0.0", Description: "lan"}
@@ -606,6 +616,62 @@ func TestCommonRoutesHandler_POST_RejectsDuplicate(t *testing.T) {
 		if i == 1 && rec.Code != http.StatusConflict {
 			t.Fatalf("expected 409 on duplicate, got %d", rec.Code)
 		}
+	}
+}
+
+// TestCommonRoutesItemHandler_BaseURL verifies the route id is extracted from
+// the request path by stripping the CONFIGURED --listen.base-url prefix, not a
+// hardcoded "/api/common-routes/". Under a non-root base URL (e.g. "/admin/")
+// the real path is "/admin/api/common-routes/<id>"; a hardcoded strip left the
+// id as "admin/api/common-routes/<id>" and the update/delete silently failed.
+//
+// Not parallel: it mutates the package-level *listenBaseUrl flag. Non-parallel
+// tests run to completion before any t.Parallel() test starts, so this cannot
+// race the parallel handler tests that also read *listenBaseUrl.
+func TestCommonRoutesItemHandler_BaseURL(t *testing.T) {
+	orig := *listenBaseUrl
+	defer func() { *listenBaseUrl = orig }()
+
+	cases := []struct {
+		name    string
+		baseURL string
+	}{
+		{"root", "/"},
+		{"subpath", "/admin/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			*listenBaseUrl = tc.baseURL
+			app := newTestAdmin(t)
+			id := "route-42"
+			app.commonRoutes.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{
+				{ID: id, Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0", Description: "old"},
+			}})
+
+			// PUT under the configured base URL updates the right entry.
+			path := tc.baseURL + "api/common-routes/" + id
+			body := []byte(`{"kind":"ip","address":"10.0.0.0","mask":"255.255.0.0","description":"new"}`)
+			req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			app.commonRoutesItemHandler(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("PUT %s: expected 200, got %d body=%s", path, rec.Code, rec.Body.String())
+			}
+			if got := app.commonRoutes.snapshot().Routes[0].Description; got != "new" {
+				t.Fatalf("PUT %s: update not applied, description=%q", path, got)
+			}
+
+			// DELETE under the same base URL removes it.
+			req = httptest.NewRequest(http.MethodDelete, path, nil)
+			rec = httptest.NewRecorder()
+			app.commonRoutesItemHandler(rec, req)
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("DELETE %s: expected 204, got %d body=%s", path, rec.Code, rec.Body.String())
+			}
+			if n := len(app.commonRoutes.snapshot().Routes); n != 0 {
+				t.Fatalf("DELETE %s: entry not deleted, %d remain", path, n)
+			}
+		})
 	}
 }
 

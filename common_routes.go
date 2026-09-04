@@ -335,8 +335,11 @@ func (oAdmin *OvpnAdmin) commonRoutesHandler(w http.ResponseWriter, r *http.Requ
 // Same multi-method pattern as commonRoutesHandler.
 func (oAdmin *OvpnAdmin) commonRoutesItemHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
-	// Strip prefix to extract id. listenBaseUrl may add a prefix.
-	id := strings.TrimPrefix(r.URL.Path, "/api/common-routes/")
+	// Strip the CONFIGURED prefix to extract the id — mirror exactly how the
+	// route is registered in main.go (*listenBaseUrl + "api/common-routes/").
+	// Hardcoding "/api/common-routes/" breaks under a non-root --listen.base-url
+	// (e.g. "/admin/"), where the real path is "/admin/api/common-routes/<id>".
+	id := strings.TrimPrefix(r.URL.Path, *listenBaseUrl+"api/common-routes/")
 	if idx := strings.Index(id, "/"); idx != -1 {
 		id = id[:idx]
 	}
