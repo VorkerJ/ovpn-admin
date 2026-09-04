@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"strings"
@@ -48,18 +51,95 @@ func (s *filesystemStore) BuildClient(commonName string) error {
 	return nil
 }
 
+// clientStatusInIndexTxt returns the index.txt flag ("V", "R", …) for commonName,
+// or "" if the CN is absent. Used to tell a benign "already revoked" from a
+// genuine easyrsa revoke failure, and to look up a serial for CRL verification.
+func (s *filesystemStore) clientStatusInIndexTxt(commonName string) (flag, serial string) {
+	for _, u := range indexTxtParser(fRead(s.indexTxtPath)) {
+		if u.DistinguishedName == "/CN="+commonName {
+			return u.Flag, u.SerialNumber
+		}
+	}
+	return "", ""
+}
+
+// crlContainsSerialHex parses the on-disk CRL and reports whether serialHex
+// (as stored in index.txt) is listed as revoked. Defense-in-depth: it re-reads
+// the artifact easyrsa just produced rather than trusting the exit code.
+func crlContainsSerialHex(crlPath, serialHex string) (bool, error) {
+	pemData, err := os.ReadFile(crlPath)
+	if err != nil {
+		return false, err
+	}
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return false, fmt.Errorf("no PEM block in %s", crlPath)
+	}
+	rl, err := x509.ParseRevocationList(block.Bytes)
+	if err != nil {
+		return false, err
+	}
+	want, ok := new(big.Int).SetString(strings.TrimSpace(serialHex), 16)
+	if !ok {
+		return false, fmt.Errorf("invalid serial %q", serialHex)
+	}
+	for i := range rl.RevokedCertificateEntries {
+		if rl.RevokedCertificateEntries[i].SerialNumber != nil &&
+			rl.RevokedCertificateEntries[i].SerialNumber.Cmp(want) == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// verifySerialInCRL asserts serialHex entered pki/crl.pem after a regen. Returns
+// an error the caller must propagate so the HTTP handler reports a non-200
+// instead of a false success while the cert is still valid.
+func (s *filesystemStore) verifySerialInCRL(commonName, serialHex string) error {
+	if serialHex == "" {
+		return fmt.Errorf("verify CRL for %s: no serial found in index.txt", commonName)
+	}
+	crlPath := fmt.Sprintf("%s/pki/crl.pem", s.easyrsaDirPath)
+	present, err := crlContainsSerialHex(crlPath, serialHex)
+	if err != nil {
+		return fmt.Errorf("verify CRL for %s: %w", commonName, err)
+	}
+	if !present {
+		return fmt.Errorf("verify CRL for %s: serial %s not present in regenerated CRL", commonName, serialHex)
+	}
+	return nil
+}
+
 func (s *filesystemStore) RevokeClient(commonName string) error {
+	// Capture the serial before the revoke changes index.txt, so we can verify
+	// the CRL afterwards.
+	_, serial := s.clientStatusInIndexTxt(commonName)
+
 	// --batch suppresses the interactive "Continue with revocation: yes/no?"
 	// prompt that previously required `echo yes |` shell piping.
 	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "revoke", commonName)
 	log.Debugln(out)
 	if err != nil {
-		return fmt.Errorf("easyrsa revoke %s: %w: %s", commonName, err, out)
+		// "Already revoked" is benign — proceed to regenerate the CRL so the
+		// serial is (still) present. Any OTHER failure means the cert was NOT
+		// revoked; abort rather than return a false success.
+		if flag, _ := s.clientStatusInIndexTxt(commonName); flag == "R" {
+			log.Warnf("revoke: %s already revoked, regenerating CRL: %s", commonName, out)
+		} else {
+			return fmt.Errorf("easyrsa revoke %s: %w: %s", commonName, err, out)
+		}
 	}
 	out, err = runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl")
 	log.Debugln(out)
 	if err != nil {
 		return fmt.Errorf("easyrsa gen-crl: %w: %s", err, out)
+	}
+
+	// Defense-in-depth: confirm the serial actually landed in the CRL.
+	if serial != "" {
+		if err := s.verifySerialInCRL(commonName, serial); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -198,13 +278,19 @@ func (s *filesystemStore) DeleteClient(commonName string) error {
 	// and tunnel traffic after the "delete" — defeating the whole point
 	// of the operation.
 	//
-	// Errors during revoke are logged but not fatal: if the cert was
-	// somehow already revoked or missing from issued/, we still want to
-	// finish the housekeeping (rename + file cleanup + CRL refresh) so
-	// the operator's intent — "user gone" — is honoured.
+	// A revoke failure is only benign when the cert was ALREADY revoked. Any
+	// other failure means the cert is still cryptographically valid — we must
+	// NOT proceed to remove it from the UI and report success, or the user
+	// keeps tunnelling with a cert that no longer appears anywhere. Distinguish
+	// the two by re-reading index.txt (status "R" == already revoked).
+	flag, serial := s.clientStatusInIndexTxt(commonName)
 	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "--batch", "revoke", commonName)
 	if err != nil {
-		log.Warnf("delete: easyrsa revoke %s: %v: %s", commonName, err, out)
+		if flag == "R" {
+			log.Warnf("delete: %s already revoked, proceeding with cleanup: %s", commonName, out)
+		} else {
+			return fmt.Errorf("delete: easyrsa revoke %s: %w: %s", commonName, err, out)
+		}
 	}
 
 	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
@@ -238,7 +324,14 @@ func (s *filesystemStore) DeleteClient(commonName string) error {
 	}
 
 	if crlOut, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl"); err != nil {
-		log.Warnf("delete: easyrsa gen-crl: %v: %s", err, crlOut)
+		return fmt.Errorf("delete: easyrsa gen-crl: %w: %s", err, crlOut)
+	}
+
+	// Defense-in-depth: the deleted user's serial must now be in the CRL.
+	if serial != "" {
+		if err := s.verifySerialInCRL(commonName, serial); err != nil {
+			return err
+		}
 	}
 
 	return nil

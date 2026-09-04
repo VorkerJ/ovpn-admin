@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"io/ioutil"
+	"math/big"
 	"os"
 	"os/exec"
 	"strings"
@@ -297,6 +298,14 @@ func (openVPNPKI *OpenVPNPKI) easyrsaGenCRL() (err error) {
 		}
 	}
 
+	// Remember exactly the set of certs written into the CRL so callers
+	// (delete/rotate/revoke) can verify a serial actually made it in without
+	// re-shelling-out or re-parsing the generated CRL blob.
+	openVPNPKI.RevokedCerts = make([]RevokedCert, 0, len(revoked))
+	for _, r := range revoked {
+		openVPNPKI.RevokedCerts = append(openVPNPKI.RevokedCerts, *r)
+	}
+
 	crl, err := genCRL(revoked, openVPNPKI.CACert, openVPNPKI.CAPrivKeyRSA)
 	if err != nil {
 		return
@@ -317,6 +326,39 @@ func (openVPNPKI *OpenVPNPKI) easyrsaGenCRL() (err error) {
 	}
 
 	return
+}
+
+// crlContainsSerial reports whether serial is present in the most recently
+// generated CRL. easyrsaGenCRL populates RevokedCerts with exactly the certs
+// written into the CRL, so this is an authoritative check on the CRL contents
+// without re-shelling-out or re-parsing the PEM blob.
+func (openVPNPKI *OpenVPNPKI) crlContainsSerial(serial *big.Int) bool {
+	if serial == nil {
+		return false
+	}
+	for i := range openVPNPKI.RevokedCerts {
+		if openVPNPKI.RevokedCerts[i].Cert != nil &&
+			openVPNPKI.RevokedCerts[i].Cert.SerialNumber != nil &&
+			openVPNPKI.RevokedCerts[i].Cert.SerialNumber.Cmp(serial) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyRevokedInCRL is defense-in-depth: after regenerating the CRL it asserts
+// that the just-revoked cert's serial actually entered the CRL. If not, the
+// caller must return an error so the HTTP handler surfaces a non-200 instead of
+// a false "success" while the cert is still cryptographically valid.
+func (openVPNPKI *OpenVPNPKI) verifyRevokedInCRL(commonName string, secret *v1.Secret) error {
+	cert, err := decodeCert(secret.Data[certFileName])
+	if err != nil {
+		return fmt.Errorf("verify CRL for user (%s): decode cert: %w", commonName, err)
+	}
+	if !openVPNPKI.crlContainsSerial(cert.SerialNumber) {
+		return fmt.Errorf("verify CRL for user (%s): serial %s not present in regenerated CRL", commonName, cert.SerialNumber.String())
+	}
+	return nil
 }
 
 func (openVPNPKI *OpenVPNPKI) easyrsaBuildClient(commonName string) (err error) {
@@ -427,7 +469,12 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRevoke(commonName string) (err error) {
 
 	err = openVPNPKI.easyrsaGenCRL()
 	if err != nil {
-		log.Error(err)
+		return
+	}
+
+	// Defense-in-depth: abort if the serial did not actually enter the CRL.
+	if err = openVPNPKI.verifyRevokedInCRL(commonName, secret); err != nil {
+		return
 	}
 
 	err = openVPNPKI.updateCRLOnDisk()
@@ -477,6 +524,12 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRotate(commonName, newPassword string) (err
 	}
 	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 	secret.Annotations["commonName"] = "REVOKED-" + commonName + "-" + uniqHash
+	// CRITICAL: cryptographically revoke the OLD cert. Without revokedAt the
+	// old serial never enters the CRL, so the rotated-out cert (and its .ovpn)
+	// stays valid — and rotate is worse than delete because a fresh cert with
+	// the SAME CN now also exists. Set it BEFORE the Update so it is persisted,
+	// and BEFORE easyrsaGenCRL below picks it up from the secret list.
+	secret.Annotations["revokedAt"] = time.Now().Format(indexTxtDateFormat)
 	secret.Labels["name"] = "REVOKED" + commonName
 	secret.Labels["revokedForever"] = "true"
 
@@ -485,6 +538,8 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRotate(commonName, newPassword string) (err
 		return
 	}
 
+	// New cert issued with the same CN; it must NOT carry revokedAt (easyrsaBuildClient
+	// sets revokedAt:"" on the fresh secret, so it stays out of the CRL).
 	err = openVPNPKI.easyrsaBuildClient(commonName)
 	if err != nil {
 		return
@@ -507,7 +562,12 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRotate(commonName, newPassword string) (err
 
 	err = openVPNPKI.easyrsaGenCRL()
 	if err != nil {
-		log.Error(err)
+		return
+	}
+
+	// Defense-in-depth: the OLD serial must now be in the CRL.
+	if err = openVPNPKI.verifyRevokedInCRL(commonName, secret); err != nil {
+		return
 	}
 
 	err = openVPNPKI.updateCRLOnDisk()
@@ -521,6 +581,11 @@ func (openVPNPKI *OpenVPNPKI) easyrsaDelete(commonName string) (err error) {
 	}
 	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 	secret.Annotations["commonName"] = "REVOKED-" + commonName + "-" + uniqHash
+	// CRITICAL: cryptographically revoke on delete. The relabel below only
+	// hides the cert from the UI; without revokedAt the serial never enters the
+	// CRL and the deleted user can reconnect with their old .ovpn. Set it
+	// BEFORE the Update so it persists and BEFORE easyrsaGenCRL picks it up.
+	secret.Annotations["revokedAt"] = time.Now().Format(indexTxtDateFormat)
 	secret.Labels["name"] = "REVOKED-" + commonName + "-" + uniqHash
 	secret.Labels["revokedForever"] = "true"
 
@@ -541,7 +606,12 @@ func (openVPNPKI *OpenVPNPKI) easyrsaDelete(commonName string) (err error) {
 
 	err = openVPNPKI.easyrsaGenCRL()
 	if err != nil {
-		log.Error(err)
+		return
+	}
+
+	// Defense-in-depth: the deleted user's serial must now be in the CRL.
+	if err = openVPNPKI.verifyRevokedInCRL(commonName, secret); err != nil {
+		return
 	}
 
 	err = openVPNPKI.updateCRLOnDisk()
