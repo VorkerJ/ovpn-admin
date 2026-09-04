@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -87,12 +88,11 @@ type commonRoutesStore struct {
 	cfg CommonRoutesConfig
 }
 
-// snapshot возвращает deep-copy конфига, безопасную для чтения без блокировки.
-func (s *commonRoutesStore) snapshot() CommonRoutesConfig {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := CommonRoutesConfig{Routes: make([]CommonRouteEntry, len(s.cfg.Routes))}
-	for i, r := range s.cfg.Routes {
+// copyCommonRoutesConfig возвращает глубокую копию конфига (включая срезы
+// ResolvedIPs), чтобы изменения в копии не затрагивали оригинал.
+func copyCommonRoutesConfig(cfg CommonRoutesConfig) CommonRoutesConfig {
+	out := CommonRoutesConfig{Routes: make([]CommonRouteEntry, len(cfg.Routes))}
+	for i, r := range cfg.Routes {
 		c := r
 		if r.ResolvedIPs != nil {
 			c.ResolvedIPs = append([]string(nil), r.ResolvedIPs...)
@@ -100,6 +100,13 @@ func (s *commonRoutesStore) snapshot() CommonRoutesConfig {
 		out.Routes[i] = c
 	}
 	return out
+}
+
+// snapshot возвращает deep-copy конфига, безопасную для чтения без блокировки.
+func (s *commonRoutesStore) snapshot() CommonRoutesConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyCommonRoutesConfig(s.cfg)
 }
 
 // replace заменяет конфиг целиком под write-lock'ом.
@@ -110,6 +117,65 @@ func (s *commonRoutesStore) replace(cfg CommonRoutesConfig) {
 		cfg.Routes = []CommonRouteEntry{}
 	}
 	s.cfg = cfg
+}
+
+// commonRouteError несёт HTTP-статус вместе с сообщением, чтобы mutate-замыкания
+// внутри update() могли сигнализировать об ошибках валидации (дубликат, не найдено),
+// которые нужно отобразить конкретным кодом ответа. Ошибки persist в это не
+// заворачиваются и трактуются вызывающим кодом как 500.
+type commonRouteError struct {
+	status int
+	msg    string
+}
+
+func (e *commonRouteError) Error() string { return e.msg }
+
+// update атомарно применяет mutate к рабочей копии конфига под write-lock'ом,
+// СНАЧАЛА сохраняет результат через persist и только ПОСЛЕ успешного сохранения
+// публикует новое состояние в памяти. Это сериализует весь цикл
+// read-modify-write, поэтому конкурентные обработчики не могут потерять правки
+// друг друга (lost update), и гарантирует, что состояния в памяти и на диске
+// никогда не расходятся: если mutate или persist вернули ошибку, сохранённый
+// конфиг остаётся нетронутым.
+//
+// mutate получает указатель на глубокую копию, которую волен изменять. При
+// успехе update возвращает свежую копию зафиксированного конфига.
+func (s *commonRoutesStore) update(
+	mutate func(cfg *CommonRoutesConfig) error,
+	persist func(cfg CommonRoutesConfig) error,
+) (CommonRoutesConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	working := copyCommonRoutesConfig(s.cfg)
+	if err := mutate(&working); err != nil {
+		return CommonRoutesConfig{}, err
+	}
+	if working.Routes == nil {
+		working.Routes = []CommonRouteEntry{}
+	}
+	// Persist FIRST — публикуем в памяти только после успешного сохранения,
+	// иначе провал записи оставил бы память и диск в расходящихся состояниях.
+	if persist != nil {
+		if err := persist(working); err != nil {
+			return CommonRoutesConfig{}, err
+		}
+	}
+	s.cfg = working
+	return copyCommonRoutesConfig(working), nil
+}
+
+// writeCommonRouteError отображает ошибку из update() в HTTP-ответ: типизированный
+// commonRouteError несёт свой статус/сообщение, всё остальное — ошибка persist,
+// отдаётся как 500 "persist failed".
+func writeCommonRouteError(w http.ResponseWriter, err error, logCtx string) {
+	var cre *commonRouteError
+	if errors.As(err, &cre) {
+		writeJSONError(w, cre.status, cre.msg)
+		return
+	}
+	log.Errorf("%s: %v", logCtx, err)
+	writeJSONError(w, http.StatusInternalServerError, "persist failed")
 }
 
 // newCommonRoutesStoreForTesting — конструктор для тестов; в проде создаётся в main.go.
@@ -312,65 +378,66 @@ func (oAdmin *OvpnAdmin) commonRoutesImportHandler(w http.ResponseWriter, r *htt
 	}
 	parsed, errs := parseImportText(req.Text)
 
-	current := oAdmin.commonRoutes.snapshot()
-	// Build dedup set against existing common routes.
-	existing := map[string]struct{}{}
-	for _, e := range current.Routes {
-		var k string
-		if e.Kind == "domain" {
-			k = "d:" + strings.ToLower(strings.TrimSpace(e.Domain))
-		} else {
-			k = "i:" + e.Address + "/" + e.Mask
-		}
-		existing[k] = struct{}{}
-	}
-
 	added := []ImportedRoute{}
 	skipped := []ImportedRoute{}
-	for _, p := range parsed {
-		key := routeDedupKey(p)
-		if _, dup := existing[key]; dup {
-			skipped = append(skipped, p)
-			continue
-		}
-		entry := CommonRouteEntry{
-			ID:     uuid.New().String(),
-			Kind:   p.Kind,
-			Domain: p.Domain,
-		}
-		if p.Kind == "ip" {
-			entry.Address = p.Address
-			entry.Mask = p.Mask
-		}
-		if err := validateCommonRoute(entry); err != nil {
-			errs = append(errs, ImportLineError{Source: importDescribe(p), Reason: err.Error()})
-			continue
-		}
-		// Resolve domain synchronously so the first connect after import
-		// already has the IPs.
-		if entry.Kind == "domain" {
-			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-			ips, derr := domainResolver(ctx, entry.Domain)
-			cancel()
-			entry.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
-			if derr != nil {
-				entry.LastResolveErr = derr.Error()
-			} else {
-				entry.ResolvedIPs = ips
-			}
-		}
-		current.Routes = append(current.Routes, entry)
-		existing[key] = struct{}{}
-		added = append(added, p)
-	}
 
-	oAdmin.commonRoutes.replace(current)
-	if err := oAdmin.persistCommonRoutes(current); err != nil {
+	committed, err := oAdmin.commonRoutes.update(func(cfg *CommonRoutesConfig) error {
+		// Build dedup set against existing common routes.
+		existing := map[string]struct{}{}
+		for _, e := range cfg.Routes {
+			var k string
+			if e.Kind == "domain" {
+				k = "d:" + strings.ToLower(strings.TrimSpace(e.Domain))
+			} else {
+				k = "i:" + e.Address + "/" + e.Mask
+			}
+			existing[k] = struct{}{}
+		}
+
+		for _, p := range parsed {
+			key := routeDedupKey(p)
+			if _, dup := existing[key]; dup {
+				skipped = append(skipped, p)
+				continue
+			}
+			entry := CommonRouteEntry{
+				ID:     uuid.New().String(),
+				Kind:   p.Kind,
+				Domain: p.Domain,
+			}
+			if p.Kind == "ip" {
+				entry.Address = p.Address
+				entry.Mask = p.Mask
+			}
+			if verr := validateCommonRoute(entry); verr != nil {
+				errs = append(errs, ImportLineError{Source: importDescribe(p), Reason: verr.Error()})
+				continue
+			}
+			// Resolve domain synchronously so the first connect after import
+			// already has the IPs.
+			if entry.Kind == "domain" {
+				ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+				ips, derr := domainResolver(ctx, entry.Domain)
+				cancel()
+				entry.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+				if derr != nil {
+					entry.LastResolveErr = derr.Error()
+				} else {
+					entry.ResolvedIPs = ips
+				}
+			}
+			cfg.Routes = append(cfg.Routes, entry)
+			existing[key] = struct{}{}
+			added = append(added, p)
+		}
+		return nil
+	}, oAdmin.persistCommonRoutes)
+	if err != nil {
 		log.Errorf("commonRoutesImport: persist: %v", err)
 		writeJSONError(w, http.StatusInternalServerError, "persist failed")
 		return
 	}
-	expanded := expandCommonRoutes(current)
+	expanded := expandCommonRoutes(committed)
 	go oAdmin.rerenderAllCcds(expanded)
 	if oAdmin.firewall != nil {
 		oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
@@ -392,16 +459,28 @@ func importDescribe(r ImportedRoute) string {
 func (oAdmin *OvpnAdmin) commonRoutesRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 
-	current := oAdmin.commonRoutes.snapshot()
-	updated, changed, okCount, failed := refreshAllDomains(r.Context(), current, time.Now())
-
-	oAdmin.commonRoutes.replace(updated)
-	if err := oAdmin.persistCommonRoutes(updated); err != nil {
+	var changed bool
+	var okCount, failed int
+	committed, err := oAdmin.commonRoutes.update(func(cfg *CommonRoutesConfig) error {
+		updated, ch, ok, f := refreshAllDomains(r.Context(), *cfg, time.Now())
+		*cfg = updated
+		changed, okCount, failed = ch, ok, f
+		return nil
+	}, oAdmin.persistCommonRoutes)
+	if err != nil {
+		// Persist failed — in-memory state left unchanged (no divergence with
+		// disk). Report the resolution counts we gathered, but do not publish.
 		log.Errorf("persistCommonRoutes: %v", err)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"resolved": okCount,
+			"failed":   failed,
+			"changed":  false,
+		})
+		return
 	}
 
 	if changed {
-		expanded := expandCommonRoutes(updated)
+		expanded := expandCommonRoutes(committed)
 		go oAdmin.rerenderAllCcds(expanded)
 		if oAdmin.firewall != nil {
 			oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
@@ -428,32 +507,29 @@ func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.
 		return
 	}
 
-	current := oAdmin.commonRoutes.snapshot()
-	if isDuplicateCommonRoute(current, in) {
-		writeJSONError(w, http.StatusConflict, "duplicate entry")
-		return
-	}
-
-	if in.Kind == "domain" {
-		ips, err := domainResolver(r.Context(), in.Domain)
-		in.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
-		if err != nil {
-			in.LastResolveErr = err.Error()
-		} else {
-			in.ResolvedIPs = ips
-			in.LastResolveErr = ""
+	committed, err := oAdmin.commonRoutes.update(func(cfg *CommonRoutesConfig) error {
+		if isDuplicateCommonRoute(*cfg, in) {
+			return &commonRouteError{http.StatusConflict, "duplicate entry"}
 		}
-	}
-
-	current.Routes = append(current.Routes, in)
-	oAdmin.commonRoutes.replace(current)
-	if err := oAdmin.persistCommonRoutes(current); err != nil {
-		log.Errorf("persist: %v", err)
-		writeJSONError(w, http.StatusInternalServerError, "persist failed")
+		if in.Kind == "domain" {
+			ips, derr := domainResolver(r.Context(), in.Domain)
+			in.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+			if derr != nil {
+				in.LastResolveErr = derr.Error()
+			} else {
+				in.ResolvedIPs = ips
+				in.LastResolveErr = ""
+			}
+		}
+		cfg.Routes = append(cfg.Routes, in)
+		return nil
+	}, oAdmin.persistCommonRoutes)
+	if err != nil {
+		writeCommonRouteError(w, err, "persist")
 		return
 	}
 
-	expanded := expandCommonRoutes(current)
+	expanded := expandCommonRoutes(committed)
 	go oAdmin.rerenderAllCcds(expanded)
 	if oAdmin.firewall != nil {
 		oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
@@ -475,47 +551,46 @@ func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.
 		return
 	}
 
-	current := oAdmin.commonRoutes.snapshot()
-	idx := -1
-	for i, rt := range current.Routes {
-		if rt.ID == id {
-			idx = i
-			break
+	committed, err := oAdmin.commonRoutes.update(func(cfg *CommonRoutesConfig) error {
+		idx := -1
+		for i, rt := range cfg.Routes {
+			if rt.ID == id {
+				idx = i
+				break
+			}
 		}
-	}
-	if idx == -1 {
-		writeJSONError(w, http.StatusNotFound, "not found")
-		return
-	}
-
-	// preserve DNS state if domain didn't change
-	if in.Kind == "domain" && current.Routes[idx].Kind == "domain" && current.Routes[idx].Domain == in.Domain {
-		in.ResolvedIPs = current.Routes[idx].ResolvedIPs
-		in.LastResolveAt = current.Routes[idx].LastResolveAt
-		in.LastResolveErr = current.Routes[idx].LastResolveErr
-	} else if in.Kind == "domain" {
-		ips, err := domainResolver(r.Context(), in.Domain)
-		in.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
-		if err != nil {
-			in.LastResolveErr = err.Error()
-		} else {
-			in.ResolvedIPs = ips
+		if idx == -1 {
+			return &commonRouteError{http.StatusNotFound, "not found"}
 		}
-	}
 
-	if isDuplicateCommonRoute(removeAt(current, idx), in) {
-		writeJSONError(w, http.StatusConflict, "duplicate entry")
+		// preserve DNS state if domain didn't change
+		if in.Kind == "domain" && cfg.Routes[idx].Kind == "domain" && cfg.Routes[idx].Domain == in.Domain {
+			in.ResolvedIPs = cfg.Routes[idx].ResolvedIPs
+			in.LastResolveAt = cfg.Routes[idx].LastResolveAt
+			in.LastResolveErr = cfg.Routes[idx].LastResolveErr
+		} else if in.Kind == "domain" {
+			ips, derr := domainResolver(r.Context(), in.Domain)
+			in.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
+			if derr != nil {
+				in.LastResolveErr = derr.Error()
+			} else {
+				in.ResolvedIPs = ips
+			}
+		}
+
+		if isDuplicateCommonRoute(removeAt(*cfg, idx), in) {
+			return &commonRouteError{http.StatusConflict, "duplicate entry"}
+		}
+
+		cfg.Routes[idx] = in
+		return nil
+	}, oAdmin.persistCommonRoutes)
+	if err != nil {
+		writeCommonRouteError(w, err, "persist")
 		return
 	}
 
-	current.Routes[idx] = in
-	oAdmin.commonRoutes.replace(current)
-	if err := oAdmin.persistCommonRoutes(current); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "persist failed")
-		return
-	}
-
-	expanded := expandCommonRoutes(current)
+	expanded := expandCommonRoutes(committed)
 	go oAdmin.rerenderAllCcds(expanded)
 	if oAdmin.firewall != nil {
 		oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
@@ -525,26 +600,26 @@ func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.
 }
 
 func (oAdmin *OvpnAdmin) handleDeleteCommonRoute(w http.ResponseWriter, r *http.Request, id string) {
-	current := oAdmin.commonRoutes.snapshot()
-	idx := -1
-	for i, rt := range current.Routes {
-		if rt.ID == id {
-			idx = i
-			break
+	committed, err := oAdmin.commonRoutes.update(func(cfg *CommonRoutesConfig) error {
+		idx := -1
+		for i, rt := range cfg.Routes {
+			if rt.ID == id {
+				idx = i
+				break
+			}
 		}
-	}
-	if idx == -1 {
-		writeJSONError(w, http.StatusNotFound, "not found")
-		return
-	}
-	current.Routes = append(current.Routes[:idx], current.Routes[idx+1:]...)
-	oAdmin.commonRoutes.replace(current)
-	if err := oAdmin.persistCommonRoutes(current); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "persist failed")
+		if idx == -1 {
+			return &commonRouteError{http.StatusNotFound, "not found"}
+		}
+		cfg.Routes = append(cfg.Routes[:idx], cfg.Routes[idx+1:]...)
+		return nil
+	}, oAdmin.persistCommonRoutes)
+	if err != nil {
+		writeCommonRouteError(w, err, "persist")
 		return
 	}
 
-	expanded := expandCommonRoutes(current)
+	expanded := expandCommonRoutes(committed)
 	go oAdmin.rerenderAllCcds(expanded)
 	if oAdmin.firewall != nil {
 		oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -227,6 +228,123 @@ func TestCommonRoutesStore_ConcurrentReadWrite(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestCommonRoutes_ConcurrentAdds_NoLostUpdate fires N concurrent POST /api/common-routes
+// each adding a distinct route through the atomic update path, and asserts all N survive.
+// Before the atomic read-modify-write fix this raced: two handlers could both read the
+// same snapshot and the last write would clobber the earlier ones (lost update).
+func TestCommonRoutes_ConcurrentAdds_NoLostUpdate(t *testing.T) {
+	t.Parallel()
+	app := newTestAdmin(t)
+
+	const n = 40
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := []byte(fmt.Sprintf(
+				`{"kind":"ip","address":"10.%d.%d.0","mask":"255.255.255.0","description":"r%d"}`,
+				i/256, i%256, i))
+			req := httptest.NewRequest(http.MethodPost, "/api/common-routes", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			app.commonRoutesHandler(rec, req)
+			if rec.Code != http.StatusCreated {
+				t.Errorf("add %d: status %d body=%s", i, rec.Code, rec.Body.String())
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	snap := app.commonRoutes.snapshot()
+	if len(snap.Routes) != n {
+		t.Fatalf("lost update: expected %d routes, got %d", n, len(snap.Routes))
+	}
+	seen := map[string]bool{}
+	for _, r := range snap.Routes {
+		seen[r.Address] = true
+	}
+	for i := 0; i < n; i++ {
+		addr := fmt.Sprintf("10.%d.%d.0", i/256, i%256)
+		if !seen[addr] {
+			t.Errorf("route %s lost", addr)
+		}
+	}
+
+	// The persisted config on disk must also carry all N (persist happens under
+	// the same lock, before the in-memory commit).
+	raw, err := app.store.LoadCommonRoutes()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	loaded, err := deserializeCommonRoutes(raw)
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if len(loaded.Routes) != n {
+		t.Fatalf("persisted config lost updates: expected %d routes, got %d", n, len(loaded.Routes))
+	}
+}
+
+// TestCommonRoutesStore_Update_PersistFailureLeavesMemoryUnchanged verifies that
+// when persistence fails the in-memory state is NOT mutated, so memory and disk
+// never diverge (persist-before-publish).
+func TestCommonRoutesStore_Update_PersistFailureLeavesMemoryUnchanged(t *testing.T) {
+	t.Parallel()
+	store := newCommonRoutesStoreForTesting()
+	store.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{
+		{ID: "keep", Kind: "ip", Address: "10.0.0.0", Mask: "255.0.0.0"},
+	}})
+
+	persistErr := fmt.Errorf("disk full")
+	_, err := store.update(func(cfg *CommonRoutesConfig) error {
+		cfg.Routes = append(cfg.Routes, CommonRouteEntry{ID: "new", Kind: "ip", Address: "10.1.0.0", Mask: "255.0.0.0"})
+		return nil
+	}, func(cfg CommonRoutesConfig) error {
+		// persist sees the would-be new state...
+		if len(cfg.Routes) != 2 {
+			t.Errorf("persist should see the mutated (2-route) config, got %d", len(cfg.Routes))
+		}
+		return persistErr
+	})
+	if err == nil {
+		t.Fatal("expected persist error")
+	}
+	snap := store.snapshot()
+	if len(snap.Routes) != 1 || snap.Routes[0].ID != "keep" {
+		t.Fatalf("in-memory state must be unchanged on persist failure, got %+v", snap.Routes)
+	}
+}
+
+// TestCommonRoutesStore_Update_MutateErrorNoPersist verifies that if the mutate
+// closure returns an error, persist is never called and state is unchanged.
+func TestCommonRoutesStore_Update_MutateErrorNoPersist(t *testing.T) {
+	t.Parallel()
+	store := newCommonRoutesStoreForTesting()
+	store.replace(CommonRoutesConfig{Routes: []CommonRouteEntry{{ID: "keep"}}})
+
+	persisted := false
+	_, err := store.update(func(cfg *CommonRoutesConfig) error {
+		cfg.Routes = append(cfg.Routes, CommonRouteEntry{ID: "new"})
+		return &commonRouteError{http.StatusConflict, "duplicate entry"}
+	}, func(cfg CommonRoutesConfig) error {
+		persisted = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected mutate error")
+	}
+	var cre *commonRouteError
+	if !errors.As(err, &cre) || cre.status != http.StatusConflict {
+		t.Fatalf("expected commonRouteError(409), got %v", err)
+	}
+	if persisted {
+		t.Fatal("persist must not run when mutate fails")
+	}
+	if len(store.snapshot().Routes) != 1 {
+		t.Fatal("state must be unchanged when mutate fails")
+	}
 }
 
 func TestCommonRoutesStore_SnapshotIsCopy(t *testing.T) {
