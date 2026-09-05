@@ -67,11 +67,15 @@ func (oAdmin *OvpnAdmin) mfaSetupHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	oAdmin.mfaStore.set(user, mfaRecord{
+	if err := oAdmin.mfaStore.set(user, mfaRecord{
 		Secret:    key.Secret(),
 		Enabled:   false,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-	})
+	}); err != nil {
+		log.Errorf("mfaSetup: failed to persist TOTP secret for %s: %v", user, err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to store MFA secret")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"secret": key.Secret(),
@@ -113,7 +117,14 @@ func (oAdmin *OvpnAdmin) mfaConfirmHandler(w http.ResponseWriter, r *http.Reques
 
 	rec.Enabled = true
 	rec.BackupCodes = hashedCodes
-	oAdmin.mfaStore.set(user, rec)
+	// Commit-then-respond: only hand out backup codes and a 200 once the enable
+	// is durably persisted. set() rolls back the in-memory record on failure, so
+	// a lost write leaves MFA disabled (not half-enabled) and the user retries.
+	if err := oAdmin.mfaStore.set(user, rec); err != nil {
+		log.Errorf("mfaConfirm: failed to persist MFA enable for %s: %v", user, err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to enable MFA")
+		return
+	}
 
 	// Enabling MFA invalidates every prior session for this user. The session
 	// that performed the enrollment was password-only (it predates MFA), so it
@@ -177,7 +188,11 @@ func (oAdmin *OvpnAdmin) mfaDisableHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	oAdmin.mfaStore.delete(user)
+	if err := oAdmin.mfaStore.delete(user); err != nil {
+		log.Errorf("mfaDisable: failed to persist MFA removal for %s: %v", user, err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to disable MFA")
+		return
+	}
 	log.Infof("MFA: user %s disabled TOTP", user)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -278,7 +293,21 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		rec.LastUsedCode = req.Code
 		rec.LastUsedAt = time.Now().Unix()
 	}
-	oAdmin.mfaStore.set(user, rec)
+	if err := oAdmin.mfaStore.set(user, rec); err != nil {
+		if backupUsed {
+			// A backup code was accepted but we could not durably record its
+			// consumption. Fail closed: don't issue a session, so the code stays
+			// unspent (set() rolled back the in-memory list) and thus can't be
+			// replayed after a restart — the user simply retries.
+			log.Errorf("mfaLogin: failed to persist backup-code consumption for %s: %v", user, err)
+			writeJSONError(w, http.StatusInternalServerError, "failed to record MFA state, please retry")
+			return
+		}
+		// TOTP replay marker only: best-effort within-window guard. Refusing an
+		// otherwise-valid login over a lost marker write is a worse tradeoff, so
+		// log and continue.
+		log.Warnf("mfaLogin: failed to persist TOTP replay marker for %s: %v", user, err)
+	}
 
 	recordLoginSuccess(ip, user)
 

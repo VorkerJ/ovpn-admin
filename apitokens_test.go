@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,11 +45,85 @@ func TestAPITokenCreateVerifyRevoke(t *testing.T) {
 	}
 
 	// revoke kills it
-	if !s.revoke(tok.ID) {
-		t.Fatal("revoke should report success")
+	if err := s.revoke(tok.ID); err != nil {
+		t.Fatalf("revoke should report success, got %v", err)
 	}
 	if _, ok := s.verify(plaintext); ok {
 		t.Fatal("revoked token must no longer verify")
+	}
+	// revoking an unknown id reports not-found
+	if err := s.revoke("deadbeef"); !errors.Is(err, errAPITokenNotFound) {
+		t.Fatalf("revoke unknown id must return errAPITokenNotFound, got %v", err)
+	}
+}
+
+// badChildPath returns a path whose parent is a regular file, so any attempt to
+// create/write under it fails with ENOTDIR — a deterministic persist-failure
+// seam that doesn't depend on uid/permissions.
+func badChildPath(t *testing.T) string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(f, "tokens.json")
+}
+
+func TestAPITokenCreate_PersistFailure(t *testing.T) {
+	s := newAPITokenStore(badChildPath(t))
+	if _, _, err := s.create("svc", "admin"); err == nil {
+		t.Fatal("create must return an error when the store can't be persisted")
+	}
+	// Rollback: the un-persisted token must not linger in memory.
+	if n := len(s.list()); n != 0 {
+		t.Errorf("failed create must not leave a token in memory, got %d", n)
+	}
+}
+
+func TestAPITokenRevoke_PersistFailureRollsBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	s := newAPITokenStore(path)
+	plaintext, tok, err := s.create("svc", "admin")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Break persistence, then revoke: the save fails and the deletion must roll
+	// back, so the token still verifies (it did NOT get durably revoked).
+	s.path = filepath.Join(path, "nope", "tokens.json") // parent is a file → ENOTDIR
+	err = s.revoke(tok.ID)
+	if err == nil {
+		t.Fatal("revoke must return an error when persist fails")
+	}
+	if errors.Is(err, errAPITokenNotFound) {
+		t.Fatalf("persist failure must not be reported as not-found: %v", err)
+	}
+	if _, ok := s.verify(plaintext); !ok {
+		t.Error("a revoke that failed to persist must be rolled back (token still valid)")
+	}
+}
+
+func TestAPITokenItemHandler_PersistFailureReturns500(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	store := newAPITokenStore(path)
+	_, tok, err := store.create("svc", "admin")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	store.path = filepath.Join(path, "nope", "tokens.json") // force save failure
+
+	// The flag default ("/") is only applied by kingpin.Parse, which tests don't
+	// run; set it so the handler's path-prefix trim matches an absolute target.
+	prevBase := *listenBaseUrl
+	*listenBaseUrl = "/"
+	t.Cleanup(func() { *listenBaseUrl = prevBase })
+
+	app := &OvpnAdmin{apiTokens: store} // mfaStore nil → adminHasMfa true
+	req := httptest.NewRequest(http.MethodDelete, *listenBaseUrl+"api/api-tokens/"+tok.ID, nil)
+	rec := httptest.NewRecorder()
+	app.apiTokenItemHandler(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("persist failure must return 500, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

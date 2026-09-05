@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"sort"
@@ -83,19 +84,30 @@ func (s *apiTokenStore) load() {
 	log.Infof("api-tokens: loaded %d service-account token(s) from %s", len(s.tokens), s.path)
 }
 
-// save persists the store; callers must hold s.mu.
-func (s *apiTokenStore) save() {
+// errAPITokenNotFound is returned by revoke when no token has the given id, so
+// the handler can distinguish a 404 (unknown id) from a 5xx (persist failure).
+var errAPITokenNotFound = errors.New("token not found")
+
+// save persists the store; callers must hold s.mu. It returns an error so
+// state-changing callers (create/revoke) can refuse to report success on a lost
+// write (a non-persisted revoke would resurrect the token after a restart).
+func (s *apiTokenStore) save() error {
 	if s.path == "" {
-		return
+		return nil
 	}
 	list := make([]*apiToken, 0, len(s.tokens))
 	for _, t := range s.tokens {
 		list = append(list, t)
 	}
-	raw, _ := json.Marshal(list)
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return fmt.Errorf("marshal api tokens: %w", err)
+	}
 	if err := writeFileAtomicSecret(s.path, raw); err != nil {
 		log.Warnf("api-tokens: persist to %s failed: %v", s.path, err)
+		return fmt.Errorf("persist api tokens: %w", err)
 	}
+	return nil
 }
 
 func sha256hex(s string) string {
@@ -131,7 +143,14 @@ func (s *apiTokenStore) create(name, by string) (string, *apiToken, error) {
 	}
 	s.mu.Lock()
 	s.tokens[t.ID] = t
-	s.save()
+	// Commit-then-respond: if the new token can't be persisted, roll it back and
+	// report failure — otherwise we'd hand the operator a plaintext that works
+	// only until the next restart, then silently vanishes.
+	if err := s.save(); err != nil {
+		delete(s.tokens, t.ID)
+		s.mu.Unlock()
+		return "", nil, err
+	}
 	s.mu.Unlock()
 	return plaintext, t, nil
 }
@@ -169,7 +188,10 @@ func (s *apiTokenStore) touch(id string) {
 		}
 	}
 	t.LastUsedAt = now.Format(time.RFC3339)
-	s.save()
+	// Best-effort: a lost last-used timestamp is harmless, so just log.
+	if err := s.save(); err != nil {
+		log.Warnf("api-tokens: failed to persist last-used for %s: %v", id, err)
+	}
 }
 
 func (s *apiTokenStore) list() []apiToken {
@@ -185,15 +207,25 @@ func (s *apiTokenStore) list() []apiToken {
 	return out
 }
 
-func (s *apiTokenStore) revoke(id string) bool {
+// revoke deletes the token and durably persists the change. It returns
+// errAPITokenNotFound for an unknown id, a persist error if the save failed
+// (in which case the deletion is rolled back so live state matches disk), or
+// nil on success.
+func (s *apiTokenStore) revoke(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.tokens[id]; !ok {
-		return false
+	t, ok := s.tokens[id]
+	if !ok {
+		return errAPITokenNotFound
 	}
 	delete(s.tokens, id)
-	s.save()
-	return true
+	if err := s.save(); err != nil {
+		// Roll back: a revoke that didn't reach disk must not appear to have
+		// succeeded, else the token resurrects on the next restart.
+		s.tokens[id] = t
+		return err
+	}
+	return nil
 }
 
 // ── request helpers ─────────────────────────────────────────────────────────
@@ -325,10 +357,16 @@ func (oAdmin *OvpnAdmin) apiTokenItemHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, *listenBaseUrl+"api/api-tokens/"), "/")
-	if oAdmin.apiTokens.revoke(id) {
+	switch err := oAdmin.apiTokens.revoke(id); {
+	case err == nil:
 		log.Infof("api-tokens: revoked id %s by %s", id, oAdmin.sessionUser(r))
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
-	} else {
+	case errors.Is(err, errAPITokenNotFound):
 		writeJSONError(w, http.StatusNotFound, "token not found")
+	default:
+		// Persist failure — the token is NOT durably revoked. Report 5xx instead
+		// of a lying 200 so the operator knows to retry.
+		log.Errorf("api-tokens: revoke id %s failed to persist: %v", id, err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to revoke token")
 	}
 }

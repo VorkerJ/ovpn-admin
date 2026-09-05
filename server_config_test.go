@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,82 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"ovpn-admin/internal/storage"
 )
+
+// failingServerConfigStore satisfies storage.Store (via the embedded interface)
+// but fails every SaveServerConfig — a seam to assert commit-then-respond in
+// serverManager.apply. Any other method would panic (nil interface), which is
+// fine: apply only reaches SaveServerConfig on the durable-persist path.
+type failingServerConfigStore struct {
+	storage.Store
+}
+
+func (failingServerConfigStore) SaveServerConfig([]byte) error {
+	return errors.New("simulated persist failure")
+}
+
+func TestServerManager_Apply_PersistFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	confPath := filepath.Join(dir, "server.conf")
+	store := newServerConfigStore()
+
+	mgr := &serverManager{
+		store:          store,
+		persistBackend: failingServerConfigStore{},
+		mgmtAddr:       "127.0.0.1:0",
+		confPath:       confPath,
+		ccdEnabled:     true,
+	}
+
+	origPort := store.snapshot().Port
+	cfg := store.snapshot()
+	cfg.Port = origPort + 1 // hard change → reaches the persist path
+
+	_, err := mgr.apply(context.Background(), cfg, "admin")
+	if err == nil {
+		t.Fatal("apply must return an error when persist fails")
+	}
+	if !errors.Is(err, errServerConfigPersist) {
+		t.Fatalf("persist failure must wrap errServerConfigPersist, got %v", err)
+	}
+	// Live state must be untouched: the in-memory store keeps the old port and
+	// server.conf must NOT have been written (persist happens first).
+	if got := store.snapshot().Port; got != origPort {
+		t.Errorf("in-memory store must not adopt the un-persisted config, port=%d want %d", got, origPort)
+	}
+	if _, err := os.Stat(confPath); !os.IsNotExist(err) {
+		t.Errorf("server.conf must not be written when persist fails, stat err=%v", err)
+	}
+}
+
+func TestServerConfigHandler_PUT_PersistFailureReturns500(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	app := &OvpnAdmin{}
+	app.serverConfigStore = newServerConfigStore()
+	// mfaStore nil → adminHasMfa returns true, so the MFA gate lets the PUT through.
+	app.serverManager = &serverManager{
+		store:          app.serverConfigStore,
+		persistBackend: failingServerConfigStore{},
+		mgmtAddr:       "127.0.0.1:0",
+		confPath:       filepath.Join(dir, "server.conf"),
+		ccdEnabled:     true,
+	}
+
+	cfg := app.serverConfigStore.snapshot()
+	cfg.Port = 1195
+	body, _ := json.Marshal(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/server-config", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	app.serverConfigHandler(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("persist failure must return 500, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
 
 func TestRenderServerConfig_PasswordAuth(t *testing.T) {
 	t.Parallel()

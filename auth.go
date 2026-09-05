@@ -394,20 +394,27 @@ func bumpUserEpoch(user string) {
 	saveSessionEpochs()
 }
 
-// saveRevokedTokens writes the current blacklist to disk.
-func saveRevokedTokens() {
+// saveRevokedTokens writes the current blacklist to disk. It returns an error
+// so the logout path can surface a lost write instead of a lying success — a
+// non-persisted revocation lets the session revalidate after a restart.
+func saveRevokedTokens() error {
 	if revokedTokensFile == "" {
-		return
+		return nil
 	}
 	revokedTokensMu.Lock()
-	data, _ := json.Marshal(revokedTokens)
+	data, err := json.Marshal(revokedTokens)
 	revokedTokensMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("marshal revoked tokens: %w", err)
+	}
 	// Atomic write — a torn write here corrupts the JSON blacklist; on next
 	// boot loadRevokedTokens would silently lose the entire list, letting
 	// previously-revoked sessions reactivate until their natural TTL expires.
 	if err := writeFileAtomicSecret(revokedTokensFile, data); err != nil {
 		log.Warnf("failed to persist revoked tokens: %v", err)
+		return fmt.Errorf("persist revoked tokens: %w", err)
 	}
+	return nil
 }
 
 // initAuth загружает htpasswd-файл или генерирует временные credentials.
@@ -876,7 +883,9 @@ func sessionPayloadFromRequest(r *http.Request) (sessionPayload, bool) {
 	return verifySessionPayload(cookie.Value)
 }
 
-// revokeToken blacklists a session token until its TTL expires.
+// revokeToken blacklists a session token until its TTL expires, and durably
+// persists the blacklist (returning the persist error so logout doesn't report a
+// revocation that won't survive a restart).
 //
 // SECURITY: the token MUST first pass full session verification (HMAC, purpose,
 // expiry, epoch). /api/logout is a PUBLIC route, so without this gate an
@@ -885,14 +894,14 @@ func sessionPayloadFromRequest(r *http.Request) (sessionPayload, bool) {
 // never expires out) and rewriting the on-disk blacklist on every request, a
 // cheap DoS. An unverified or absent token is a silent no-op; only genuine,
 // currently-valid server-issued sessions are recorded.
-func revokeToken(token string) {
+func revokeToken(token string) error {
 	p, ok := verifySessionPayload(token)
 	if !ok {
-		return // not a genuine, currently-valid session — nothing to revoke
+		return nil // not a genuine, currently-valid session — nothing to revoke
 	}
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
-		return
+		return nil
 	}
 	mac := parts[1]
 
@@ -918,13 +927,13 @@ func revokeToken(token string) {
 		if _, already := revokedTokens[mac]; !already {
 			revokedTokensMu.Unlock()
 			log.Warnf("revoked-token blacklist at cap (%d); skipping revocation", maxRevokedTokens)
-			return
+			return nil
 		}
 	}
 	revokedTokens[mac] = exp
 	revokedTokensMu.Unlock()
 
-	saveRevokedTokens()
+	return saveRevokedTokens()
 }
 
 // sessionSecret returns the HMAC signing key as a base64 string. The key is
@@ -1026,9 +1035,12 @@ func (oAdmin *OvpnAdmin) loginHandler(w http.ResponseWriter, r *http.Request) {
 //
 // Method check is enforced by the requireMethod middleware.
 func (oAdmin *OvpnAdmin) logoutHandler(w http.ResponseWriter, r *http.Request) {
+	var revokeErr error
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		revokeToken(cookie.Value)
+		revokeErr = revokeToken(cookie.Value)
 	}
+	// Always clear the cookie — even if persistence failed, the browser should
+	// drop the session and this process already rejects the token in-memory.
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -1038,6 +1050,14 @@ func (oAdmin *OvpnAdmin) logoutHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
+	if revokeErr != nil {
+		// The blacklist entry didn't reach disk: a restart would revalidate the
+		// token. Report the failure instead of a lying 200 so the operator knows
+		// the revocation isn't durable.
+		log.Errorf("logout: failed to persist token revocation: %v", revokeErr)
+		writeJSONError(w, http.StatusInternalServerError, "logout not fully persisted; session revoked for this instance only")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 
@@ -1155,7 +1175,15 @@ func (oAdmin *OvpnAdmin) adminChangePasswordHandler(w http.ResponseWriter, r *ht
 		writeJSONError(w, http.StatusInternalServerError, "не удалось захешировать пароль")
 		return
 	}
+	// Commit-then-respond: switch the in-memory credential, then persist. If the
+	// durable write fails, roll the in-memory change back so we never report a
+	// password change that a restart would silently revert (which would strand
+	// the admin on the old/temp password with no warning) — and keep the
+	// forced-change gate intact so a temp password can't be "changed" into a
+	// memory-only value that evaporates on restart.
 	adminAuthMu.Lock()
+	prevHash, hadPrev := htpasswdUsers[user]
+	prevMustChange := adminPasswordMustChange
 	htpasswdUsers[user] = string(hash)
 	adminPasswordMustChange = false
 	adminAuthMu.Unlock()
@@ -1166,12 +1194,19 @@ func (oAdmin *OvpnAdmin) adminChangePasswordHandler(w http.ResponseWriter, r *ht
 	bumpUserEpoch(user)
 
 	if err := saveAdminHtpasswd(adminHtpasswdPersistPath); err != nil {
-		// Non-fatal: the change is live in memory for this process. Surface it
-		// so the operator knows it won't survive a restart.
-		log.Warnf("admin password changed in memory but failed to persist to %s: %v", adminHtpasswdPersistPath, err)
-	} else {
-		log.Infof("admin password changed and persisted to %s", adminHtpasswdPersistPath)
+		adminAuthMu.Lock()
+		if hadPrev {
+			htpasswdUsers[user] = prevHash
+		} else {
+			delete(htpasswdUsers, user)
+		}
+		adminPasswordMustChange = prevMustChange
+		adminAuthMu.Unlock()
+		log.Errorf("admin password change NOT persisted to %s: %v — rolled back in-memory change", adminHtpasswdPersistPath, err)
+		writeJSONError(w, http.StatusInternalServerError, "не удалось сохранить новый пароль")
+		return
 	}
+	log.Infof("admin password changed and persisted to %s", adminHtpasswdPersistPath)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 

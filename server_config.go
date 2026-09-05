@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -41,6 +42,13 @@ var (
 
 const serverConfigSecretName = "ovpn-admin-server-config"
 const serverConfigSecretKey = "data"
+
+// errServerConfigPersist marks an apply() failure that occurred while durably
+// committing the config (persisting the JSON source of truth or writing the
+// rendered server.conf) rather than while validating/rendering it. The request
+// was well-formed; the server simply could not commit it — so the HTTP layer
+// maps this to a 5xx, while a validation error stays a 4xx.
+var errServerConfigPersist = errors.New("server config not persisted")
 
 // ServerConfig — единственный источник правды для openvpn-сервера.
 // Сериализуется в Secret ovpn-admin-server-config или в JSON-файл.
@@ -832,10 +840,14 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 			current.Initialized = true
 			current.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 			current.UpdatedBy = updatedBy
-			m.store.replace(current)
+			// Durable-commit BEFORE flipping the in-memory store: persist the
+			// JSON source of truth first, so a restart can't silently revert
+			// the "initialized" acknowledgement while the API reported success.
 			if err := m.persist(current); err != nil {
-				log.Warnf("apply: persist (initialized flag only) failed: %v", err)
+				ovpnServerConfigErrors.WithLabelValues("persist").Inc()
+				return "", fmt.Errorf("%w: persist initialized flag: %v", errServerConfigPersist, err)
 			}
+			m.store.replace(current)
 		}
 		return "none", nil
 	}
@@ -848,20 +860,26 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 		ovpnServerConfigErrors.WithLabelValues("render").Inc()
 		return "", err
 	}
-	if err := writeFileAtomic(m.confPath, []byte(rendered)); err != nil {
-		ovpnServerConfigErrors.WithLabelValues("write").Inc()
-		return "", fmt.Errorf("write conf: %w", err)
+
+	// Commit-then-respond: persist the durable JSON source of truth FIRST.
+	// If this fails we must NOT write server.conf, swap the in-memory store, or
+	// signal a reload — otherwise a restart would silently revert to the old
+	// config while the API had already reported success (a lying 200).
+	if err := m.persist(newCfg); err != nil {
+		ovpnServerConfigErrors.WithLabelValues("persist").Inc()
+		return "", fmt.Errorf("%w: persist server config: %v", errServerConfigPersist, err)
 	}
 
-	// `current` was previously captured as a backup for rollback. We don't
-	// roll back in-process (openvpn restarts out-of-band via the watch-loop /
-	// mgmt SIGTERM); the validation step above guards the bad-config case at
-	// save time.
-	_ = current
-	m.store.replace(newCfg)
-	if err := m.persist(newCfg); err != nil {
-		log.Warnf("apply: persist failed: %v", err)
+	// server.conf is a derived artifact of the now-durable config; write it
+	// only after the JSON is committed. A failure here is still a commit
+	// failure from the caller's perspective (the running openvpn won't pick up
+	// the change), so surface it as 5xx and leave the in-memory store untouched.
+	if err := writeFileAtomic(m.confPath, []byte(rendered)); err != nil {
+		ovpnServerConfigErrors.WithLabelValues("write").Inc()
+		return "", fmt.Errorf("%w: write conf: %v", errServerConfigPersist, err)
 	}
+
+	m.store.replace(newCfg)
 
 	// MASQUERADE reconcile happens inside the openvpn container at
 	// (re)start (ensure_masquerade in configure.sh parses the rendered
@@ -1009,7 +1027,14 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 		kind, err := oAdmin.serverManager.apply(r.Context(), cfg, updatedBy)
 		if err != nil {
 			log.Errorf("server-config: apply: %v", err)
-			writeJSONError(w, http.StatusBadRequest, "failed to apply server config")
+			// A persist/write failure is a server-side commit error (5xx); a
+			// validation/render failure is a client error (4xx). Never report a
+			// success the durable state doesn't back.
+			if errors.Is(err, errServerConfigPersist) {
+				writeJSONError(w, http.StatusInternalServerError, "failed to persist server config")
+			} else {
+				writeJSONError(w, http.StatusBadRequest, "failed to apply server config")
+			}
 			return
 		}
 		if !reflect.DeepEqual(preExclusions, cfg.RedirectGatewayExclusions) || preGlobalRedirect != cfg.RedirectGateway {

@@ -145,32 +145,42 @@ func (s *mfaStore) load() {
 	}
 	s.mu.Unlock()
 	if migrated {
-		s.save()
-		log.Infof("mfaStore: migrated plaintext secrets to AES-GCM (v1)")
+		if err := s.save(); err != nil {
+			// Best-effort: the re-encrypted secrets are live in memory; a failed
+			// write just means the migration re-runs next boot.
+			log.Warnf("mfaStore: failed to persist migrated secrets: %v", err)
+		} else {
+			log.Infof("mfaStore: migrated plaintext secrets to AES-GCM (v1)")
+		}
 	}
 }
 
-func (s *mfaStore) save() {
+// save persists the store to disk. It returns an error so callers that enable
+// or tear down MFA can refuse to report success on a lost write (a non-persisted
+// enable would silently disable MFA after a restart).
+func (s *mfaStore) save() error {
 	if s.path == "" {
-		return
+		return nil
 	}
 	s.mu.RLock()
 	raw, err := json.Marshal(s.data)
 	s.mu.RUnlock()
 	if err != nil {
 		log.Warnf("mfaStore: failed to marshal: %v", err)
-		return
+		return fmt.Errorf("marshal mfa store: %w", err)
 	}
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		log.Warnf("mfaStore: failed to create directory %s: %v", dir, err)
-		return
+		return fmt.Errorf("create mfa store dir: %w", err)
 	}
 	// Atomic write: a torn write would leave _mfa_secrets.json unparseable
 	// at next boot, locking every MFA-enabled admin out of the UI.
 	if err := writeFileAtomicSecret(s.path, raw); err != nil {
 		log.Warnf("mfaStore: failed to write %s: %v", s.path, err)
+		return fmt.Errorf("write mfa store: %w", err)
 	}
+	return nil
 }
 
 // get returns a record with the Secret field DECRYPTED in memory. Callers
@@ -196,27 +206,52 @@ func (s *mfaStore) get(username string) (mfaRecord, bool) {
 
 // set accepts a record whose Secret field is plaintext base32. It encrypts
 // the secret before persisting; callers must never see ciphertext.
-func (s *mfaStore) set(username string, rec mfaRecord) {
+//
+// Commit-then-respond: if the durable write fails, the in-memory change is
+// rolled back so live state never claims an enable/rotate that isn't on disk.
+func (s *mfaStore) set(username string, rec mfaRecord) error {
 	if rec.Secret != "" {
 		enc, err := encryptSecret(rec.Secret)
 		if err != nil {
 			log.Errorf("mfaStore: encrypt failed for %s: %v", username, err)
-			return
+			return fmt.Errorf("encrypt mfa secret: %w", err)
 		}
 		rec.Secret = enc
 		rec.Version = 1
 	}
 	s.mu.Lock()
+	prev, had := s.data[username]
 	s.data[username] = rec
 	s.mu.Unlock()
-	s.save()
+	if err := s.save(); err != nil {
+		s.mu.Lock()
+		if had {
+			s.data[username] = prev
+		} else {
+			delete(s.data, username)
+		}
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
-func (s *mfaStore) delete(username string) {
+func (s *mfaStore) delete(username string) error {
 	s.mu.Lock()
+	prev, had := s.data[username]
 	delete(s.data, username)
 	s.mu.Unlock()
-	s.save()
+	if err := s.save(); err != nil {
+		// Roll back so a failed persist doesn't leave MFA disabled in memory
+		// but re-enabled on disk (it would resurrect after a restart).
+		s.mu.Lock()
+		if had {
+			s.data[username] = prev
+		}
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *mfaStore) isEnabled(username string) bool {

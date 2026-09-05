@@ -2,6 +2,10 @@ package main
 
 import (
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -49,5 +53,54 @@ func TestEmptyPurposeRejected(t *testing.T) {
 	token := enc + "." + computeHMAC(enc, secret)
 	if _, ok := verifySession(token); ok {
 		t.Fatal("a token with no purpose must not be accepted as a session")
+	}
+}
+
+// TestRevokeToken_PersistFailure locks in that a logout whose blacklist write
+// fails is reported as a 5xx, not a lying 200 — otherwise the revoked session
+// would revalidate after a restart (the durable blacklist never got the entry).
+func TestRevokeToken_PersistFailure(t *testing.T) {
+	ensureSigningKey()
+
+	// Point the blacklist file at a path whose parent is a regular file so the
+	// atomic write fails deterministically (ENOTDIR).
+	f := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := revokedTokensFile
+	revokedTokensFile = filepath.Join(f, "blacklist.json")
+	t.Cleanup(func() { revokedTokensFile = prev })
+
+	token := signSession("admin", true)
+	if err := revokeToken(token); err == nil {
+		t.Fatal("revokeToken must return an error when the blacklist can't be persisted")
+	}
+
+	// The direct call above added the token to the in-memory blacklist (only the
+	// disk persist failed). verifySessionPayload rejects an already-blacklisted
+	// token, so re-revoking the same token via logout would be a no-op (nil).
+	// Reset the blacklist so the logout path genuinely re-attempts persistence.
+	revokedTokensMu.Lock()
+	revokedTokens = map[string]int64{}
+	revokedTokensMu.Unlock()
+
+	// The logout handler must surface that as a 500 while still clearing the cookie.
+	app := &OvpnAdmin{}
+	req := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	rec := httptest.NewRecorder()
+	app.logoutHandler(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("logout with a failed revocation persist must return 500, got %d", rec.Code)
+	}
+	var cleared bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == sessionCookieName && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("logout must still clear the session cookie even on persist failure")
 	}
 }

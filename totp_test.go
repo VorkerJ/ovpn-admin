@@ -95,6 +95,70 @@ func TestMfaStore_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestMfaStore_Set_PersistFailureRollsBack(t *testing.T) {
+	t.Parallel()
+	// Path whose parent is a regular file → save() can't MkdirAll/write it.
+	f := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newMfaStore(filepath.Join(f, "mfa.json"))
+
+	err := s.set("alice", mfaRecord{Secret: "JBSWY3DPEHPK3PXP", Enabled: true})
+	if err == nil {
+		t.Fatal("set must return an error when the store can't be persisted")
+	}
+	// Rollback: a failed persist must not leave MFA enabled in memory.
+	if _, ok := s.get("alice"); ok {
+		t.Error("failed set must roll back the in-memory record")
+	}
+	if s.isEnabled("alice") {
+		t.Error("MFA must not be enabled in memory after a failed persist")
+	}
+}
+
+func TestMfaConfirm_PersistFailureNoBackupCodes(t *testing.T) {
+	oAdmin, _ := newTestAdminWithMFA(t)
+	cookie := sessionCookie("testadmin")
+
+	// Start setup with a good path so the (not-yet-enabled) secret persists.
+	key, err := generateTOTPKey("testadmin")
+	if err != nil {
+		t.Fatalf("generateTOTPKey: %v", err)
+	}
+	if err := oAdmin.mfaStore.set("testadmin", mfaRecord{
+		Secret:    key.Secret(),
+		Enabled:   false,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed setup: %v", err)
+	}
+
+	// Break persistence, then confirm with a VALID code: the enable can't be
+	// saved, so the handler must 500 and hand out no backup codes, and MFA must
+	// stay disabled (set() rolls back).
+	oAdmin.mfaStore.path = filepath.Join(oAdmin.mfaStore.path, "nope", "mfa.json")
+
+	code, err := totp.GenerateCode(key.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("GenerateCode: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/mfa/confirm", strings.NewReader(`{"code":"`+code+`"}`))
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	oAdmin.mfaConfirmHandler(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("persist failure must return 500, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "backup_codes") {
+		t.Error("no backup codes may be handed out when the enable wasn't persisted")
+	}
+	if oAdmin.mfaStore.isEnabled("testadmin") {
+		t.Error("MFA must remain disabled after a failed persist")
+	}
+}
+
 func TestMfaStore_Delete(t *testing.T) {
 	t.Parallel()
 

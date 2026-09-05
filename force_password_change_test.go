@@ -183,3 +183,47 @@ func TestAdminChangePassword_RotatesAndClearsGate(t *testing.T) {
 		t.Error("new password must be accepted after change")
 	}
 }
+
+func TestAdminChangePassword_PersistFailureRollsBack(t *testing.T) {
+	ensureSigningKey()
+	withMustChange(t, true)
+
+	const oldPass = "temp-password-xyz"
+	const newPass = "BrandNewStrongPass123"
+
+	hash, _ := bcrypt.GenerateFromPassword([]byte(oldPass), bcrypt.MinCost)
+	prevUsers := htpasswdUsers
+	htpasswdUsers = map[string]string{"admin": string(hash)}
+	t.Cleanup(func() { htpasswdUsers = prevUsers })
+
+	// Persist path whose parent is a regular file → saveAdminHtpasswd fails.
+	f := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prevPath := adminHtpasswdPersistPath
+	adminHtpasswdPersistPath = filepath.Join(f, "admin.htpasswd")
+	t.Cleanup(func() { adminHtpasswdPersistPath = prevPath })
+
+	app := &OvpnAdmin{}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/change-password",
+		strings.NewReader(`{"current_password":"`+oldPass+`","new_password":"`+newPass+`"}`))
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: signSession("admin", true)})
+	rec := httptest.NewRecorder()
+	app.adminChangePasswordHandler(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("persist failure must return 500, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	// Rollback: the in-memory credential must NOT switch, and the forced-change
+	// gate must remain, so the change didn't silently become memory-only.
+	if !adminPasswordChangeRequired() {
+		t.Error("forced-change gate must remain after a failed persist")
+	}
+	if !validateCredentials("admin", oldPass) {
+		t.Error("old password must still be valid after a failed persist (no memory-only switch)")
+	}
+	if validateCredentials("admin", newPass) {
+		t.Error("new password must NOT be accepted after a failed persist")
+	}
+}
