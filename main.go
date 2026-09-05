@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io/fs"
 	"net"
@@ -502,6 +504,14 @@ func main() {
 		fmt.Fprintf(w, "pong")
 	}))
 
+	// Readiness endpoint (UNAUTHENTICATED, like /metrics can be) on the MAIN
+	// listen port at the fixed path /readyz — the Helm readinessProbe points
+	// here on port 8080. It returns 200 only when the backend is actually
+	// usable and 503 (with a short reason) otherwise, so Kubernetes never
+	// routes traffic to a pod whose PKI/CRL/storage/mgmt are broken. Kept
+	// cheap: local file stat/parse plus one short mgmt TCP dial.
+	http.HandleFunc("/readyz", get(readyzHandler(buildReadinessChecker(store, ovpnAdmin))))
+
 	log.Printf("Bind: http://%s:%s%s", *listenHost, *listenPort, *listenBaseUrl)
 	srv := &http.Server{
 		Addr:              *listenHost + ":" + *listenPort,
@@ -512,4 +522,114 @@ func main() {
 		IdleTimeout:       2 * time.Minute,
 	}
 	log.Fatal(srv.ListenAndServe())
+}
+
+// readinessChecker bundles the cheap health probes /readyz runs. Each field is
+// nil-safe (a nil check is skipped) and returns nil when its dependency is
+// healthy or an error describing why it is not. Bundling the probes behind
+// funcs keeps the handler unit-testable without a live cluster or openvpn.
+type readinessChecker struct {
+	pkiReady     func() error // CA/server certs present and parseable
+	crlReady     func() error // CRL present
+	storageReady func() error // storage backend reachable (cheap read)
+	mgmtReady    func() error // OpenVPN management interface reachable
+}
+
+// check runs the probes in a fixed order and returns the first failure's
+// reason (name: err) with ok=false, or ("ok", true) when all pass.
+func (rc readinessChecker) check() (string, bool) {
+	probes := []struct {
+		name string
+		fn   func() error
+	}{
+		{"pki", rc.pkiReady},
+		{"crl", rc.crlReady},
+		{"storage", rc.storageReady},
+		{"mgmt", rc.mgmtReady},
+	}
+	for _, p := range probes {
+		if p.fn == nil {
+			continue
+		}
+		if err := p.fn(); err != nil {
+			return fmt.Sprintf("%s: %v", p.name, err), false
+		}
+	}
+	return "ok", true
+}
+
+// readyzHandler serves the readiness result: 200 "ok" when healthy, else 503
+// with a short reason.
+func readyzHandler(rc readinessChecker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reason, ok := rc.check()
+		if !ok {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, "not ready: %s\n", reason)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "ok")
+	}
+}
+
+// buildReadinessChecker wires the concrete probes against the running backend.
+// PKI/CRL are checked on disk (both backends materialize pki/ files there),
+// storage via a cheap LoadServerConfig (a real API Get on the k8s backend),
+// and mgmt via a short TCP dial to the "main" interface.
+func buildReadinessChecker(store storage.Store, ovpnAdmin *OvpnAdmin) readinessChecker {
+	return readinessChecker{
+		pkiReady: func() error {
+			if err := checkCertFileLoadable(filepath.Join(*easyrsaDirPath, "pki", "ca.crt")); err != nil {
+				return fmt.Errorf("CA cert: %w", err)
+			}
+			if err := checkCertFileLoadable(filepath.Join(*easyrsaDirPath, "pki", "issued", "server.crt")); err != nil {
+				return fmt.Errorf("server cert: %w", err)
+			}
+			return nil
+		},
+		crlReady: func() error {
+			fi, err := os.Stat(filepath.Join(*easyrsaDirPath, "pki", "crl.pem"))
+			if err != nil {
+				return err
+			}
+			if fi.Size() == 0 {
+				return fmt.Errorf("crl.pem is empty")
+			}
+			return nil
+		},
+		storageReady: func() error {
+			_, err := store.LoadServerConfig()
+			return err
+		},
+		mgmtReady: func() error {
+			addr, ok := ovpnAdmin.mgmtInterfaces["main"]
+			if !ok {
+				return fmt.Errorf("no 'main' mgmt interface configured")
+			}
+			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+			if err != nil {
+				return err
+			}
+			_ = conn.Close()
+			return nil
+		},
+	}
+}
+
+// checkCertFileLoadable reads a PEM file and confirms it holds a parseable
+// X.509 certificate — a cheap "PKI is present and sane" probe.
+func checkCertFileLoadable(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return fmt.Errorf("no PEM block in %s", path)
+	}
+	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	return nil
 }

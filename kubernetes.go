@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -65,6 +66,47 @@ type RevokedCert struct {
 	Cert        *x509.Certificate `json:"cert"`
 }
 
+// indexTxtEntry formats a single OpenVPN index.txt line for one certificate.
+// It is pure (no clientset) so the status logic is unit-testable. Precedence:
+//   - revoked (revokedAt set) => "R", regardless of expiry (revocation is the
+//     stronger, security-relevant state and carries the revocation date);
+//   - non-revoked but past NotAfter => "E" (expired);
+//   - otherwise => "V" (valid).
+//
+// Previously any non-revoked cert was emitted as "V" and expiry was only ever
+// examined inside the already-revoked branch, so an expired-but-not-revoked
+// cert was misreported as valid.
+func indexTxtEntry(revokedAt string, notAfter, now time.Time, serial, name string) string {
+	switch {
+	case revokedAt != "":
+		return fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\n", "R", notAfter.Format(indexTxtDateFormat), revokedAt, serial, "unknown", "/CN="+name)
+	case notAfter.Before(now):
+		return fmt.Sprintf("%s\t%s\t\t%s\t%s\t%s\n", "E", notAfter.Format(indexTxtDateFormat), serial, "unknown", "/CN="+name)
+	default:
+		return fmt.Sprintf("%s\t%s\t\t%s\t%s\t%s\n", "V", notAfter.Format(indexTxtDateFormat), serial, "unknown", "/CN="+name)
+	}
+}
+
+// k8sLabelValueRegexp mirrors Kubernetes' label-value rules: empty, or a string
+// that begins and ends with an alphanumeric and contains only alphanumerics,
+// '-', '_' and '.' in between, up to 63 chars.
+var k8sLabelValueRegexp = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9_.\-]*[a-zA-Z0-9])?$`)
+
+// validateK8sLabelValue rejects usernames that cannot be stored as a Kubernetes
+// label value. Under the kubernetes.secrets backend the CN is used verbatim as
+// the "name" label (see easyrsaBuildClient), and label values disallow '@' —
+// which usernameRegexp otherwise permits for the filesystem backend. Without
+// this guard such a user fails deep in the Secrets API with an opaque 422.
+func validateK8sLabelValue(v string) error {
+	if len(v) > 63 {
+		return fmt.Errorf("username %q is too long for the kubernetes.secrets backend (max 63 chars as a Kubernetes label value)", v)
+	}
+	if !k8sLabelValueRegexp.MatchString(v) {
+		return fmt.Errorf("username %q is not valid under the kubernetes.secrets backend: it is used as a Kubernetes label value, which allows only letters, digits, '-', '_' and '.' and must start and end with a letter or digit ('@' is not allowed)", v)
+	}
+	return nil
+}
+
 func (openVPNPKI *OpenVPNPKI) run() (err error) {
 	if _, err := os.Stat(kubeNamespaceFilePath); err == nil {
 		file, err := ioutil.ReadFile(kubeNamespaceFilePath)
@@ -74,58 +116,59 @@ func (openVPNPKI *OpenVPNPKI) run() (err error) {
 		namespace = string(file)
 	}
 
-	err = openVPNPKI.initKubeClient()
-	if err != nil {
-		return
+	// Every step below is CRITICAL to a usable backend except the final CCD
+	// sync (an optional feature). Return immediately on a critical failure:
+	// previously each step only logged and reused the shared `err`, so a later
+	// step's success silently overwrote an earlier CRITICAL error and run()
+	// returned nil — the process would come up with broken PKI and no way for a
+	// readiness probe to know. Fail fast instead.
+	if err = openVPNPKI.initKubeClient(); err != nil {
+		return fmt.Errorf("init kube client: %w", err)
 	}
 
-	err = openVPNPKI.initPKI()
-	if err != nil {
-		return
+	if err = openVPNPKI.initPKI(); err != nil {
+		return fmt.Errorf("init PKI: %w", err)
 	}
 
-	err = openVPNPKI.indexTxtUpdate()
-	if err != nil {
-		log.Error(err)
+	if err = openVPNPKI.indexTxtUpdate(); err != nil {
+		return fmt.Errorf("sync index.txt: %w", err)
 	}
 
-	err = openVPNPKI.easyrsaGenCRL()
-	if err != nil {
-		log.Error(err)
+	if err = openVPNPKI.easyrsaGenCRL(); err != nil {
+		return fmt.Errorf("generate CRL: %w", err)
 	}
 
 	if res, _ := openVPNPKI.secretCheckExists(secretDHandTA); !res {
-		err := openVPNPKI.secretGenTaKeyAndDHParam()
-		if err != nil {
-			log.Error(err)
+		if err = openVPNPKI.secretGenTaKeyAndDHParam(); err != nil {
+			return fmt.Errorf("generate ta.key/dh.pem: %w", err)
 		}
 	}
 
-	err = openVPNPKI.updateFilesFromSecrets()
-	if err != nil {
-		log.Error(err)
+	if err = openVPNPKI.updateFilesFromSecrets(); err != nil {
+		return fmt.Errorf("write PKI files to disk: %w", err)
 	}
 
-	err = openVPNPKI.updateCRLOnDisk()
-	if err != nil {
-		log.Error(err)
+	if err = openVPNPKI.updateCRLOnDisk(); err != nil {
+		return fmt.Errorf("write crl.pem to disk: %w", err)
 	}
 
-	err = openVPNPKI.updateIndexTxtOnDisk()
-	if err != nil {
-		log.Error(err)
+	if err = openVPNPKI.updateIndexTxtOnDisk(); err != nil {
+		return fmt.Errorf("write index.txt to disk: %w", err)
 	}
 
-	err = openVPNPKI.updateCcdOnDisk()
-	if err != nil {
-		log.Error(err)
+	// CCD is an optional feature; a failure here must not block startup.
+	if ccdErr := openVPNPKI.updateCcdOnDisk(); ccdErr != nil {
+		log.Errorf("update ccd on disk (non-fatal): %v", ccdErr)
 	}
 
 	return
 }
 
 func (openVPNPKI *OpenVPNPKI) initKubeClient() (err error) {
-	config, _ := rest.InClusterConfig()
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("in-cluster config: %w", err)
+	}
 	openVPNPKI.KubeClient, err = kubernetes.NewForConfig(config)
 	return
 }
@@ -237,14 +280,13 @@ func (openVPNPKI *OpenVPNPKI) indexTxtUpdate() (err error) {
 
 		log.Trace(cert.Subject.CommonName)
 
-		if secret.Annotations["revokedAt"] == "" {
-			indexTxt += fmt.Sprintf("%s\t%s\t\t%s\t%s\t%s\n", "V", cert.NotAfter.Format(indexTxtDateFormat), fmt.Sprintf("%d", cert.SerialNumber), "unknown", "/CN="+secret.Labels["name"])
-		} else if cert.NotAfter.Before(time.Now()) {
-			indexTxt += fmt.Sprintf("%s\t%s\t\t%s\t%s\t%s\n", "E", cert.NotAfter.Format(indexTxtDateFormat), fmt.Sprintf("%d", cert.SerialNumber), "unknown", "/CN="+secret.Labels["name"])
-		} else {
-			indexTxt += fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\n", "R", cert.NotAfter.Format(indexTxtDateFormat), secret.Annotations["revokedAt"], fmt.Sprintf("%d", cert.SerialNumber), "unknown", "/CN="+secret.Labels["name"])
-		}
-
+		indexTxt += indexTxtEntry(
+			secret.Annotations["revokedAt"],
+			cert.NotAfter,
+			time.Now(),
+			fmt.Sprintf("%d", cert.SerialNumber),
+			secret.Labels["name"],
+		)
 	}
 
 	secretMetaData := metav1.ObjectMeta{Name: secretIndexTxt}
@@ -362,6 +404,13 @@ func (openVPNPKI *OpenVPNPKI) verifyRevokedInCRL(commonName string, secret *v1.S
 }
 
 func (openVPNPKI *OpenVPNPKI) easyrsaBuildClient(commonName string) (err error) {
+	// Under the k8s backend the CN becomes a label value; reject '@' and other
+	// label-invalid names here with a clear message (filesystem behavior via
+	// validateUsername is unchanged).
+	if err = validateK8sLabelValue(commonName); err != nil {
+		return
+	}
+
 	// check certificate exists
 	_, err = openVPNPKI.secretGetByLabels("name=" + commonName)
 	if err == nil {
