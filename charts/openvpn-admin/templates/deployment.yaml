@@ -41,11 +41,19 @@ spec:
           image: busybox:1.36
           command: ["sysctl", "-w", "net.ipv4.ip_forward=1"]
           securityContext:
-            # privileged required to set net.ipv4.ip_forward; capabilities are
-            # otherwise dropped to the minimum needed.
-            privileged: true
+            # net.ipv4.ip_forward is a per-netns sysctl; CAP_NET_ADMIN in the
+            # pod's network namespace is what authorizes the write, so full
+            # `privileged` is NOT required — least privilege is root + NET_ADMIN
+            # only. (root because /proc/sys/net is root-writable even with the
+            # cap.) allowPrivilegeEscalation stays false: no setuid escalation is
+            # needed, the cap is granted at container start.
+            # If your CRI remounts /proc/sys read-only for non-privileged
+            # containers, either add net.ipv4.ip_forward to the kubelet's
+            # --allowed-unsafe-sysctls and set it via pod securityContext.sysctls,
+            # or (last resort) restore privileged: true here.
+            privileged: false
             runAsUser: 0
-            allowPrivilegeEscalation: true
+            allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
               add: ["NET_ADMIN"]
@@ -236,6 +244,10 @@ spec:
             {{- toYaml .Values.ovpnAdmin.startupProbe | nindent 12 }}
           livenessProbe:
             {{- toYaml .Values.ovpnAdmin.livenessProbe | nindent 12 }}
+          {{- with .Values.ovpnAdmin.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: ovpn-dynamic-conf
               mountPath: /etc/openvpn-dynamic

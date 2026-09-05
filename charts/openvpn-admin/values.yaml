@@ -65,6 +65,16 @@ ovpnAdmin:
       port: http
     periodSeconds: 15
     failureThreshold: 3
+  # Readiness gates Service endpoints until the app can serve. /readyz is an
+  # unauthenticated liveness/readiness endpoint on the main port (8080, named
+  # "http") — distinct from "/" so a pod that's up but not yet ready is kept out
+  # of rotation. Rendered verbatim; retune freely.
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    periodSeconds: 10
+    failureThreshold: 3
 
   # PKI storage backend: "filesystem" or "kubernetes.secrets"
   # kubernetes.secrets stores all certs in etcd — no PVC needed
@@ -121,12 +131,18 @@ ovpnAdmin:
 #   - resets all per-user traffic counters and revokes API tokens,
 #   - in no-htpasswd mode, re-triggers the forced first-login password change.
 #
-# Left OFF by default only so a bare `helm install` still starts on clusters with
-# no default StorageClass. Set enabled=true (and a storageClass if needed) for any
-# real deployment. Upgrades from a build that stored this state elsewhere are
-# migrated automatically on first start — no manual copy needed.
+# Default ON: losing MFA enrollment / session epochs / API tokens / traffic
+# history on every rollout is the bigger hazard, so the safe default persists
+# them. Upgrades from a build that stored this state elsewhere are migrated
+# automatically on first start — no manual copy needed.
+#
+# NOTE: with enabled=true and storageClass "" the PVC binds via the cluster's
+# DEFAULT StorageClass. On a cluster that has NO default StorageClass the PVC
+# stays Pending and the pod won't start — set persistence.storageClass to a real
+# class, or persistence.existingClaim, or (last resort) persistence.enabled=false
+# to fall back to an emptyDir (accepting the state loss described above).
 persistence:
-  enabled: false
+  enabled: true
   # existingClaim: ""          # use a pre-created PVC instead of creating one
   storageClass: ""             # "" = cluster default StorageClass
   accessMode: ReadWriteOnce
@@ -213,10 +229,26 @@ ingress:
   hostname: ""
   annotations: {}
     # cert-manager.io/cluster-issuer: letsencrypt
+  # TLS for the admin UI Ingress. The chart does NOT create this Secret.
+  # Leave secretName empty and the Ingress renders with NO tls block (so
+  # `helm install` with ingress enabled never references a Secret that doesn't
+  # exist). Set it to either:
+  #   - an existing TLS Secret you created, OR
+  #   - the name cert-manager should populate (add a cert-manager.io/cluster-issuer
+  #     annotation above; cert-manager then creates this Secret for you).
+  tls:
+    secretName: ""
 
 # ----------------------------------------------------------------
 # RBAC
 # ----------------------------------------------------------------
+# SECURITY: the Role grants create/list/update/patch/delete on ALL Secrets in the
+# release namespace (dynamic per-client cert secret names make resourceNames
+# impossible for those verbs — see templates/rbac.yaml). Mitigation: install
+# ovpn-admin into a DEDICATED namespace that holds nothing else, so a compromise
+# can't reach unrelated Secrets. The namespace comes from Helm's install target
+# (`helm install -n ovpn-admin --create-namespace ...`) — there is no in-chart
+# namespace knob; every object renders into .Release.Namespace.
 rbac:
   create: true
   serviceAccountName: ovpn-admin

@@ -35,12 +35,24 @@ rules:
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["secrets"]
-    # No resourceNames possible: client cert secrets use the dynamic name
-    # pattern openvpn-pki-<serial>. `update`/`patch` are required here (not just
-    # on the static secrets above) because revoke AND delete mutate the client's
-    # OWN cert secret — revoke stamps a `revokedAt` annotation, delete relabels
-    # it to REVOKED-<cn>-<hash>. Without update, delete/revoke fail with
-    # "cannot update resource secrets" and the user is never removed.
+    # ⚠ SECURITY RISK — READ THIS ⚠
+    # This grants create/list/update/patch/delete on EVERY Secret in the release
+    # namespace (no resourceNames): client cert secrets use the dynamic name
+    # pattern openvpn-pki-<serial>, and resourceNames does not support wildcards,
+    # so these verbs cannot be narrowed. Consequence: a compromise of ovpn-admin
+    # (or its ServiceAccount token) can read/alter/delete ANY Secret that shares
+    # this namespace.
+    #   MITIGATION: run ovpn-admin in a DEDICATED namespace containing nothing
+    #   else (`helm install -n ovpn-admin --create-namespace ...`), so the blast
+    #   radius is limited to this app's own Secrets. This is inherent to the
+    #   kubernetes.secrets PKI backend and CANNOT be fixed by tightening the Role.
+    #   We already keep it as narrow as possible: a namespaced Role (not a
+    #   ClusterRole), and the static secrets above are pinned by resourceNames.
+    # `update`/`patch` are required here (not just on the static secrets above)
+    # because revoke AND delete mutate the client's OWN cert secret — revoke
+    # stamps a `revokedAt` annotation, delete relabels it to REVOKED-<cn>-<hash>.
+    # Without update, delete/revoke fail with "cannot update resource secrets"
+    # and the user is never removed.
     verbs: ["create", "list", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["services"]

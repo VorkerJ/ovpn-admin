@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   pki-init:
     image: alpine:3.23

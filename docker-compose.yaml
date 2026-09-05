@@ -1,5 +1,3 @@
-version: '3'
-
 # ───────────────────────────────────────────────────────────────────────
 #  ovpn-admin + OpenVPN, production-friendly docker-compose
 #
@@ -54,7 +52,15 @@ services:
     pids_limit: 200
     ports:
       # OpenVPN public port. Defaults to UDP/1194 — change OVPN_PROTO to "tcp" if needed.
-      - "${OVPN_PORT:-1194}:1194/${OVPN_PROTO:-udp}"
+      # Host and container port are BOTH driven by ${OVPN_PORT} so the published
+      # port always matches the port ovpn-admin renders into server.conf (seeded
+      # via OVPN_SERVER_PORT/OVPN_SERVER_PROTO on the ovpn-admin service below).
+      # LIMITATION: the runtime port/proto is UI-changeable. A change made in the
+      # panel is written to server.conf and openvpn rebinds, but Docker's static
+      # port publish can't follow it — update OVPN_PORT/OVPN_PROTO in .env and
+      # re-run `docker compose up -d` to republish, or the VPN becomes unreachable.
+      # Safe default: host port == container port == seeded server.conf port.
+      - "${OVPN_PORT:-1194}:${OVPN_PORT:-1194}/${OVPN_PROTO:-udp}"
       # Admin UI. Defaults to localhost-only (127.0.0.1) so it's not exposed publicly.
       # Override OVPN_ADMIN_BIND=0.0.0.0 to expose (then put a TLS reverse proxy in front).
       - "${OVPN_ADMIN_BIND:-127.0.0.1}:${OVPN_ADMIN_PORT:-8080}:8080"
@@ -71,7 +77,21 @@ services:
     command: /app/ovpn-admin
     restart: unless-stopped
     environment:
-      OVPN_NETWORK: "${OVPN_NETWORK_BASE:-172.16.100.0}/24"
+      # VPN subnet ovpn-admin uses for IP allocation. Driven from the SAME base +
+      # prefix as the openvpn container's OVPN_SERVER_NET/OVPN_SERVER_MASK so both
+      # views agree. OVPN_NETWORK_PREFIX (CIDR bits) MUST describe the same subnet
+      # as OVPN_NETWORK_MASK on the openvpn service — default /24 == 255.255.255.0.
+      # Change both together if you use a different mask.
+      OVPN_NETWORK: "${OVPN_NETWORK_BASE:-172.16.100.0}/${OVPN_NETWORK_PREFIX:-24}"
+      # Seed the first-boot server.conf so the rendered config listens on the
+      # SAME proto/port/network as the published port mapping and the openvpn
+      # container's env — otherwise the built-in default (tcp/1194) would render
+      # a server.conf that mismatches the udp/1194 published port and the VPN is
+      # unreachable. These are the initial values; the UI can change them later.
+      OVPN_SERVER_PROTO: "${OVPN_PROTO:-udp}"
+      OVPN_SERVER_PORT: "${OVPN_PORT:-1194}"
+      OVPN_SERVER_NETWORK: "${OVPN_NETWORK_BASE:-172.16.100.0}"
+      OVPN_SERVER_NETWORK_MASK: "${OVPN_NETWORK_MASK:-255.255.255.0}"
       OVPN_CCD: "true"
       OVPN_CCD_PATH: "/mnt/ccd"
       EASYRSA_PATH: "/mnt/easyrsa"
@@ -84,6 +104,13 @@ services:
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       OVPN_FIREWALL: "${OVPN_FIREWALL:-true}"
       OVPN_SERVER_CONFIG_PATH: "/etc/openvpn-dynamic/server.conf"
+      # network_mode:service:openvpn shares the openvpn container's netns. On a
+      # HARD server-config reload (port/proto/cipher/tls-mode/DCO change) the
+      # openvpn container is recreated and gets a NEW netns; ovpn-admin would be
+      # left bound to the dead one (admin UI 502). Self-exit on hard reload so the
+      # restart policy brings it back attached to the live netns. REQUIRED for this
+      # topology; leave false only when openvpn watches server.conf itself (Helm).
+      OVPN_SERVER_CONFIG_HARD_RELOAD_SELF_EXIT: "true"
       # Pin admin password by mounting ./htpasswd → /mnt/auth/htpasswd (read-only)
       # When unset, ovpn-admin auto-generates a temporary password printed in logs.
       ADMIN_HTPASSWD_FILE: "${ADMIN_HTPASSWD_FILE:-}"
