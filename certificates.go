@@ -35,7 +35,8 @@ func decodeCert(certPEMBytes []byte) (cert *x509.Certificate, err error) {
 // decode private key from PEM to RSA format
 func decodePrivKey(privKey []byte) (key *rsa.PrivateKey, err error) {
 	privKeyPem, _ := pem.Decode(privKey)
-	// Guard against a nil block (no PEM data) before dereferencing .Bytes.
+	// pem.Decode returns nil when the input holds no PEM block; guard before
+	// dereferencing .Bytes to avoid a nil-pointer panic.
 	if privKeyPem == nil {
 		return nil, errors.New("failed to decode private key: no PEM block found")
 	}
@@ -49,7 +50,15 @@ func decodePrivKey(privKey []byte) (key *rsa.PrivateKey, err error) {
 		err = errors.New("error parse private key")
 		return
 	}
-	key, _ = tmp.(*rsa.PrivateKey)
+	// A PKCS#8 container can hold a non-RSA key (EC, Ed25519, …). The old
+	// `key, _ = tmp.(*rsa.PrivateKey)` silently returned a nil key with a nil
+	// error, so callers got a nil *rsa.PrivateKey and panicked later. Return an
+	// explicit error instead.
+	rsaKey, ok := tmp.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key is not an RSA key (got %T)", tmp)
+	}
+	key = rsaKey
 
 	return
 }

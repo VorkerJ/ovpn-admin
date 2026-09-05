@@ -15,16 +15,28 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (oAdmin *OvpnAdmin) getCcdTemplate() *template.Template {
+// getCcdTemplate returns the parsed CCD template. It NEVER panics: the old
+// template.Must panicked the request handler whenever a custom template file
+// was malformed. A read/parse failure is now returned as an error for the
+// caller to handle gracefully. Prefer validating templates once at startup via
+// validateTemplates() so a broken template fails fast instead of mid-request.
+func (oAdmin *OvpnAdmin) getCcdTemplate() (*template.Template, error) {
 	if *ccdTemplatePath != "" {
-		return template.Must(template.ParseFiles(*ccdTemplatePath))
-	} else {
-		data, err := fs.ReadFile(oAdmin.templates, "ccd.tpl")
+		t, err := template.ParseFiles(*ccdTemplatePath)
 		if err != nil {
-			log.Errorf("ccdTpl not found in embedded templates: %v", err)
+			return nil, fmt.Errorf("parse ccd template %q: %w", *ccdTemplatePath, err)
 		}
-		return template.Must(template.New("ccd").Parse(string(data)))
+		return t, nil
 	}
+	data, err := fs.ReadFile(oAdmin.templates, "ccd.tpl")
+	if err != nil {
+		return nil, fmt.Errorf("ccd template not found in embedded templates: %w", err)
+	}
+	t, err := template.New("ccd").Parse(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("parse embedded ccd template: %w", err)
+	}
+	return t, nil
 }
 
 // reservedCcdMarkers are the comment tokens parseCcd uses to classify push
@@ -93,6 +105,13 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 		}
 		switch {
 		case strings.HasPrefix(str[0], "ifconfig-push"):
+			// A valid directive is `ifconfig-push ADDR MASK` — need at least a
+			// 2nd field. A malformed line without one would panic on str[1];
+			// skip it instead.
+			if len(str) < 2 {
+				log.Warnf("parseCcd: skipping malformed ifconfig-push line: %q", v)
+				continue
+			}
 			ccd.ClientAddress = str[1]
 		case strings.HasPrefix(str[0], "push"):
 			// Split the directive from its trailing "# ..." comment and trust a
@@ -237,7 +256,11 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 		ccd.MergedExclusions = mergeExclusions(nil, ccd.RedirectGatewayExclusions)
 	}
 
-	t := oAdmin.getCcdTemplate()
+	t, tErr := oAdmin.getCcdTemplate()
+	if tErr != nil {
+		log.Errorf("modifyCcd: ccd template: %v", tErr)
+		return false, "ccd template error"
+	}
 	var tmp bytes.Buffer
 	if err := t.Execute(&tmp, ccd); err != nil {
 		log.Error(err)
@@ -395,59 +418,100 @@ func (oAdmin *OvpnAdmin) kickUsersAfterCcdChange(users []string) {
 	log.Infof("kickUsersAfterCcdChange: signalled %d user(s) to reconnect", len(users))
 }
 
+// refreshCommonRoutesOnce re-resolves the global common-routes domain entries
+// and, on a successful persist, publishes the new set in memory and rerenders
+// CCDs. Persist happens FIRST: if the write fails the in-memory routes are left
+// untouched so memory and disk cannot diverge (a later tick retries).
+func (oAdmin *OvpnAdmin) refreshCommonRoutesOnce(ctx context.Context) {
+	current := oAdmin.commonRoutes.snapshot()
+	hasDomain := false
+	for _, r := range current.Routes {
+		if r.Kind == "domain" {
+			hasDomain = true
+			break
+		}
+	}
+	if !hasDomain {
+		return
+	}
+	updated, changed, okCount, failed := refreshAllDomains(ctx, current, time.Now())
+	// Persist FIRST, publish in-memory only on success. Swapping memory before a
+	// failed write would leave the process serving routes that vanish on the
+	// next restart.
+	if err := oAdmin.persistCommonRoutes(updated); err != nil {
+		log.Errorf("scheduler persist: %v (keeping previous in-memory routes)", err)
+		return
+	}
+	oAdmin.commonRoutes.replace(updated)
+	log.Infof("common-routes scheduler: resolved=%d failed=%d changed=%v", okCount, failed, changed)
+	if changed {
+		oAdmin.rerenderAllCcds(expandCommonRoutes(updated))
+	}
+}
+
 func (oAdmin *OvpnAdmin) runCommonRoutesScheduler() {
 	ctx := context.Background()
 
 	runOnce := func() {
 		// 1) refresh global common-routes domains
-		current := oAdmin.commonRoutes.snapshot()
-		hasDomain := false
-		for _, r := range current.Routes {
-			if r.Kind == "domain" {
-				hasDomain = true
-				break
-			}
-		}
-		if hasDomain {
-			updated, changed, okCount, failed := refreshAllDomains(ctx, current, time.Now())
-			oAdmin.commonRoutes.replace(updated)
-			if err := oAdmin.persistCommonRoutes(updated); err != nil {
-				log.Errorf("scheduler persist: %v", err)
-			}
-			log.Infof("common-routes scheduler: resolved=%d failed=%d changed=%v", okCount, failed, changed)
-			if changed {
-				oAdmin.rerenderAllCcds(expandCommonRoutes(updated))
-			}
-		}
-
+		oAdmin.refreshCommonRoutesOnce(ctx)
 		// 2) refresh per-user CCD domain routes
 		oAdmin.refreshAllUserDomains(ctx)
 	}
 
-	runOnce()
+	// The initial run also honors the disable contract: with the scheduler
+	// disabled (interval <= 0) we do not refresh at startup either.
+	if _, enabled := oAdmin.schedulerRunState(); enabled {
+		runOnce()
+	}
 
-	// Re-read interval each tick so a UI change takes effect at the next
-	// fire without restarting the process. interval==0 pauses the loop
-	// entirely; admin can resume by saving a non-zero value.
+	// Re-read the interval each tick so a UI change takes effect at the next
+	// fire without restarting the process. Per server_config.go's contract a
+	// DomainRefreshIntervalHours <= 0 DISABLES the scheduler; while disabled we
+	// still poll hourly so an admin re-enabling it (saving a positive value)
+	// takes effect without a restart.
 	for {
-		interval := 24 * time.Hour
-		if oAdmin.serverConfigStore != nil {
-			h := oAdmin.serverConfigStore.snapshot().DomainRefreshIntervalHours
-			if h > 0 {
-				interval = time.Duration(h) * time.Hour
-			} else if h < 0 {
-				// negative means "disabled"; wait an hour then re-check
-				interval = time.Hour
-			}
-		}
+		interval, enabled := oAdmin.schedulerRunState()
 		time.Sleep(interval)
-		// Skip the refresh body when the admin has disabled it; only the
-		// re-poll loop above keeps spinning.
-		if oAdmin.serverConfigStore != nil && oAdmin.serverConfigStore.snapshot().DomainRefreshIntervalHours < 0 {
+		if !enabled {
+			continue
+		}
+		// Re-check after sleeping in case it was disabled meanwhile.
+		if _, stillEnabled := oAdmin.schedulerRunState(); !stillEnabled {
 			continue
 		}
 		runOnce()
 	}
+}
+
+// schedulerRunState reports how long to sleep before the next DNS refresh and
+// whether the refresh is enabled at all. Per server_config.go's documented
+// contract a DomainRefreshIntervalHours <= 0 DISABLES the scheduler (0 was
+// previously mishandled as "use 24h" — only a negative value disabled). When
+// disabled we still return a 1h poll interval so re-enabling from the UI is
+// picked up without a restart. With no serverConfigStore the historical
+// default applies (enabled, once a day).
+func (oAdmin *OvpnAdmin) schedulerRunState() (interval time.Duration, enabled bool) {
+	if oAdmin.serverConfigStore == nil {
+		return 24 * time.Hour, true
+	}
+	h := oAdmin.serverConfigStore.snapshot().DomainRefreshIntervalHours
+	if h > 0 {
+		return time.Duration(h) * time.Hour, true
+	}
+	return time.Hour, false
+}
+
+// validateOpenvpnNetwork parses the configured OVPN_NETWORK once so a bad
+// value fails fast at startup rather than panicking inside validateCcd's
+// ovpnNet.Contains on the first static-address request. Call from main after
+// flag parsing.
+func validateOpenvpnNetwork() error {
+	_, ovpnNet, err := net.ParseCIDR(*openvpnNetwork)
+	if err != nil || ovpnNet == nil {
+		return fmt.Errorf("invalid OVPN_NETWORK %q: %w", *openvpnNetwork, err)
+	}
+	return nil
 }
 
 // refreshAllUserDomains re-resolves all per-user CCD domain routes and rewrites
@@ -515,8 +579,12 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 
 	if ccd.ClientAddress != "dynamic" {
 		_, ovpnNet, err := net.ParseCIDR(*openvpnNetwork)
-		if err != nil {
-			log.Error(err)
+		if err != nil || ovpnNet == nil {
+			// A bad OVPN_NETWORK would leave ovpnNet nil and panic the later
+			// ovpnNet.Contains call. Fail the request cleanly instead — the
+			// value is also validated at startup by validateOpenvpnNetwork.
+			log.Errorf("validateCcd: invalid OVPN_NETWORK %q: %v", *openvpnNetwork, err)
+			return false, fmt.Sprintf("server misconfigured: invalid OVPN_NETWORK %q", *openvpnNetwork)
 		}
 
 		if !oAdmin.checkStaticAddressIsFree(ccd.ClientAddress, ccd.User) {

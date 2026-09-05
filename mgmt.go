@@ -163,6 +163,19 @@ func (oAdmin *OvpnAdmin) mgmtGetActiveClients() ([]clientStatus, bool) {
 	return activeClients, ok
 }
 
+// parseMgmtVersionLine extracts the version token from an OpenVPN management
+// "version" banner line — expected shape "OpenVPN Version: OpenVPN 2.x.y ...",
+// where the token is at space-separated field index 3. Returns ok=false when
+// the line is too short to hold that field, so the caller skips it instead of
+// panicking on strings.Split(s, " ")[3].
+func parseMgmtVersionLine(s string) (string, bool) {
+	fields := strings.Split(s, " ")
+	if len(fields) < 4 {
+		return "", false
+	}
+	return fields[3], true
+}
+
 func (oAdmin *OvpnAdmin) mgmtSetTimeFormat() {
 	// time format for version 2.5 and may be newer
 	oAdmin.mgmtStatusTimeFormat = "2006-01-02 15:04:05"
@@ -204,7 +217,12 @@ func (oAdmin *OvpnAdmin) mgmtSetTimeFormat() {
 
 		for _, s := range strings.Split(out, "\n") {
 			if strings.Contains(s, "OpenVPN Version:") {
-				serverVersions = append(serverVersions, serverVersion{srv, strings.Split(s, " ")[3]})
+				ver, ok := parseMgmtVersionLine(s)
+				if !ok {
+					log.Warnf("mgmtSetTimeFormat: cannot parse version line: %q", s)
+					break
+				}
+				serverVersions = append(serverVersions, serverVersion{srv, ver})
 				break
 			}
 		}

@@ -359,14 +359,25 @@ func (oAdmin *OvpnAdmin) usersList() []OpenvpnClient {
 	return users
 }
 
+// parseOpenvpnServers converts OVPN_SERVER entries ("HOST:PORT:PROTOCOL") into
+// OpenvpnServer values. An entry lacking all three colon-parts is skipped (with
+// a log) rather than panicking on the missing parts[1]/parts[2] index.
+func parseOpenvpnServers(servers []string) []OpenvpnServer {
+	var hosts []OpenvpnServer
+	for _, server := range servers {
+		parts := strings.SplitN(server, ":", 3)
+		if len(parts) < 3 {
+			log.Errorf("parseOpenvpnServers: skipping malformed OVPN_SERVER %q (want HOST:PORT:PROTOCOL)", server)
+			continue
+		}
+		hosts = append(hosts, OpenvpnServer{Host: parts[0], Port: parts[1], Protocol: parts[2]})
+	}
+	return hosts
+}
+
 func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 	if checkUserExist(username) {
-		var hosts []OpenvpnServer
-
-		for _, server := range *openvpnServer {
-			parts := strings.SplitN(server, ":", 3)
-			hosts = append(hosts, OpenvpnServer{Host: parts[0], Port: parts[1], Protocol: parts[2]})
-		}
+		hosts := parseOpenvpnServers(*openvpnServer)
 
 		// If ServerConfig UI has overrides, apply them to the first host
 		if oAdmin.serverConfigStore != nil && len(hosts) > 0 {
@@ -407,10 +418,14 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 			conf.MgmtClientAuth = sc.MgmtClientAuth
 		}
 
-		t := oAdmin.getClientConfigTemplate()
+		t, err := oAdmin.getClientConfigTemplate()
+		if err != nil {
+			log.Errorf("renderClientConfig: client-config template for %s: %v", username, err)
+			return fmt.Sprintf("client config template error: %v", err)
+		}
 
 		var tmp bytes.Buffer
-		err := t.Execute(&tmp, conf)
+		err = t.Execute(&tmp, conf)
 		if err != nil {
 			log.Errorf("something goes wrong during rendering config for %s", username)
 			log.Debugf("rendering config for %s failed with error %v", username, err)
@@ -426,16 +441,41 @@ func (oAdmin *OvpnAdmin) renderClientConfig(username string) string {
 	return fmt.Sprintf("user \"%s\" not found", username)
 }
 
-func (oAdmin *OvpnAdmin) getClientConfigTemplate() *template.Template {
+// getClientConfigTemplate returns the parsed client-config template. Like
+// getCcdTemplate it NEVER panics (the old template.Must panicked the request
+// handler on a malformed custom template); parse/read failures are returned as
+// errors. Prefer validating templates once at startup via validateTemplates().
+func (oAdmin *OvpnAdmin) getClientConfigTemplate() (*template.Template, error) {
 	if *clientConfigTemplatePath != "" {
-		return template.Must(template.ParseFiles(*clientConfigTemplatePath))
-	} else {
-		data, err := fs.ReadFile(oAdmin.templates, "client.conf.tpl")
+		t, err := template.ParseFiles(*clientConfigTemplatePath)
 		if err != nil {
-			log.Errorf("clientConfigTpl not found in embedded templates: %v", err)
+			return nil, fmt.Errorf("parse client-config template %q: %w", *clientConfigTemplatePath, err)
 		}
-		return template.Must(template.New("client-config").Parse(string(data)))
+		return t, nil
 	}
+	data, err := fs.ReadFile(oAdmin.templates, "client.conf.tpl")
+	if err != nil {
+		return nil, fmt.Errorf("client-config template not found in embedded templates: %w", err)
+	}
+	t, err := template.New("client-config").Parse(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("parse embedded client-config template: %w", err)
+	}
+	return t, nil
+}
+
+// validateTemplates parses every user-facing template once so a broken custom
+// template file fails fast at STARTUP rather than panicking a request handler
+// via template.Must. Call it from main after oAdmin.templates is set (and after
+// flag parsing so the custom-path flags are populated).
+func (oAdmin *OvpnAdmin) validateTemplates() error {
+	if _, err := oAdmin.getClientConfigTemplate(); err != nil {
+		return err
+	}
+	if _, err := oAdmin.getCcdTemplate(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func indexTxtParser(txt string) []indexTxtLine {
@@ -675,18 +715,29 @@ func getOvpnServerHostsFromKubeApi() ([]OpenvpnServer, error) {
 
 	config, err := rest.InClusterConfig()
 	if err != nil {
+		// Without a usable config the clientset below is unusable and its
+		// first call would nil-deref; bail out cleanly.
 		log.Errorf("%s", err.Error())
+		return nil, err
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Errorf("%s", err.Error())
+		return nil, err
 	}
 
 	for _, serviceName := range *openvpnServiceName {
 		service, err := clientset.CoreV1().Services(fRead(kubeNamespaceFilePath)).Get(context.TODO(), serviceName, metav1.GetOptions{})
 		if err != nil {
-			log.Error(err)
+			// On an API error `service` is nil; dereferencing service.Status /
+			// service.Spec.Ports[0] below would panic. Skip this service.
+			log.Errorf("kube api: get service %q: %v", serviceName, err)
+			continue
+		}
+		if service == nil {
+			log.Errorf("kube api: service %q returned nil without error", serviceName)
+			continue
 		}
 
 		log.Tracef("service from kube api %v", service)
@@ -702,6 +753,12 @@ func getOvpnServerHostsFromKubeApi() ([]OpenvpnServer, error) {
 			if lbIngress[0].IP != "" {
 				lbHost = lbIngress[0].IP
 			}
+		}
+
+		// A Service with no ports would panic on Ports[0]; skip it.
+		if len(service.Spec.Ports) == 0 {
+			log.Errorf("kube api: service %q has no ports; skipping", serviceName)
+			continue
 		}
 
 		hosts = append(hosts, OpenvpnServer{lbHost, strconv.Itoa(int(service.Spec.Ports[0].Port)), strings.ToLower(string(service.Spec.Ports[0].Protocol))})
