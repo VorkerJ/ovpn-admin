@@ -5,6 +5,62 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.59] — 2026-09-07
+
+Second-audit P2 (quality/robustness) + #3/#8, plus frontend dependency updates.
+
+### Fixed
+
+- **API returns 200 only after state is durably saved (#3).** Server-config apply,
+  MFA set/save/confirm, API-token create/revoke, admin password change and the
+  logout blacklist previously logged a persist error but still returned success —
+  so a restart could revert a password, resurrect a revoked token, revalidate a
+  session or disable a "successfully enabled" MFA. These now persist first and
+  return an error (with in-memory rollback) instead of a false 200.
+- **Kubernetes startup no longer reports healthy with broken PKI (#8).** `run()`
+  fails fast on a critical step instead of letting a later success mask it,
+  `initKubeClient` no longer ignores the `InClusterConfig` error, and a new
+  unauthenticated `GET /readyz` (port 8080) checks PKI/CRL/storage/mgmt; the Helm
+  chart wires a readinessProbe to it.
+- **User create/rotate/delete/unrevoke are atomic (#9).** A failed password step
+  after cert issuance rolls the cert back (no orphan credential); rotate validates
+  the new password before mutating and propagates failures; unrevoke no longer
+  swallows storage errors; the filesystem rotate never rewrites index 0 when the
+  CN is absent.
+- **Hardened against panics on malformed input (#11).** CCD `ifconfig-push`,
+  `OVPN_NETWORK`, `OVPN_SERVER`, the k8s Service lookup, PKCS#8 non-RSA keys,
+  user templates (now parsed once and validated, no `template.Must` mid-request),
+  and the mgmt `version` parse all guard bad input instead of panicking.
+- **DNS route scheduler honors its contract (#12):** `DomainRefreshIntervalHours
+  <= 0` now disables it (was: 0 → 24h), and it persists before publishing.
+- **Kubernetes model consistency (#14):** usernames invalid as a k8s label value
+  (e.g. containing `@`) are rejected on the kubernetes.secrets backend, and
+  index.txt marks non-revoked expired certs `E`.
+
+### Changed
+
+- **Deployment configs (#7/#16).** docker-compose: sets
+  `OVPN_SERVER_CONFIG_HARD_RELOAD_SELF_EXIT`, keeps host↔container port and network
+  consistent, drops the obsolete `version:` key. Helm chart: persistence defaults
+  ON (a rollout no longer wipes MFA/session/token state), the init-container drops
+  `privileged` (NET_ADMIN only), the Ingress TLS block is conditional, and the
+  RBAC namespace-wide-secrets risk is documented (mitigation: dedicated namespace).
+- **Frontend dependencies updated** to clear all npm audit advisories (axios
+  1.16.1→1.20.0, vite 5→8, etc.); `npm audit` reports 0.
+
+### Upgrade notes (for 2.0.58 security changes)
+
+- **Config-distribution services (e.g. a self-service Portal) hitting
+  `/api/user/config/show`:** that endpoint returns a private key and is now
+  denied to service-account tokens by default. Grant the specific trusted token
+  `allow_config_export` (currently set on the token record directly — no UI yet).
+  Other tokens stay default-denied.
+- **Session signing-key ownership:** the strict key check refuses a key file not
+  owned by the process user (or with group/world access). If the state-dir was
+  created under an older non-root uid but the container now runs as root, `chown`
+  the state-dir to match — do NOT delete the key (that rotates it, logging every
+  admin out AND making existing MFA secrets undecryptable).
+
 ## [2.0.58] — 2026-09-04
 
 Second security audit — critical/high findings (P0/P1). P2 quality items tracked separately.
