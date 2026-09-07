@@ -485,10 +485,13 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 		o, err := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
 		log.Debug(o)
 		if err != nil {
-			// The cert is built but the password entry failed: a password-auth
-			// user without a users.db row cannot connect. Report failure rather
-			// than a misleading "created".
-			log.Errorf("userCreate: openvpn-user create %s: %v", username, err)
+			// The cert is built but the password entry failed. Leaving the cert
+			// would be an orphan VALID credential (can connect cert-only), so
+			// roll it back — the operation fails cleanly with no half-created user.
+			log.Errorf("userCreate: create password for %s failed, rolling back cert: %v", username, err)
+			if delErr := oAdmin.store.DeleteClient(username); delErr != nil {
+				log.Errorf("userCreate: rollback DeleteClient(%s) after password failure: %v", username, delErr)
+			}
 			return false, fmt.Sprintf("Не удалось создать пароль пользователя: %v", err)
 		}
 	}
@@ -602,7 +605,10 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 	if checkUserExist(username) {
 		if err := oAdmin.store.UnrevokeClient(username); err != nil {
-			log.Error(err)
+			// Don't report success on a failed storage unrevoke — the cert would
+			// stay revoked while the UI says otherwise.
+			log.Errorf("userUnrevoke: UnrevokeClient(%s): %v", username, err)
+			return err, mustJSONMsg(fmt.Sprintf("Failed to unrevoke user %s: %v", username, err))
 		}
 
 		if *authByPassword {
@@ -619,7 +625,12 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 
 func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string) {
 	if checkUserExist(username) {
+		// Validate the new password BEFORE any mutation, so a bad password can't
+		// leave the user with its old password already deleted / cert rotated.
 		if *authByPassword {
+			if err := validatePassword(newPassword); err != nil {
+				return fmt.Errorf("rotate: invalid new password: %w", err), err.Error()
+			}
 			o, _ := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
@@ -630,8 +641,14 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 		}
 
 		if *authByPassword {
-			o, _ := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", newPassword)
+			o, err := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", newPassword)
 			log.Debug(o)
+			if err != nil {
+				// Cert rotated but the new password row failed — surface it
+				// instead of a misleading success (the user can't password-auth).
+				log.Errorf("userRotate: create password for %s: %v", username, err)
+				return fmt.Errorf("rotate: create password: %w", err), mustJSONMsg(fmt.Sprintf("Cert rotated but password update failed: %v", err))
+			}
 		}
 
 		crlFix()

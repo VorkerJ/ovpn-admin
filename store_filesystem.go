@@ -211,6 +211,7 @@ func (s *filesystemStore) UnrevokeClient(commonName string) error {
 func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 	var oldUserIndex, newUserIndex int
 	var oldUserSerial string
+	oldFound := false
 
 	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 
@@ -221,8 +222,14 @@ func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 			oldUserSerial = usersFromIndexTxt[i].SerialNumber
 			usersFromIndexTxt[i].DistinguishedName = "/CN=REVOKED-" + commonName + "-" + uniqHash
 			oldUserIndex = i
+			oldFound = true
 			break
 		}
+	}
+	// Never fall back to index 0: if the CN isn't in index.txt, writing/swapping
+	// would rewrite an UNRELATED entry (index 0). Abort instead.
+	if !oldFound {
+		return fmt.Errorf("rotate: user %q not found in index.txt", commonName)
 	}
 	if err := fWrite(s.indexTxtPath, renderIndexTxt(usersFromIndexTxt)); err != nil {
 		return fmt.Errorf("rotate: write index.txt after rename: %w", err)
@@ -248,13 +255,20 @@ func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 
 	// 4. Swap old and new entries so the new cert occupies the old position
 	usersFromIndexTxt = indexTxtParser(fRead(s.indexTxtPath))
+	newFound, oldReFound := false, false
 	for i := range usersFromIndexTxt {
 		if usersFromIndexTxt[i].DistinguishedName == "/CN="+commonName {
 			newUserIndex = i
+			newFound = true
 		}
 		if usersFromIndexTxt[i].SerialNumber == oldUserSerial {
 			oldUserIndex = i
+			oldReFound = true
 		}
+	}
+	// Don't swap against index 0 as a silent fallback if either entry is missing.
+	if !newFound || !oldReFound {
+		return fmt.Errorf("rotate: post-build index.txt missing new(%v)/old(%v) entry for %q", newFound, oldReFound, commonName)
 	}
 	usersFromIndexTxt[oldUserIndex], usersFromIndexTxt[newUserIndex] = usersFromIndexTxt[newUserIndex], usersFromIndexTxt[oldUserIndex]
 
