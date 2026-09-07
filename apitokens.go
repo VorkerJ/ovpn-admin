@@ -116,7 +116,7 @@ func sha256hex(s string) string {
 }
 
 // create issues a new token and returns the plaintext (shown once) + metadata.
-func (s *apiTokenStore) create(name, by string) (string, *apiToken, error) {
+func (s *apiTokenStore) create(name, by string, allowConfigExport bool) (string, *apiToken, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", nil, errors.New("требуется имя токена")
@@ -137,9 +137,9 @@ func (s *apiTokenStore) create(name, by string) (string, *apiToken, error) {
 		Hash:      sha256hex(plaintext),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		CreatedBy: by,
-		// AllowConfigExport is deliberately left false here: config/private-key
-		// export is opt-in and off by default. When token issuance grows a way to
-		// grant that capability (an API/UI flag on creation), set it on t here.
+		// Opt-in capability: config/private-key export is off unless the caller
+		// explicitly grants it (a deliberate checkbox in the UI, with a warning).
+		AllowConfigExport: allowConfigExport,
 	}
 	s.mu.Lock()
 	s.tokens[t.ID] = t
@@ -318,24 +318,26 @@ func (oAdmin *OvpnAdmin) apiTokensHandler(w http.ResponseWriter, r *http.Request
 			return
 		}
 		var req struct {
-			Name string `json:"name"`
+			Name              string `json:"name"`
+			AllowConfigExport bool   `json:"allow_config_export"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		plaintext, t, err := oAdmin.apiTokens.create(req.Name, oAdmin.sessionUser(r))
+		plaintext, t, err := oAdmin.apiTokens.create(req.Name, oAdmin.sessionUser(r), req.AllowConfigExport)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		log.Infof("api-tokens: created %q (id %s) by %s", t.Name, t.ID, t.CreatedBy)
+		log.Infof("api-tokens: created %q (id %s) by %s (config-export=%v)", t.Name, t.ID, t.CreatedBy, t.AllowConfigExport)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"id":         t.ID,
-			"name":       t.Name,
-			"token":      plaintext, // shown exactly once
-			"hint":       t.Hint,
-			"created_at": t.CreatedAt,
+			"id":                  t.ID,
+			"name":                t.Name,
+			"token":               plaintext, // shown exactly once
+			"hint":                t.Hint,
+			"created_at":          t.CreatedAt,
+			"allow_config_export": t.AllowConfigExport,
 		})
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")

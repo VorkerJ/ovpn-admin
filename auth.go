@@ -672,10 +672,10 @@ func loadOrGenerateSigningKey() error {
 		// CLOSED on any violation (symlink, non-regular, wrong owner, or any
 		// group/world permission bit) rather than trusting the file.
 		if !isOwnerOnlyCredFile(sessionSigningKeyFile) {
-			return fmt.Errorf("signing key file %s failed strict ownership/permission checks "+
-				"(must be a regular file, owned by this process, mode 0600 with no group/world access, not a symlink); "+
-				"refusing to use it — fix its ownership/permissions or delete it to rotate the key",
-				sessionSigningKeyFile)
+			return fmt.Errorf("session signing key %s cannot be trusted: %s. "+
+				"Fix the state-dir ownership/permissions to match the container user — do NOT delete the key: "+
+				"deleting rotates it, which logs every admin out AND makes existing MFA (TOTP) secrets undecryptable",
+				sessionSigningKeyFile, credFileIssue(sessionSigningKeyFile))
 		}
 		data, err := os.ReadFile(sessionSigningKeyFile)
 		if err != nil {
@@ -1248,6 +1248,31 @@ func isOwnerOnlyCredFile(path string) bool {
 		return false
 	}
 	return true
+}
+
+// credFileIssue returns a precise, operator-actionable reason an existing
+// credential file is not trusted (symlink, non-regular, group/world access, or
+// wrong owner — with the observed vs expected uid and a chown hint), or "" if it
+// passes every check. Used to build a self-explanatory fatal message.
+func credFileIssue(path string) string {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Sprintf("cannot lstat: %v", err)
+	}
+	switch {
+	case fi.Mode()&os.ModeSymlink != 0:
+		return "it is a symlink (refusing to follow a possibly-planted link)"
+	case !fi.Mode().IsRegular():
+		return "it is not a regular file"
+	case fi.Mode().Perm()&0o077 != 0:
+		return fmt.Sprintf("mode %#o grants group/world access (want 0600, owner-only)", fi.Mode().Perm())
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
+		euid := os.Geteuid()
+		return fmt.Sprintf("owned by uid %d but this process runs as uid %d — align it, e.g. `chown -R %d %s`",
+			st.Uid, euid, euid, filepath.Dir(path))
+	}
+	return ""
 }
 
 // saveAdminHtpasswd persists the current htpasswd map to disk atomically with

@@ -194,11 +194,13 @@ export async function fetchApiTokens() {
   return Array.isArray(data) ? data : []
 }
 
-export async function createApiToken(name) {
-  const { data } = await axios.post('api/api-tokens', JSON.stringify({ name }), {
-    headers: { 'Content-Type': 'application/json' },
-  })
-  return data // { id, name, token, hint, created_at }
+export async function createApiToken(name, allowConfigExport = false) {
+  const { data } = await axios.post(
+    'api/api-tokens',
+    JSON.stringify({ name, allow_config_export: allowConfigExport }),
+    { headers: { 'Content-Type': 'application/json' } },
+  )
+  return data // { id, name, token, hint, created_at, allow_config_export }
 }
 
 export async function revokeApiToken(id) {

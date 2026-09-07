@@ -5,6 +5,32 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.60] — 2026-09-07
+
+Two P2 usability improvements around the two footguns that "would have failed
+silently" during the 2.0.58/2.0.59 rollout — now surfaced in the UI and in the
+startup error instead of requiring hand-edits to storage.
+
+### Added
+
+- **Grant `allow_config_export` from the UI at token creation.** The API-tokens
+  modal now has an opt-in checkbox (off by default) to let a service-account
+  token export user configs *with the private key* (`/api/user/config/show`);
+  the token list shows an "export" badge for tokens that carry the capability.
+  `POST /api/api-tokens` accepts `allow_config_export` and echoes it back, and
+  `GET /api/api-tokens` reports it per token — no more editing the token store by
+  hand to grant export to an integration (e.g. the portal).
+
+### Changed
+
+- **Signing-key trust failure now says exactly what's wrong and what NOT to do.**
+  When the session signing key fails its strict ownership/permission check, the
+  fatal message now names the precise reason (symlink / non-regular / the exact
+  mode granting group-world access / owned by uid X but the process runs as uid Y,
+  with a `chown -R` hint pointing at the state dir) and explicitly warns to fix
+  ownership rather than delete the key — deleting it rotates the key, logging every
+  admin out AND rendering existing MFA (TOTP) secrets undecryptable.
+
 ## [2.0.59] — 2026-09-07
 
 Second-audit P2 (quality/robustness) + #3/#8, plus frontend dependency updates.

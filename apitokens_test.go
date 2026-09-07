@@ -13,7 +13,7 @@ import (
 func TestAPITokenCreateVerifyRevoke(t *testing.T) {
 	s := newAPITokenStore(filepath.Join(t.TempDir(), "tokens.json"))
 
-	plaintext, tok, err := s.create("teleport", "admin")
+	plaintext, tok, err := s.create("teleport", "admin", false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestAPITokenCreateVerifyRevoke(t *testing.T) {
 		}
 	}
 	// empty name rejected
-	if _, _, err := s.create("  ", "admin"); err == nil {
+	if _, _, err := s.create("  ", "admin", false); err == nil {
 		t.Fatal("empty token name must be rejected")
 	}
 
@@ -71,7 +71,7 @@ func badChildPath(t *testing.T) string {
 
 func TestAPITokenCreate_PersistFailure(t *testing.T) {
 	s := newAPITokenStore(badChildPath(t))
-	if _, _, err := s.create("svc", "admin"); err == nil {
+	if _, _, err := s.create("svc", "admin", false); err == nil {
 		t.Fatal("create must return an error when the store can't be persisted")
 	}
 	// Rollback: the un-persisted token must not linger in memory.
@@ -83,7 +83,7 @@ func TestAPITokenCreate_PersistFailure(t *testing.T) {
 func TestAPITokenRevoke_PersistFailureRollsBack(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	s := newAPITokenStore(path)
-	plaintext, tok, err := s.create("svc", "admin")
+	plaintext, tok, err := s.create("svc", "admin", false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestAPITokenRevoke_PersistFailureRollsBack(t *testing.T) {
 func TestAPITokenItemHandler_PersistFailureReturns500(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	store := newAPITokenStore(path)
-	_, tok, err := store.create("svc", "admin")
+	_, tok, err := store.create("svc", "admin", false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestAPITokenItemHandler_PersistFailureReturns500(t *testing.T) {
 func TestAPITokenPersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	s := newAPITokenStore(path)
-	plaintext, _, _ := s.create("svc", "admin")
+	plaintext, _, _ := s.create("svc", "admin", false)
 
 	// fresh store loaded from disk still verifies
 	s2 := newAPITokenStore(path)
@@ -211,19 +211,15 @@ func TestRequireTokenConfigExport(t *testing.T) {
 	app.apiTokens = newAPITokenStore(filepath.Join(t.TempDir(), "tokens.json"))
 
 	// A plain automation token — no export capability (the default).
-	plainNo, _, err := app.apiTokens.create("automation", "admin")
+	plainNo, _, err := app.apiTokens.create("automation", "admin", false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	// A token explicitly granted the export capability.
-	plainYes, tokYes, err := app.apiTokens.create("configbot", "admin")
+	plainYes, _, err := app.apiTokens.create("configbot", "admin", true)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	app.apiTokens.mu.Lock()
-	app.apiTokens.tokens[tokYes.ID].AllowConfigExport = true
-	app.apiTokens.mu.Unlock()
-
 	var reached bool
 	inner := func(w http.ResponseWriter, r *http.Request) {
 		reached = true

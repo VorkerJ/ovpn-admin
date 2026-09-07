@@ -8,7 +8,7 @@ import Dialog from '@/components/ui/Dialog.vue'
 import Button from '@/components/ui/Button.vue'
 import Tooltip from '@/components/ui/Tooltip.vue'
 import { fetchApiTokens, createApiToken, revokeApiToken, fetchMfaStatus } from '@/api.js'
-import { KeyRound, Copy, Check, Trash2, ShieldAlert } from 'lucide-vue-next'
+import { KeyRound, Copy, Check, Trash2, ShieldAlert, FileDown } from 'lucide-vue-next'
 
 const props = defineProps({ open: Boolean })
 const emit = defineEmits(['close'])
@@ -17,6 +17,10 @@ const tokens = ref([])
 const loading = ref(false)
 const error = ref('')
 const newName = ref('')
+// Grant the token the extra capability of exporting user configs *with the
+// private key* (/api/user/config/show). Off by default — most integrations only
+// create users and routes and must not be able to exfiltrate private keys.
+const allowConfigExport = ref(false)
 const creating = ref(false)
 // Creating a token requires an MFA-enabled admin session (server returns 412
 // otherwise). Mirror that in the UI so the button is disabled with an
@@ -52,6 +56,7 @@ watch(() => props.open, (o) => {
   if (o) {
     created.value = null
     newName.value = ''
+    allowConfigExport.value = false
     error.value = ''
     load()
     fetchMfaStatus().then(s => { mfaEnabled.value = !!s?.enabled }).catch(() => {})
@@ -63,8 +68,9 @@ async function create() {
   creating.value = true
   error.value = ''
   try {
-    created.value = await createApiToken(newName.value.trim())
+    created.value = await createApiToken(newName.value.trim(), allowConfigExport.value)
     newName.value = ''
+    allowConfigExport.value = false
     copied.value = false
     await load()
   } catch (e) {
@@ -162,6 +168,21 @@ function onClose() {
       </Tooltip>
     </div>
 
+    <!-- optional capability: allow this token to export user configs with private key -->
+    <label class="mb-4 flex items-start gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+      <input
+        v-model="allowConfigExport"
+        type="checkbox"
+        class="mt-0.5 h-3.5 w-3.5 shrink-0 rounded border-border"
+      >
+      <span>
+        Разрешить экспорт конфигов с приватным ключом
+        (<code class="font-mono">/api/user/config/show</code>).
+        По умолчанию выключено — без него токен может лишь создавать пользователей и маршруты,
+        но не выгружать приватные ключи.
+      </span>
+    </label>
+
     <!-- MFA requirement notice — visible without hovering the disabled button -->
     <div
       v-if="!mfaEnabled"
@@ -216,7 +237,18 @@ function onClose() {
             class="border-b border-border last:border-0 hover:bg-muted/30"
           >
             <td class="px-3 py-2 font-medium">
-              {{ t.name }}
+              <span class="inline-flex items-center gap-1.5">
+                {{ t.name }}
+                <Tooltip
+                  v-if="t.allow_config_export"
+                  text="Может экспортировать конфиги с приватным ключом (/api/user/config/show)"
+                >
+                  <span class="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                    <FileDown :size="11" />
+                    export
+                  </span>
+                </Tooltip>
+              </span>
             </td>
             <td class="px-3 py-2 font-mono text-xs text-muted-foreground">
               {{ t.hint }}
