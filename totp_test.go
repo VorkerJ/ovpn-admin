@@ -64,7 +64,7 @@ func TestMfaStore_RoundTrip(t *testing.T) {
 		BackupCodes: []string{"hash1", "hash2"},
 		CreatedAt:   "2025-01-01T00:00:00Z",
 	}
-	s.set("alice", rec)
+	_ = s.set("alice", rec)
 
 	// Verify in-memory
 	got, ok := s.get("alice")
@@ -166,13 +166,13 @@ func TestMfaStore_Delete(t *testing.T) {
 	path := filepath.Join(dir, "mfa.json")
 
 	s := newMfaStore(path)
-	s.set("bob", mfaRecord{Secret: "SECRET", Enabled: true})
+	_ = s.set("bob", mfaRecord{Secret: "SECRET", Enabled: true})
 
 	if !s.isEnabled("bob") {
 		t.Fatal("bob should be enabled")
 	}
 
-	s.delete("bob")
+	_ = s.delete("bob")
 
 	if _, ok := s.get("bob"); ok {
 		t.Fatal("bob should be deleted")
@@ -368,7 +368,7 @@ func TestMfaLogin_WithMFA(t *testing.T) {
 		t.Fatalf("generateTOTPKey: %v", err)
 	}
 	_, hashedBackup := generateBackupCodes(2)
-	oAdmin.mfaStore.set("testadmin", mfaRecord{
+	_ = oAdmin.mfaStore.set("testadmin", mfaRecord{
 		Secret:      key.Secret(),
 		Enabled:     true,
 		BackupCodes: hashedBackup,
@@ -520,7 +520,7 @@ func TestMfaLogin_BackupCode(t *testing.T) {
 		t.Fatalf("generateTOTPKey: %v", err)
 	}
 	plainCodes, hashedCodes := generateBackupCodes(3)
-	oAdmin.mfaStore.set("testadmin", mfaRecord{
+	_ = oAdmin.mfaStore.set("testadmin", mfaRecord{
 		Secret:      key.Secret(),
 		Enabled:     true,
 		BackupCodes: hashedCodes,
@@ -596,7 +596,7 @@ func TestMfaDisable(t *testing.T) {
 		t.Fatalf("generateTOTPKey: %v", err)
 	}
 	_, hashedBackup := generateBackupCodes(2)
-	oAdmin.mfaStore.set("testadmin", mfaRecord{
+	_ = oAdmin.mfaStore.set("testadmin", mfaRecord{
 		Secret:      key.Secret(),
 		Enabled:     true,
 		BackupCodes: hashedBackup,

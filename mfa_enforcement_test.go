@@ -80,7 +80,7 @@ func TestAdminHasMfa_SessionWithoutMfa(t *testing.T) {
 func TestAdminHasMfa_SessionMustHaveClearedSecondFactor(t *testing.T) {
 	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
-	app.mfaStore.set("mfauser_a", mfaRecord{
+	_ = app.mfaStore.set("mfauser_a", mfaRecord{
 		Secret:  "JBSWY3DPEHPK3PXP",
 		Enabled: true,
 	})
@@ -193,7 +193,7 @@ func TestRequireAdminMfa_Blocks412(t *testing.T) {
 func TestRequireAdminMfa_PassesThroughWhenEnabled(t *testing.T) {
 	app := &OvpnAdmin{}
 	app.mfaStore = newMfaStore(filepath.Join(t.TempDir(), "mfa.json"))
-	app.mfaStore.set("testuser", mfaRecord{
+	_ = app.mfaStore.set("testuser", mfaRecord{
 		Secret:  "JBSWY3DPEHPK3PXP",
 		Enabled: true,
 	})
