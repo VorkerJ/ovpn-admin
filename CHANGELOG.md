@@ -5,11 +5,13 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.60] — 2026-09-07
+## [2.0.61] — 2026-09-07
 
 Two P2 usability improvements around the two footguns that "would have failed
 silently" during the 2.0.58/2.0.59 rollout — now surfaced in the UI and in the
-startup error instead of requiring hand-edits to storage.
+startup error instead of requiring hand-edits to storage. (Supersedes the
+2.0.59/2.0.60 tags, whose image/chart build was gated by a test-only
+golangci-lint errcheck failure and never published; that lint is fixed here.)
 
 ### Added
 
