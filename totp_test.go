@@ -665,7 +665,7 @@ func TestMfaLogin_LockoutSurvivesPasswordReplay(t *testing.T) {
 		t.Fatalf("generateTOTPKey: %v", err)
 	}
 	_, hashedBackup := generateBackupCodes(2)
-	oAdmin.mfaStore.set("testadmin", mfaRecord{
+	_ = oAdmin.mfaStore.set("testadmin", mfaRecord{
 		Secret:      key.Secret(),
 		Enabled:     true,
 		BackupCodes: hashedBackup,
