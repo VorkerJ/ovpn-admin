@@ -1,3 +1,9 @@
+{{- /* Target uid for the ovpn-admin container. Computed with hasKey (not
+       `default`) because runAsUser: 0 is a valid, intentional value that Go
+       templates treat as empty — `0 | default 1000` would wrongly yield 1000. */}}
+{{- $adminSC := .Values.ovpnAdmin.securityContext | default dict }}
+{{- $adminUid := 1000 }}
+{{- if hasKey $adminSC "runAsUser" }}{{ $adminUid = $adminSC.runAsUser }}{{ end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -69,18 +75,24 @@ spec:
           # the group, and o+rx lets openvpn read them if it drops privileges.
           # 700 would leave the dir root-only → ovpn-admin fatals with
           # "open /etc/openvpn/ccd/...: permission denied".
-          # Also normalise the session signing key to 0600. A key written by a
-          # pre-2.0.58 build (or under a permissive umask) can sit on the PVC as
-          # 0660; the strict owner-only trust check (2.0.58+) then refuses it and
-          # ovpn-admin fatals on boot. chmod (not delete) preserves the key so
-          # admins stay logged in and existing MFA secrets remain decryptable.
+          # Also normalise the session signing key to <adminUid>:0600. A key from
+          # a pre-2.0.58 build (or a permissive umask) can sit on the PVC as 0660
+          # AND owned by a different uid than the app now runs as (e.g. a legacy
+          # non-root 1000 key while the app now runs as root for the firewall).
+          # The strict owner-only trust check (2.0.58+) rejects both, so we chown
+          # to the app's uid and chmod 0600 — a chown+chmod, never a delete, so
+          # admin sessions survive and existing MFA secrets stay decryptable. This
+          # needs CHOWN (change owner) and FOWNER (chmod a file we don't own);
+          # DAC_OVERRIDE lets root traverse the dir regardless of its mode.
           command:
             - sh
             - -c
             - |
               mkdir -p /etc/openvpn/ccd && chmod 2775 /etc/openvpn/ccd
-              if [ -f /var/lib/ovpn-admin/.session_signing_key ]; then
-                chmod 0600 /var/lib/ovpn-admin/.session_signing_key
+              key=/var/lib/ovpn-admin/.session_signing_key
+              if [ -f "$key" ]; then
+                chown {{ $adminUid }} "$key" || true
+                chmod 0600 "$key"
               fi
           securityContext:
             allowPrivilegeEscalation: false
@@ -88,6 +100,7 @@ spec:
             runAsUser: 0
             capabilities:
               drop: ["ALL"]
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
             seccompProfile:
               type: RuntimeDefault
           volumeMounts:

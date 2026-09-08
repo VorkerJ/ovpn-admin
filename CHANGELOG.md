@@ -5,6 +5,21 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.65] — 2026-09-08
+
+### Fixed
+
+- **init container also chowns the signing key to the app's uid (finishes the
+  2.0.63 fix).** 2.0.63 only chmod'd the key, which failed with EPERM on a legacy
+  key: the key was owned by a different uid than the app now runs as (a pre-hardening
+  non-root 1000 key while the app now runs as root for the firewall), and the
+  init container — `drop: ["ALL"]` — lacked CAP_FOWNER to chmod a file it doesn't
+  own. It also left the owner wrong, which the strict trust check rejects on its
+  own. `init-dirs` now `chown`s the key to the ovpn-admin container's uid and
+  `chmod 0600`s it, with the minimal caps to do so (CHOWN, FOWNER, DAC_OVERRIDE).
+  The target uid is read via `hasKey` so `runAsUser: 0` (root) is honoured rather
+  than mistaken for unset. Still a chown+chmod, never a delete.
+
 ## [2.0.64] — 2026-09-08
 
 ### Changed
