@@ -5,6 +5,20 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.62] — 2026-09-08
+
+### Fixed
+
+- **init-sysctl no longer CrashLoopBackOffs on read-only /proc/sys (prod outage).**
+  The `init-sysctl` init container (which sets `net.ipv4.ip_forward=1`) was
+  dropped to `privileged: false` + `CAP_NET_ADMIN` in an earlier hardening pass.
+  On most CRIs (containerd on YC/GKE-class clusters) `/proc/sys` is remounted
+  read-only for any non-privileged container, so `sysctl -w` failed with
+  "Read-only file system" regardless of caps — the pod never got past init and
+  ovpn-admin was `0/1` in production. Restored `privileged: true` on this
+  ephemeral busybox init (runs one sysctl and exits before the app containers;
+  same pattern as kube-proxy/CNI). The app containers stay unprivileged.
+
 ## [2.0.61] — 2026-09-07
 
 Two P2 usability improvements around the two footguns that "would have failed

@@ -41,19 +41,20 @@ spec:
           image: busybox:1.36
           command: ["sysctl", "-w", "net.ipv4.ip_forward=1"]
           securityContext:
-            # net.ipv4.ip_forward is a per-netns sysctl; CAP_NET_ADMIN in the
-            # pod's network namespace is what authorizes the write, so full
-            # `privileged` is NOT required — least privilege is root + NET_ADMIN
-            # only. (root because /proc/sys/net is root-writable even with the
-            # cap.) allowPrivilegeEscalation stays false: no setuid escalation is
-            # needed, the cap is granted at container start.
-            # If your CRI remounts /proc/sys read-only for non-privileged
-            # containers, either add net.ipv4.ip_forward to the kubelet's
-            # --allowed-unsafe-sysctls and set it via pod securityContext.sysctls,
-            # or (last resort) restore privileged: true here.
-            privileged: false
+            # net.ipv4.ip_forward is a per-netns sysctl and CAP_NET_ADMIN
+            # authorizes the write in principle — BUT most CRIs (containerd on
+            # YC/GKE-class clusters included) remount /proc/sys read-only for any
+            # container that is not privileged, so `sysctl -w` fails with
+            # "Read-only file system" no matter the caps. privileged: true is what
+            # gives this init a read-write /proc/sys. The blast radius is minimal:
+            # an ephemeral busybox that runs one sysctl and exits before the app
+            # containers start (same pattern as kube-proxy/CNI init). The pure
+            # least-privilege alternative — pod securityContext.sysctls — needs
+            # net.ipv4.ip_forward on the kubelet's --allowed-unsafe-sysctls on
+            # every node, which is a non-portable per-node infra change.
+            privileged: true
             runAsUser: 0
-            allowPrivilegeEscalation: false
+            allowPrivilegeEscalation: true
             capabilities:
               drop: ["ALL"]
               add: ["NET_ADMIN"]
