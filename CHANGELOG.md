@@ -5,6 +5,19 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.63] — 2026-09-08
+
+### Fixed
+
+- **init container normalises the session signing key to 0600 (prod boot loop).**
+  A signing key written by a pre-2.0.58 build (or under a permissive umask) can
+  sit on the state PVC as `0660`. The strict owner-only trust check added in
+  2.0.58 then refuses it and ovpn-admin fatals on boot
+  (`session signing key … mode 0660 grants group/world access`). `init-dirs` now
+  `chmod 0600`s the key (mounting the state PVC) before the app starts — a chmod,
+  never a delete, so admin sessions survive and existing MFA (TOTP) secrets stay
+  decryptable. Self-healing for any PVC that predates the 2.0.58 hardening.
+
 ## [2.0.62] — 2026-09-08
 
 ### Fixed

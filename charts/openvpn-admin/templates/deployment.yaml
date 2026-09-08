@@ -69,10 +69,23 @@ spec:
           # the group, and o+rx lets openvpn read them if it drops privileges.
           # 700 would leave the dir root-only → ovpn-admin fatals with
           # "open /etc/openvpn/ccd/...: permission denied".
-          command: ["sh", "-c", "mkdir -p /etc/openvpn/ccd && chmod 2775 /etc/openvpn/ccd"]
+          # Also normalise the session signing key to 0600. A key written by a
+          # pre-2.0.58 build (or under a permissive umask) can sit on the PVC as
+          # 0660; the strict owner-only trust check (2.0.58+) then refuses it and
+          # ovpn-admin fatals on boot. chmod (not delete) preserves the key so
+          # admins stay logged in and existing MFA secrets remain decryptable.
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /etc/openvpn/ccd && chmod 2775 /etc/openvpn/ccd
+              if [ -f /var/lib/ovpn-admin/.session_signing_key ]; then
+                chmod 0600 /var/lib/ovpn-admin/.session_signing_key
+              fi
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: false
+            runAsUser: 0
             capabilities:
               drop: ["ALL"]
             seccompProfile:
@@ -80,6 +93,8 @@ spec:
           volumeMounts:
             - name: openvpn-ccd
               mountPath: /etc/openvpn/ccd
+            - name: ovpn-admin-state
+              mountPath: /var/lib/ovpn-admin
 
       containers:
 
