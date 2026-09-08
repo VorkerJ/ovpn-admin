@@ -14,7 +14,7 @@ fullnameOverride: ""
 ovpnAdmin:
   image:
     repository: ghcr.io/vorkerj/ovpn-admin/ovpn-admin
-    # tag: defaults to .Chart.AppVersion when empty
+    # tag: empty → chart appVersion with leading "v" stripped (see deployment.yaml)
     tag: ""
     pullPolicy: IfNotPresent
 
@@ -157,7 +157,7 @@ persistence:
 openvpn:
   image:
     repository: ghcr.io/vorkerj/ovpn-admin/openvpn
-    # tag: defaults to .Chart.AppVersion when empty
+    # tag: empty → chart appVersion with leading "v" stripped (see deployment.yaml)
     tag: ""
     pullPolicy: IfNotPresent
 

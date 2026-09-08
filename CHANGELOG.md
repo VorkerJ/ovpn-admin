@@ -5,6 +5,19 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.64] — 2026-09-08
+
+### Changed
+
+- **Image tag now inherits the chart appVersion by default.** The deployment
+  template resolves each image tag as `image.tag | default (trimPrefix "v"
+  .Chart.AppVersion)`, so an empty `image.tag` tracks the chart version. CI
+  stamps `appVersion` as `vX.Y.Z` while ghcr tags are bare `X.Y.Z`; stripping the
+  leading `v` makes the inherited tag resolve to a real image. Operators can now
+  leave `ovpnAdmin.image.tag`/`openvpn.image.tag` empty in values and bump only
+  the Argo chart `targetRevision`; an explicit tag still overrides to pin a
+  specific image. (Carries the 2.0.63 signing-key `chmod 0600` init fix.)
+
 ## [2.0.63] — 2026-09-08
 
 ### Fixed

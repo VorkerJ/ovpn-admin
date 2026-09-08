@@ -100,7 +100,12 @@ spec:
 
         # ── OpenVPN ────────────────────────────────────────────────────
         - name: openvpn
-          image: "{{ .Values.openvpn.image.repository }}:{{ .Values.openvpn.image.tag | default .Chart.AppVersion }}"
+          # tag defaults to the chart's appVersion with any leading "v" stripped:
+          # CI stamps appVersion as "vX.Y.Z" but ghcr tags are bare "X.Y.Z", so a
+          # raw .Chart.AppVersion would resolve to a non-existent :vX.Y.Z tag.
+          # Leave image.tag empty in values to track the chart version; set it to
+          # pin/override a specific image.
+          image: '{{ .Values.openvpn.image.repository }}:{{ .Values.openvpn.image.tag | default (trimPrefix "v" .Chart.AppVersion) }}'
           imagePullPolicy: {{ .Values.openvpn.image.pullPolicy }}
           command:
             - sh
@@ -189,7 +194,9 @@ spec:
 
         # ── ovpn-admin UI ──────────────────────────────────────────────
         - name: ovpn-admin
-          image: "{{ .Values.ovpnAdmin.image.repository }}:{{ .Values.ovpnAdmin.image.tag | default .Chart.AppVersion }}"
+          # See the openvpn container above: tag defaults to appVersion with a
+          # leading "v" stripped so an empty image.tag tracks the chart version.
+          image: '{{ .Values.ovpnAdmin.image.repository }}:{{ .Values.ovpnAdmin.image.tag | default (trimPrefix "v" .Chart.AppVersion) }}'
           imagePullPolicy: {{ .Values.ovpnAdmin.image.pullPolicy }}
           # runAsUser MUST stay numeric while runAsNonRoot is true (a name-only
           # image USER fails kubelet's non-root check → CreateContainerConfigError).
