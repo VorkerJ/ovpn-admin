@@ -95,8 +95,8 @@ func TestInitChain_SequenceOfCommands(t *testing.T) {
 		"-N OVPN_FW",
 		"-F OVPN_FW",
 		"-I FORWARD",
-		"-A OVPN_FW -m conntrack",
-		"-A OVPN_FW -s 172.16.100.0/24 -j DROP",
+		"-I OVPN_FW 1 -m conntrack",             // stateful-return inserted above DROP
+		"-A OVPN_FW -s 172.16.100.0/24 -j DROP", // catch-all DROP
 	}
 	if len(commands) < len(wantPatterns) {
 		t.Fatalf("expected at least %d commands, got %d: %v", len(wantPatterns), len(commands), commands)
@@ -105,22 +105,27 @@ func TestInitChain_SequenceOfCommands(t *testing.T) {
 	for _, c := range commands {
 		joined = append(joined, joinSpace(c))
 	}
-	for _, want := range wantPatterns {
-		found := false
-		for _, j := range joined {
+	idxOf := func(want string) int {
+		for i, j := range joined {
 			if containsAll(j, want) {
-				found = true
-				break
+				return i
 			}
 		}
-		if !found {
+		return -1
+	}
+	for _, want := range wantPatterns {
+		if idxOf(want) < 0 {
 			t.Errorf("missing expected command pattern %q in:\n%v", want, joined)
 		}
 	}
-	// catch-all DROP должен быть последним
-	last := joined[len(joined)-1]
-	if !containsAll(last, "-A OVPN_FW -s 172.16.100.0/24 -j DROP") {
-		t.Errorf("expected catch-all DROP as last command, got %q", last)
+	// Audit F09 fail-closed ordering: the catch-all DROP is installed IMMEDIATELY
+	// after the flush — BEFORE the stateful-return — so that a failure of any
+	// later append leaves the chain closed (default-deny present) rather than open.
+	dropIdx := idxOf("-A OVPN_FW -s 172.16.100.0/24 -j DROP")
+	statefulIdx := idxOf("-I OVPN_FW 1 -m conntrack")
+	flushIdx := idxOf("-F OVPN_FW")
+	if !(flushIdx < dropIdx && dropIdx < statefulIdx) {
+		t.Errorf("expected order flush(%d) < DROP(%d) < stateful-return(%d)", flushIdx, dropIdx, statefulIdx)
 	}
 }
 

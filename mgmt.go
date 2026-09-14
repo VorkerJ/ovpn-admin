@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"regexp"
@@ -33,6 +34,39 @@ func (oAdmin *OvpnAdmin) mgmtRead(conn net.Conn) string {
 		}
 	}
 	return out
+}
+
+// mgmtReadStatus reads a "status" response and reports whether it terminated
+// with a proper "END" line (audit F12). A torn/half-open console that closes or
+// times out before END returns complete=false so callers that RECONCILE off the
+// snapshot (the firewall) treat it as UNKNOWN — never as an authoritative empty
+// client list, which would tear down rules for still-connected users.
+func (oAdmin *OvpnAdmin) mgmtReadStatus(conn net.Conn) (string, bool) {
+	recvData := make([]byte, 32768)
+	var out string
+	for {
+		n, err := conn.Read(recvData)
+		if n > 0 {
+			out += string(recvData[:n])
+			if mgmtHasEndLine(out) {
+				return out, true
+			}
+		}
+		if err != nil || n <= 0 {
+			return out, false // EOF/timeout/error before END → incomplete
+		}
+	}
+}
+
+// mgmtHasEndLine reports whether text contains a standalone "END" line (the
+// real status terminator), not merely the substring "END" somewhere in a field.
+func mgmtHasEndLine(text string) bool {
+	for _, ln := range strings.Split(text, "\n") {
+		if strings.TrimRight(ln, "\r") == "END" {
+			return true
+		}
+	}
+	return false
 }
 
 func (oAdmin *OvpnAdmin) mgmtConnectedUsersParser(text, serverName string) []clientStatus {
@@ -97,12 +131,33 @@ func (oAdmin *OvpnAdmin) mgmtConnectedUsersParser(text, serverName string) []cli
 				log.Warnf("mgmtConnectedUsersParser: skipping malformed route row: %q", txt)
 				continue
 			}
+			// Audit F11: with duplicate-cn, several client rows share one CommonName
+			// but have distinct Real Addresses. Match the routing row to its client
+			// by CN AND Real Address (route row index 2) so each concurrent session
+			// gets its own VirtualAddress — matching by CN alone assigned every
+			// routing row to the first client and left the rest with an empty IP,
+			// corrupting firewall sessions, status and metrics. Prefer an exact
+			// CN+RealAddress match; only fall back to a CN-only, still-unassigned
+			// client when the real address doesn't line up (older servers).
+			routeVirt, routeCN, routeReal, routeRef := user[0], user[1], user[2], user[3]
+			assigned := false
 			for i := range u {
-				if u[i].CommonName == user[1] {
-					u[i].VirtualAddress = user[0]
-					u[i].LastRef = user[3]
-					ovpnClientConnectionInfo.WithLabelValues(user[1], user[0]).Set(float64(parseDateToUnix(oAdmin.mgmtStatusTimeFormat, user[3])))
+				if u[i].CommonName == routeCN && u[i].RealAddress == routeReal {
+					u[i].VirtualAddress = routeVirt
+					u[i].LastRef = routeRef
+					ovpnClientConnectionInfo.WithLabelValues(routeCN, routeVirt).Set(float64(parseDateToUnix(oAdmin.mgmtStatusTimeFormat, routeRef)))
+					assigned = true
 					break
+				}
+			}
+			if !assigned {
+				for i := range u {
+					if u[i].CommonName == routeCN && u[i].VirtualAddress == "" {
+						u[i].VirtualAddress = routeVirt
+						u[i].LastRef = routeRef
+						ovpnClientConnectionInfo.WithLabelValues(routeCN, routeVirt).Set(float64(parseDateToUnix(oAdmin.mgmtStatusTimeFormat, routeRef)))
+						break
+					}
 				}
 			}
 		}
@@ -110,11 +165,16 @@ func (oAdmin *OvpnAdmin) mgmtConnectedUsersParser(text, serverName string) []cli
 	return u
 }
 
-func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) {
+// mgmtKillUserConnection kills a CN's session on serverName and returns an error
+// (audit F13) when the management console is unreachable, the write fails, or the
+// console does not acknowledge the kill with a SUCCESS line. Callers that must
+// guarantee termination (revoke/rotate) propagate/surface this instead of
+// logging an unverified "killed".
+func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) error {
 	conn, err := net.DialTimeout("tcp", oAdmin.mgmtInterfaces[serverName], 5*time.Second)
 	if err != nil {
 		log.Errorf("openvpn mgmt interface for %s is not reachable by addr %s", serverName, oAdmin.mgmtInterfaces[serverName])
-		return
+		return fmt.Errorf("mgmt interface %s unreachable: %w", serverName, err)
 	}
 	defer conn.Close()
 	// Bound the whole exchange. The OpenVPN management console serves a single
@@ -128,8 +188,17 @@ func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) {
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	oAdmin.mgmtRead(conn) // read welcome message
 	username = strings.NewReplacer("\n", "", "\r", "").Replace(username)
-	fmt.Fprintf(conn, "kill %s\n", username)
-	fmt.Printf("%v", oAdmin.mgmtRead(conn))
+	if _, werr := fmt.Fprintf(conn, "kill %s\n", username); werr != nil {
+		return fmt.Errorf("write kill %s to %s: %w", username, serverName, werr)
+	}
+	resp := oAdmin.mgmtRead(conn)
+	// OpenVPN acks a kill with "SUCCESS: common name '…' found, N client(s) killed".
+	// Anything else (ERROR: not found, empty/torn read) means we cannot claim the
+	// live session was terminated.
+	if !strings.Contains(resp, "SUCCESS:") {
+		return fmt.Errorf("kill %s on %s not acknowledged: %q", username, serverName, strings.TrimSpace(resp))
+	}
+	return nil
 }
 
 // mgmtGetActiveClients returns the connected clients across every mgmt
@@ -155,10 +224,24 @@ func (oAdmin *OvpnAdmin) mgmtGetActiveClients() ([]clientStatus, bool) {
 		// the 28s poll — a stuck poll would otherwise pin a goroutine and, via
 		// the single-flight guard, stall every later tick.
 		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-		oAdmin.mgmtRead(conn)            // read welcome message
-		conn.Write([]byte("status 1\n")) //nolint:errcheck
-		activeClients = append(activeClients, oAdmin.mgmtConnectedUsersParser(oAdmin.mgmtRead(conn), srv)...)
+		oAdmin.mgmtRead(conn) // read welcome message
+		if _, werr := conn.Write([]byte("status 1\n")); werr != nil {
+			log.Warnf("mgmt status write to %s failed: %v — treating as unknown", srv, werr)
+			ok = false
+			conn.Close()
+			continue
+		}
+		text, complete := oAdmin.mgmtReadStatus(conn)
 		conn.Close()
+		if !complete {
+			// Torn/partial response (no END line): audit F12 — do NOT publish it
+			// as an authoritative empty/short list. Mark unknown and skip so the
+			// firewall keeps existing rules for still-connected users.
+			log.Warnf("mgmt status for %s incomplete (no END terminator) — treating as unknown", srv)
+			ok = false
+			continue
+		}
+		activeClients = append(activeClients, oAdmin.mgmtConnectedUsersParser(text, srv)...)
 	}
 	return activeClients, ok
 }
@@ -289,23 +372,67 @@ func (oAdmin *OvpnAdmin) isUserAuthorized(cn string) (bool, string) {
 // interface and answers >CLIENT:CONNECT / >CLIENT:REAUTH events. Required
 // when server.conf has `management-client-auth`. The loop reconnects with
 // backoff if the link drops.
+// startMgmtClientAuth starts the mgmt-client-auth supervisor for every mgmt
+// interface, if it is not already running. Idempotent and cancelable (audit
+// F14): a matching stopMgmtClientAuth (or a runtime toggle) tears it down.
 func (oAdmin *OvpnAdmin) startMgmtClientAuth() {
+	oAdmin.mgmtAuthMu.Lock()
+	defer oAdmin.mgmtAuthMu.Unlock()
+	if oAdmin.mgmtAuthCancel != nil {
+		return // already running
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	oAdmin.mgmtAuthCancel = cancel
 	for srv, addr := range oAdmin.mgmtInterfaces {
-		go oAdmin.mgmtClientAuthSupervisor(srv, addr)
+		go oAdmin.mgmtClientAuthSupervisor(ctx, srv, addr)
+	}
+	log.Infof("mgmt-client-auth: supervisor started")
+}
+
+// stopMgmtClientAuth cancels a running supervisor (no-op if not running) so the
+// long-lived auth connections release the single-client mgmt console.
+func (oAdmin *OvpnAdmin) stopMgmtClientAuth() {
+	oAdmin.mgmtAuthMu.Lock()
+	defer oAdmin.mgmtAuthMu.Unlock()
+	if oAdmin.mgmtAuthCancel == nil {
+		return
+	}
+	oAdmin.mgmtAuthCancel()
+	oAdmin.mgmtAuthCancel = nil
+	log.Infof("mgmt-client-auth: supervisor stopped")
+}
+
+// syncMgmtClientAuth starts or stops the supervisor to match the desired state
+// (called after a server-config apply that toggled MgmtClientAuth).
+func (oAdmin *OvpnAdmin) syncMgmtClientAuth(enabled bool) {
+	if enabled {
+		oAdmin.startMgmtClientAuth()
+	} else {
+		oAdmin.stopMgmtClientAuth()
 	}
 }
 
-func (oAdmin *OvpnAdmin) mgmtClientAuthSupervisor(serverName, addr string) {
+func (oAdmin *OvpnAdmin) mgmtClientAuthSupervisor(ctx context.Context, serverName, addr string) {
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
 	for {
-		err := oAdmin.mgmtClientAuthLoop(serverName, addr)
+		if ctx.Err() != nil {
+			return
+		}
+		err := oAdmin.mgmtClientAuthLoop(ctx, serverName, addr)
+		if ctx.Err() != nil {
+			return // stopped/toggled off — don't reconnect
+		}
 		// Reset backoff after a long-running successful session.
 		if err == nil {
 			backoff = time.Second
 		}
 		log.Warnf("mgmt-client-auth[%s]: loop exited (%v); reconnecting in %v", serverName, err, backoff)
-		time.Sleep(backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
 		if backoff < maxBackoff {
 			backoff *= 2
 			if backoff > maxBackoff {
@@ -317,12 +444,24 @@ func (oAdmin *OvpnAdmin) mgmtClientAuthSupervisor(serverName, addr string) {
 
 // mgmtClientAuthLoop runs one connection lifetime. Returns the error that
 // caused it to exit so the supervisor can decide on backoff.
-func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(serverName, addr string) error {
+func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(ctx context.Context, serverName, addr string) error {
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
+
+	// Close the connection when the supervisor is canceled (toggle off / shutdown)
+	// so the blocking ReadString below unblocks and the loop returns promptly.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopWatch:
+		}
+	}()
 
 	reader := bufio.NewReader(conn)
 
@@ -478,6 +617,30 @@ func splitEnvKV(s string) (string, string, bool) {
 		return "", "", false
 	}
 	return s[:i], s[i+1:], true
+}
+
+// killUserSessions terminates every live session for username across the mgmt
+// interfaces it is connected to, returning an aggregated error if any kill was
+// not acknowledged or the console was unreachable (audit F13). A user with no
+// live session is a no-op success. Callers use the returned error to report
+// honestly whether live access was actually cut, instead of assuming it.
+func (oAdmin *OvpnAdmin) killUserSessions(username string) error {
+	connected, connections := isUserConnected(username, oAdmin.snapshotActiveClients())
+	if !connected {
+		return nil
+	}
+	var errs []string
+	for _, srv := range connections {
+		if err := oAdmin.mgmtKillUserConnection(username, srv); err != nil {
+			errs = append(errs, err.Error())
+		} else {
+			log.Infof("Session for user %q on %s killed", username, srv)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 func isUserConnected(username string, connectedUsers []clientStatus) (bool, []string) {

@@ -65,6 +65,15 @@ type OvpnAdmin struct {
 	mfaStore             *mfaStore
 	traffic              *trafficAccountant
 	apiTokens            *apiTokenStore
+
+	// mgmt-client-auth supervisor lifecycle (audit F14). When MgmtClientAuth is
+	// toggled at runtime via the server-config UI, the supervisor must be started
+	// or stopped to match — otherwise turning it ON leaves clients waiting for an
+	// auth decision nobody answers, and turning it OFF leaves a supervisor holding
+	// the single-client mgmt console. Guarded by mgmtAuthMu; mgmtAuthCancel is
+	// non-nil exactly while the supervisor goroutines are running.
+	mgmtAuthMu     sync.Mutex
+	mgmtAuthCancel context.CancelFunc
 }
 
 // updateClients refreshes the cached clients slice under clientsMu.

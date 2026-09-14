@@ -449,7 +449,32 @@ func validateServerConfig(cfg ServerConfig) error {
 			return fmt.Errorf("redirect_gateway_exclusions[%d]: %w", i, err)
 		}
 	}
+	// Audit F08: the per-client firewall enforces isolation in the kernel FORWARD
+	// chain, but `client-to-client` makes OpenVPN route traffic BETWEEN clients
+	// INSIDE the process — it never traverses FORWARD, so a client would reach
+	// other VPN clients regardless of their allowed routes. Refuse this
+	// incompatible combination when server-side enforcement is on; the operator
+	// must turn off one of the two.
+	if firewallEnforcementEnabled() && cfg.ClientToClient {
+		return fmt.Errorf("client_to_client cannot be enabled together with the server-side firewall: OpenVPN routes client-to-client traffic internally, bypassing the per-user firewall rules. Disable client-to-client (recommended) or run without --firewall")
+	}
+	// Audit F18: the kubernetes.secrets backend does not wire up per-user
+	// password auth — the Helm chart runs its own start command instead of
+	// configure.sh (which is the only place that stages auth.sh and creates
+	// users.db). Accepting PasswordAuth here would render an OpenVPN config that
+	// references a missing verify script / DB and fail every connect. Reject it at
+	// save time instead of silently producing a broken server.
+	if storageBackend != nil && *storageBackend == "kubernetes.secrets" && cfg.PasswordAuth {
+		return fmt.Errorf("password_auth is not supported with the kubernetes.secrets storage backend (no auth-verify script / users.db is provisioned). Use certificate-only auth, or run the filesystem backend")
+	}
 	return nil
+}
+
+// firewallEnforcementEnabled reports whether server-side per-client route
+// enforcement is active for this process (the --firewall flag). Nil-safe for
+// tests that don't parse flags.
+func firewallEnforcementEnabled() bool {
+	return firewallEnabled != nil && *firewallEnabled
 }
 
 // validateSubnet enforces:
@@ -1056,6 +1081,11 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 				}
 				oAdmin.rerenderAllCcds(expanded)
 			}()
+		}
+		// Audit F14: if MgmtClientAuth was toggled, start/stop the supervisor to
+		// match — the openvpn reload alone doesn't manage ovpn-admin's auth loop.
+		if preMgmtClientAuth != cfg.MgmtClientAuth {
+			oAdmin.syncMgmtClientAuth(cfg.MgmtClientAuth)
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"config":      oAdmin.serverConfigStore.snapshot(),

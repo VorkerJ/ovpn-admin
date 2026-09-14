@@ -424,28 +424,67 @@ func (oAdmin *OvpnAdmin) kickUsersAfterCcdChange(users []string) {
 // untouched so memory and disk cannot diverge (a later tick retries).
 func (oAdmin *OvpnAdmin) refreshCommonRoutesOnce(ctx context.Context) {
 	current := oAdmin.commonRoutes.snapshot()
-	hasDomain := false
-	for _, r := range current.Routes {
-		if r.Kind == "domain" {
-			hasDomain = true
-			break
-		}
+
+	// Resolve DNS OUTSIDE the store lock (it is slow), keyed by route ID.
+	type resolveResult struct {
+		ips []string
+		err error
+		at  string
 	}
-	if !hasDomain {
+	resolved := map[string]resolveResult{}
+	for _, r := range current.Routes {
+		if r.Kind != "domain" || r.Domain == "" {
+			continue
+		}
+		ips, derr := domainResolver(ctx, r.Domain)
+		resolved[r.ID] = resolveResult{ips: filterIPv4(ips), err: derr, at: time.Now().UTC().Format(time.RFC3339)}
+	}
+	if len(resolved) == 0 {
 		return
 	}
-	updated, changed, okCount, failed := refreshAllDomains(ctx, current, time.Now())
-	// Persist FIRST, publish in-memory only on success. Swapping memory before a
-	// failed write would leave the process serving routes that vanish on the
-	// next restart.
-	if err := oAdmin.persistCommonRoutes(updated); err != nil {
+
+	// Audit F33: apply the resolved IPs through the SAME atomic CAS update the
+	// HTTP handlers use, re-reading the CURRENT config under the store lock and
+	// touching ONLY routes that still exist (matched by ID). Previously the
+	// scheduler resolved off a stale snapshot and then replaced the WHOLE config,
+	// which resurrected a route the admin had deleted while DNS was in flight.
+	changed := false
+	okCount, failed := 0, 0
+	committed, err := oAdmin.commonRoutes.update(func(cfg *CommonRoutesConfig) error {
+		changed = false // recompute against the authoritative current config
+		okCount, failed = 0, 0
+		for i := range cfg.Routes {
+			res, ok := resolved[cfg.Routes[i].ID]
+			if !ok || cfg.Routes[i].Kind != "domain" {
+				continue
+			}
+			cfg.Routes[i].LastResolveAt = res.at
+			if res.err != nil {
+				failed++
+				cfg.Routes[i].LastResolveErr = res.err.Error()
+				continue
+			}
+			okCount++
+			if !sameIPSet(cfg.Routes[i].ResolvedIPs, res.ips) {
+				changed = true
+			}
+			cfg.Routes[i].ResolvedIPs = res.ips
+			cfg.Routes[i].LastResolveErr = ""
+		}
+		return nil
+	}, oAdmin.persistCommonRoutes)
+	if err != nil {
 		log.Errorf("scheduler persist: %v (keeping previous in-memory routes)", err)
 		return
 	}
-	oAdmin.commonRoutes.replace(updated)
 	log.Infof("common-routes scheduler: resolved=%d failed=%d changed=%v", okCount, failed, changed)
 	if changed {
-		oAdmin.rerenderAllCcds(expandCommonRoutes(updated))
+		oAdmin.rerenderAllCcds(expandCommonRoutes(committed))
+		// Audit F10: a DNS refresh changes what live sessions may reach — tell the
+		// firewall so it updates their ACCEPT rules without waiting for a reconnect.
+		if oAdmin.firewall != nil {
+			oAdmin.firewall.push(fwEvent{Kind: EvCommonChanged})
+		}
 	}
 }
 

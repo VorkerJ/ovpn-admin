@@ -403,11 +403,24 @@ func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Count only acknowledged kills (audit F13): report the true number of
+	// sessions actually terminated, not the number we attempted.
+	killed := 0
+	var failures []string
 	for _, conn := range connections {
-		oAdmin.mgmtKillUserConnection(req.Username, conn)
+		if err := oAdmin.mgmtKillUserConnection(req.Username, conn); err != nil {
+			failures = append(failures, err.Error())
+		} else {
+			killed++
+		}
 	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "disconnected": len(connections)})
+	resp := map[string]interface{}{"ok": len(failures) == 0, "disconnected": killed}
+	if len(failures) > 0 {
+		resp["error"] = strings.Join(failures, "; ")
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func validateUsername(username string) error {
@@ -508,7 +521,7 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 		return false, fmt.Sprintf("Не удалось создать сертификат: %v", err)
 	}
 
-	if *authByPassword {
+	if oAdmin.passwordAuthActive() && password != "" {
 		o, err := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
 		log.Debug(o)
 		if err != nil {
@@ -594,22 +607,23 @@ func (oAdmin *OvpnAdmin) userRevoke(username string) (error, string) {
 			return err, fmt.Sprintf("failed to revoke user %q: %v", username, err)
 		}
 
-		if *authByPassword {
+		if oAdmin.passwordAuthActive() {
 			o, _ := runOpenvpnUser("revoke", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
 
 		crlFix()
-		userConnected, userConnectedTo := isUserConnected(username, oAdmin.snapshotActiveClients())
-		log.Tracef("User %s connected: %t", username, userConnected)
-		if userConnected {
-			for _, connection := range userConnectedTo {
-				oAdmin.mgmtKillUserConnection(username, connection)
-				log.Infof("Session for user \"%s\" killed", username)
-			}
-		}
+		// Terminate any live tunnel. The cert is already revoked in the CRL, so
+		// this is about cutting the ESTABLISHED session immediately; report
+		// honestly whether the kill was acknowledged (audit F13) rather than
+		// logging an unverified "killed".
+		killErr := oAdmin.killUserSessions(username)
 
 		oAdmin.setState()
+		if killErr != nil {
+			log.Warnf("userRevoke: %s revoked, but live session termination not confirmed: %v", username, killErr)
+			return nil, fmt.Sprintf("user %q revoked (CRL updated); live session termination NOT confirmed — verify the user is disconnected: %v", username, killErr)
+		}
 		return nil, fmt.Sprintf("user \"%s\" revoked", username)
 	}
 	log.Infof("user \"%s\" not found", username)
@@ -625,7 +639,7 @@ func (oAdmin *OvpnAdmin) userUnrevoke(username string) (error, string) {
 			return err, mustJSONMsg(fmt.Sprintf("Failed to unrevoke user %s: %v", username, err))
 		}
 
-		if *authByPassword {
+		if oAdmin.passwordAuthActive() {
 			o, _ := runOpenvpnUser("restore", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}
@@ -659,7 +673,7 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 			return fmt.Errorf("error rotating user: %w", err), err.Error()
 		}
 
-		if *authByPassword {
+		if oAdmin.passwordAuthActive() && newPassword != "" {
 			o, err := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", newPassword)
 			log.Debug(o)
 			if err != nil {
@@ -672,6 +686,14 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 
 		crlFix()
 		oAdmin.updateClients()
+		// Audit F13: rotation issues a NEW cert with the SAME CN, so any tunnel
+		// still up on the OLD key must be cut — otherwise the rotated-out
+		// credential keeps working until the client happens to reconnect.
+		killErr := oAdmin.killUserSessions(username)
+		if killErr != nil {
+			log.Warnf("userRotate: %s rotated, but live session termination not confirmed: %v", username, killErr)
+			return nil, mustJSONMsg(fmt.Sprintf("User %s rotated; live session termination NOT confirmed — verify the user reconnects with the new cert: %v", username, killErr))
+		}
 		return nil, mustJSONMsg(fmt.Sprintf("User %s successfully rotated", username))
 	}
 	return fmt.Errorf("user %q not found", username), mustJSONMsg(fmt.Sprintf("User %s not found", username))
@@ -683,16 +705,14 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 		// has a CN to match in OpenVPN's connected-clients table. Without
 		// this the deleted user keeps tunnelling traffic until they happen
 		// to reconnect — CRL only takes effect at the next TLS handshake,
-		// not on already-established sessions.
-		connectedUsers, _ := oAdmin.mgmtGetActiveClients()
-		connected, connections := isUserConnected(username, connectedUsers)
-		if connected {
-			for _, conn := range connections {
-				oAdmin.mgmtKillUserConnection(username, conn)
-			}
+		// not on already-established sessions. A kill that isn't acknowledged
+		// (audit F13) is logged; deletion still proceeds (the cert is revoked
+		// below), but the operator is told the live session wasn't confirmed cut.
+		if killErr := oAdmin.killUserSessions(username); killErr != nil {
+			log.Warnf("userDelete: %s live session termination not confirmed: %v", username, killErr)
 		}
 
-		if *authByPassword {
+		if oAdmin.passwordAuthActive() {
 			// Propagate a failed password-DB delete: previously this was
 			// swallowed, so a locked/denied users.db returned 200 while the
 			// user's password entry (and thus VPN access) survived. Abort

@@ -184,25 +184,31 @@ func (fc *firewallController) initChain() error {
 		return fmt.Errorf("flush %s: %w", fc.chainName, err)
 	}
 
-	// 3. Прыжок из FORWARD (вставляем в начало, чтобы не зависеть от других правил)
-	// -C проверяет существование; если нет — -I добавляет.
+	// 3. Catch-all DROP FIRST after the flush (audit F09). The flush at step 2
+	// removed the previous default-deny, so the chain is momentarily open; install
+	// the DROP before anything else so that if a LATER step fails the chain is
+	// still fail-CLOSED (all VPN traffic dropped) rather than fail-OPEN. The DROP
+	// stays at the tail of the chain because the stateful-return and per-session
+	// ACCEPTs below are INSERTED above it.
+	if err := fc.installCatchAllDrop(); err != nil {
+		return fmt.Errorf("install catch-all DROP: %w", err)
+	}
+
+	// 4. Stateful-return ABOVE the DROP (insert at position 1).
+	if err := fc.iptCmd("-I", fc.chainName, "1",
+		"-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED",
+		"-j", "ACCEPT",
+		"-m", "comment", "--comment", "ovpn-admin: stateful-return"); err != nil {
+		return fmt.Errorf("insert stateful-return: %w", err)
+	}
+
+	// 5. Прыжок из FORWARD (вставляем в начало, чтобы не зависеть от других правил)
+	// -C проверяет существование; если нет — -I добавляет. Done LAST so the chain
+	// is fully built (DROP + stateful-return) before any traffic is routed into it.
 	if err := fc.iptCmd("-C", "FORWARD", "-j", fc.chainName); err != nil {
 		if err := fc.iptCmd("-I", "FORWARD", "1", "-j", fc.chainName); err != nil {
 			return fmt.Errorf("insert FORWARD jump: %w", err)
 		}
-	}
-
-	// 4. Stateful-return первым правилом
-	if err := fc.iptCmd("-A", fc.chainName,
-		"-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED",
-		"-j", "ACCEPT",
-		"-m", "comment", "--comment", "ovpn-admin: stateful-return"); err != nil {
-		return fmt.Errorf("append stateful-return: %w", err)
-	}
-
-	// 5. Catch-all DROP последним
-	if err := fc.installCatchAllDrop(); err != nil {
-		return fmt.Errorf("install catch-all DROP: %w", err)
 	}
 
 	return nil
@@ -236,12 +242,24 @@ func (fc *firewallController) installCatchAllDrop() error {
 // чтобы следующий reconcile повторил установку. Caller должен держать fc.mu.
 func (fc *firewallController) installRulesFor(cn, vpnIP string, cidrs []string) error {
 	comment := "ovpn-admin: " + cn
+	var added []string
 	for _, cidr := range cidrs {
 		if err := fc.iptCmd("-I", fc.chainName, "2",
 			"-s", vpnIP, "-d", cidr, "-j", "ACCEPT",
 			"-m", "comment", "--comment", comment); err != nil {
+			// Audit F09: roll back the ACCEPTs added in THIS call so a partial
+			// failure leaves ZERO rules for the session. The caller then leaves the
+			// session unregistered and a later reconcile retries a clean install —
+			// without the rollback, the retry re-inserts the already-present rules
+			// and leaks duplicate ACCEPTs (one orphan survives a later disconnect).
+			for _, c := range added {
+				_ = fc.iptCmd("-D", fc.chainName,
+					"-s", vpnIP, "-d", c, "-j", "ACCEPT",
+					"-m", "comment", "--comment", comment)
+			}
 			return fmt.Errorf("install rule %s→%s: %w", vpnIP, cidr, err)
 		}
+		added = append(added, cidr)
 	}
 	return nil
 }
@@ -631,6 +649,25 @@ func (fc *firewallController) reconcileLocked() {
 			continue
 		}
 		delete(fc.sessions, key)
+	}
+	// Audit F10: for sessions that are STILL live, recompute the desired policy
+	// and applyDiff on every reconcile. This is what makes the periodic reconcile
+	// actually self-heal: a failed rule deletion is retried (applyDiff folds
+	// s.pendingDeletes back in), and a policy change that arrived without a
+	// firewall event (e.g. a DNS refresh, or a lost EvUserChanged) converges here
+	// within one poll instead of lingering for the life of the session.
+	for key, s := range fc.sessions {
+		if _, ok := live[key]; !ok {
+			continue // gone sessions handled above
+		}
+		newCIDRs, err := fc.computeAllowedCIDRs(key.CN)
+		if err != nil {
+			log.Warnf("firewall: reconcile recompute(%s): %v", key.CN, err)
+			continue
+		}
+		if err := fc.applyDiff(s, newCIDRs); err != nil {
+			log.Warnf("firewall: reconcile applyDiff(%s): %v", key.CN, err)
+		}
 	}
 	// Добавляем тех, кто есть в live, но нет в fc.sessions
 	for key, c := range live {
