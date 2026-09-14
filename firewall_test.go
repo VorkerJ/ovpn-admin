@@ -124,7 +124,7 @@ func TestInitChain_SequenceOfCommands(t *testing.T) {
 	dropIdx := idxOf("-A OVPN_FW -s 172.16.100.0/24 -j DROP")
 	statefulIdx := idxOf("-I OVPN_FW 1 -m conntrack")
 	flushIdx := idxOf("-F OVPN_FW")
-	if !(flushIdx < dropIdx && dropIdx < statefulIdx) {
+	if flushIdx >= dropIdx || dropIdx >= statefulIdx {
 		t.Errorf("expected order flush(%d) < DROP(%d) < stateful-return(%d)", flushIdx, dropIdx, statefulIdx)
 	}
 }

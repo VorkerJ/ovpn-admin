@@ -122,7 +122,7 @@ func TestSessionEpoch_MfaEnableInvalidatesPriorSessions(t *testing.T) {
 	}
 
 	// Simulate what mfaConfirmHandler does on enable.
-	bumpUserEpoch(user)
+	_ = bumpUserEpoch(user)
 
 	if _, ok := verifySession(before); ok {
 		t.Fatal("SECURITY: a session issued before MFA enable must be rejected after the epoch bump")
@@ -147,7 +147,7 @@ func TestSessionEpoch_PasswordChangeInvalidatesPriorSessions(t *testing.T) {
 		t.Fatal("session must verify before the password change")
 	}
 
-	bumpUserEpoch(user) // password change invalidates prior sessions
+	_ = bumpUserEpoch(user) // password change invalidates prior sessions
 
 	if _, ok := verifySession(old); ok {
 		t.Fatal("SECURITY: a session issued before a password change must be rejected")

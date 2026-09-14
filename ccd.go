@@ -486,7 +486,10 @@ func (oAdmin *OvpnAdmin) kickUsersAfterCcdChange(users []string) {
 	}
 	for _, cn := range users {
 		for srv := range oAdmin.mgmtInterfaces {
-			oAdmin.mgmtKillUserConnection(cn, srv)
+			// Best-effort kick: a user not connected on this server just yields a
+			// non-ack error, which is fine here (they pick up the new CCD on their
+			// next connect). The revoke/rotate paths are where the kill result matters.
+			_ = oAdmin.mgmtKillUserConnection(cn, srv)
 		}
 	}
 	log.Infof("kickUsersAfterCcdChange: signalled %d user(s) to reconnect", len(users))
