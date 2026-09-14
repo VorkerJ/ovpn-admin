@@ -175,6 +175,10 @@ type Ccd struct {
 	CustomRoutes     []ccdRoute       `json:"CustomRoutes"`
 	CommonRoutes     []ccdCommonRoute `json:"-"` // not serialized over API, render-only
 	MergedPushRoutes []pushRoute      `json:"-"` // computed at render time; unique by (Address, Mask)
+	// ClientMask is the VPN subnet's dotted-quad mask, injected at render time so
+	// ifconfig-push carries the ACTUAL server subnet mask instead of a hardcoded
+	// /24 (audit F28). Not serialized over API.
+	ClientMask string `json:"-"`
 
 	// RedirectGateway — per-user "send all traffic through VPN" toggle.
 	// When true, the CCD renders `push "redirect-gateway def1"` plus the
@@ -707,12 +711,20 @@ func getOvpnCaCertExpireDate() time.Time {
 }
 
 // https://community.openvpn.net/openvpn/ticket/623
+//
+// crlFix makes crl.pem readable by the privilege-dropped OpenVPN process
+// (`user nobody`) while PRESERVING the shared PKI directory's group-write +
+// setgid bits (audit F16). The previous 0755 stripped setgid and group-write, so
+// after any revoke the non-root ovpn-admin user could no longer write into pki/
+// (create/revoke/CCD/password ops failed with permission denied). 02775 keeps
+// owner+group rwx (setgid so new files inherit the shared group) and grants
+// other r-x — enough for `nobody` to traverse pki/ and read the 0644 crl.pem.
 func crlFix() {
-	err := os.Chmod(*easyrsaDirPath+"/pki", 0755)
+	err := os.Chmod(*easyrsaDirPath+"/pki", 0o2775)
 	if err != nil {
 		log.Error(err)
 	}
-	err = os.Chmod(*easyrsaDirPath+"/pki/crl.pem", 0644)
+	err = os.Chmod(*easyrsaDirPath+"/pki/crl.pem", 0o644)
 	if err != nil {
 		log.Error(err)
 	}

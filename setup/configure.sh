@@ -88,7 +88,18 @@ openvpn-user db-init --db.path=$EASY_RSA_LOC/pki/users.db && openvpn-user db-mig
 # under pki/ inherit group 2000 automatically, so subsequent revokes and
 # CRL regenerations don't drift back into "wrong group" territory.
 if [ -d $EASY_RSA_LOC/pki ]; then
-  chgrp 2000 $EASY_RSA_LOC/pki 2>/dev/null || true
+  # Audit F16: normalise the WHOLE PKI tree, not just the top dir. private/,
+  # issued/, reqs/, index.txt and users.db are created by root BEFORE this runs;
+  # without a recursive fixup the non-root ovpn-admin (member of GID 2000) can't
+  # write them, so create/revoke/rotate/password ops fail with permission denied.
+  chgrp -R 2000 $EASY_RSA_LOC/pki 2>/dev/null || true
+  # Group read+write on files (and traverse on dirs) for the shared group. `X`
+  # only adds execute to directories / already-executable files, so it never
+  # makes key files world- or group-executable, and world bits are left alone
+  # (private keys stay non-world-readable).
+  chmod -R g+rwX $EASY_RSA_LOC/pki 2>/dev/null || true
+  # setgid on every directory so NEW files keep inheriting the shared group.
+  find $EASY_RSA_LOC/pki -type d -exec chmod g+s {} + 2>/dev/null || true
   chmod 2775 $EASY_RSA_LOC/pki
 fi
 [ -f $EASY_RSA_LOC/pki/crl.pem ] && chmod 644 $EASY_RSA_LOC/pki/crl.pem

@@ -14,6 +14,9 @@ type Store interface {
 	DeleteClient(commonName string) error
 	GetClientCert(commonName string) (cert, key string)
 	UpdateIndexTxtOnDisk() error
+	// RegenerateCRL rebuilds and republishes the CRL with a fresh NextUpdate.
+	// Called on a schedule so the CRL never silently expires (audit F40).
+	RegenerateCRL() error
 
 	// CCD (Client Config Directory)
 	GetCcd(commonName string) string

@@ -207,6 +207,11 @@ func main() {
 	ovpnAdmin.mgmtInterfaces = make(map[string]string)
 	ovpnAdmin.commonRoutes = &commonRoutesStore{cfg: CommonRoutesConfig{Routes: []CommonRouteEntry{}}}
 	ovpnAdmin.store = store
+	// Audit F40: keep the CRL fresh. Its NextUpdate is months out, but a
+	// long-running instance that never revokes anyone would otherwise let it
+	// silently expire — after which every new TLS handshake fails while readiness
+	// (below) is the only signal. Renew periodically well within the window.
+	go ovpnAdmin.crlRenewalLoop(context.Background(), crlRenewalInterval)
 	// Per-user traffic, bucketed by calendar month and persisted in a SQLite DB
 	// alongside the rest of the auth state (on the PVC when --session.state-dir
 	// is set), so totals survive restarts and reconnects.
@@ -585,6 +590,49 @@ func readyzHandler(rc readinessChecker) http.HandlerFunc {
 // PKI/CRL are checked on disk (both backends materialize pki/ files there),
 // storage via a cheap LoadServerConfig (a real API Get on the k8s backend),
 // and mgmt via a short TCP dial to the "main" interface.
+// crlRenewalInterval is how often the CRL is proactively regenerated. Far shorter
+// than the CRL's NextUpdate window, so the published CRL is always well inside
+// its validity even if a renewal is occasionally missed (audit F40).
+const crlRenewalInterval = 24 * time.Hour
+
+// crlNextUpdate parses a CRL PEM file and returns its NextUpdate timestamp.
+func crlNextUpdate(path string) (time.Time, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return time.Time{}, fmt.Errorf("no PEM block in %s", path)
+	}
+	rl, err := x509.ParseRevocationList(block.Bytes)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return rl.NextUpdate, nil
+}
+
+// crlRenewalLoop periodically regenerates the CRL so it never silently expires.
+func (oAdmin *OvpnAdmin) crlRenewalLoop(ctx context.Context, interval time.Duration) {
+	if oAdmin.store == nil || interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := oAdmin.store.RegenerateCRL(); err != nil {
+				log.Warnf("CRL renewal failed: %v", err)
+			} else {
+				log.Debugf("CRL renewed (next renewal in %s)", interval)
+			}
+		}
+	}
+}
+
 func buildReadinessChecker(store storage.Store, ovpnAdmin *OvpnAdmin) readinessChecker {
 	return readinessChecker{
 		pkiReady: func() error {
@@ -597,12 +645,19 @@ func buildReadinessChecker(store storage.Store, ovpnAdmin *OvpnAdmin) readinessC
 			return nil
 		},
 		crlReady: func() error {
-			fi, err := os.Stat(filepath.Join(*easyrsaDirPath, "pki", "crl.pem"))
+			path := filepath.Join(*easyrsaDirPath, "pki", "crl.pem")
+			fi, err := os.Stat(path)
 			if err != nil {
 				return err
 			}
 			if fi.Size() == 0 {
 				return fmt.Errorf("crl.pem is empty")
+			}
+			// Audit F40: an EXPIRED CRL makes OpenVPN reject every new handshake.
+			// Surface it via readiness (the renewal loop keeps it fresh; this is
+			// the safety net if renewal ever fails).
+			if nextUpdate, perr := crlNextUpdate(path); perr == nil && time.Now().After(nextUpdate) {
+				return fmt.Errorf("crl.pem expired at %s", nextUpdate.Format(time.RFC3339))
 			}
 			return nil
 		},

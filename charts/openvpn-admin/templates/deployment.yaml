@@ -26,12 +26,13 @@ spec:
     spec:
       serviceAccountName: {{ .Values.rbac.serviceAccountName }}
 
-      {{- if .Values.persistence.enabled }}
-      # fsGroup makes the state PVC writable by the non-root ovpnadmin user
-      # (member of the "ovpnshared" group baked into the image).
+      # fsGroup makes the state volume writable by the non-root ovpnadmin user
+      # (member of the "ovpnshared" group baked into the image). Audit F17: apply
+      # it REGARDLESS of persistence — with persistence.enabled=false the state
+      # is an emptyDir that is otherwise root-owned, so the non-root process gets
+      # permission-denied creating the signing key / MFA / token state.
       securityContext:
         fsGroup: {{ .Values.persistence.fsGroup }}
-      {{- end }}
 
       {{- with .Values.nodeSelector }}
       nodeSelector:

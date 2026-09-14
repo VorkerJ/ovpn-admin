@@ -137,7 +137,13 @@ If you ever want to expose the UI without SSH, put a TLS-terminating reverse pro
 
 Open the admin UI, click *Создать* (Create), download the generated `.ovpn`, hand it to the user.
 
-**Backups.** All state lives in `./easyrsa_master` (CA, keys, PKI) and `./ccd_master` (per-user routes). Snapshot those two directories — that's a full backup. For a production VPS, change `OVPN_EASYRSA_PATH` and `OVPN_CCD_PATH` to absolute paths under `/var/lib/ovpn-admin` and back them up from there.
+**Backups.** A full backup is **three** locations, not two (a snapshot of only the first two silently loses all authentication state):
+
+1. `./easyrsa_master` — CA, keys, PKI (`index.txt`, `crl.pem`, `users.db`).
+2. `./ccd_master` — per-user routes and the server-config/common-routes blobs.
+3. The **auth-state** volume (`OVPN_SESSION_STATE_DIR`, default `/var/lib/ovpn-admin`) — the session signing key, MFA (TOTP) secrets, the logout blacklist, API tokens and cumulative per-user traffic (`traffic.db`). Omitting this loses every admin's MFA enrolment and all API tokens on restore.
+
+Snapshot all three consistently (quiesce writes / snapshot the SQLite DBs cleanly). For a production VPS, point `OVPN_EASYRSA_PATH`, `OVPN_CCD_PATH` and `OVPN_SESSION_STATE_DIR` at absolute paths under `/var/lib/ovpn-admin` and back that tree up.
 
 **Upgrades.**
 ```bash
@@ -324,7 +330,7 @@ Rules are updated in real-time:
 - `NET_ADMIN` capability on the ovpn-admin container (already in Helm chart and docker-compose.yaml when feature is enabled)
 - `iptables` binary in the ovpn-admin image (already included)
 - OpenVPN `server.conf` includes `management-client-auth` directive (set automatically by the Helm chart)
-- Feature is **off by default in code** (`--firewall=false`), but **on by default in the Helm chart** for new installs
+- Feature is **off by default** — both in code (`--firewall=false`) and in the Helm chart (`firewall.enabled: false`). Enabling it also requires raising `ovpnAdmin.securityContext` to root with `NET_ADMIN` (+`DAC_OVERRIDE`), the kube-proxy pattern; see the note in `values.yaml`.
 
 ### Disabling
 

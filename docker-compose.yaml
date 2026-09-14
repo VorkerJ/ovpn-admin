@@ -102,7 +102,16 @@ services:
       OVPN_AUTH: "${OVPN_PASSWD_AUTH:-false}"
       OVPN_AUTH_DB_PATH: "/mnt/easyrsa/pki/users.db"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
-      OVPN_FIREWALL: "${OVPN_FIREWALL:-true}"
+      # Audit F15: per-user firewall enforcement needs iptables, which cannot run
+      # under this service's non-root USER + no-new-privileges (NET_ADMIN sits in
+      # the bounding set only, so CapEff is empty and iptables fails → restart
+      # loop). It is therefore OFF by default here. To actually USE it, run
+      # ovpn-admin as root (drop the `USER 1000` in Dockerfile.ovpn-admin or set
+      # `user: "0"` on this service) while keeping cap_drop: [ALL] + cap_add:
+      # [NET_ADMIN] — the kube-proxy pattern the Helm chart documents — and set
+      # OVPN_FIREWALL=true. Disabling it here is not a substitute for enforcement;
+      # it just keeps the default stack honest and bootable.
+      OVPN_FIREWALL: "${OVPN_FIREWALL:-false}"
       OVPN_SERVER_CONFIG_PATH: "/etc/openvpn-dynamic/server.conf"
       # network_mode:service:openvpn shares the openvpn container's netns. On a
       # HARD server-config reload (port/proto/cipher/tls-mode/DCO change) the

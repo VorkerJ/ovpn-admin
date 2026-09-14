@@ -382,6 +382,16 @@ func (s *filesystemStore) UpdateIndexTxtOnDisk() error {
 	return nil
 }
 
+// RegenerateCRL rebuilds pki/crl.pem via easyrsa gen-crl (audit F40), refreshing
+// its NextUpdate so a long-running instance never serves an expired CRL.
+func (s *filesystemStore) RegenerateCRL() error {
+	out, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl")
+	if err != nil {
+		return fmt.Errorf("easyrsa gen-crl: %w: %s", err, out)
+	}
+	return nil
+}
+
 func (s *filesystemStore) GetCcd(commonName string) string {
 	path := s.ccdDir + "/" + commonName
 	if !fExist(path) {

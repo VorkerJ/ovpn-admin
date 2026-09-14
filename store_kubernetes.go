@@ -41,6 +41,15 @@ func (s *kubernetesStore) UpdateIndexTxtOnDisk() error {
 	return s.pki.updateIndexTxtOnDisk()
 }
 
+// RegenerateCRL rebuilds the CRL secret (fresh NextUpdate) and republishes it to
+// disk for the OpenVPN process (audit F40).
+func (s *kubernetesStore) RegenerateCRL() error {
+	if err := s.pki.easyrsaGenCRL(); err != nil {
+		return err
+	}
+	return s.pki.updateCRLOnDisk()
+}
+
 func (s *kubernetesStore) GetCcd(commonName string) string {
 	return s.pki.secretGetCcd(commonName)
 }

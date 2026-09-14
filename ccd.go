@@ -256,6 +256,11 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 		ccd.MergedExclusions = mergeExclusions(nil, ccd.RedirectGatewayExclusions)
 	}
 
+	// Audit F28: render ifconfig-push with the real VPN subnet mask, not a
+	// hardcoded /24 — a non-/24 server network otherwise gives every static
+	// client the wrong netmask.
+	ccd.ClientMask = openvpnNetMaskDotted()
+
 	t, tErr := oAdmin.getCcdTemplate()
 	if tErr != nil {
 		log.Errorf("modifyCcd: ccd template: %v", tErr)
@@ -612,6 +617,51 @@ func (oAdmin *OvpnAdmin) refreshAllUserDomains(ctx context.Context) {
 	oAdmin.kickUsersAfterCcdChange(changedUsers)
 }
 
+// reservedVPNAddress reports whether addr is one of the IPv4 subnet's reserved
+// addresses that must never be assigned to a client (audit F29): the network
+// base, the OpenVPN server tun IP (conventionally network+1 in the default
+// subnet topology), or the broadcast address.
+func reservedVPNAddress(ovpnNet *net.IPNet, addr string) (bool, string) {
+	ip := net.ParseIP(addr).To4()
+	if ip == nil || ovpnNet == nil {
+		return false, ""
+	}
+	network := ovpnNet.IP.Mask(ovpnNet.Mask).To4()
+	mask := ovpnNet.Mask
+	if network == nil || len(mask) != net.IPv4len {
+		return false, ""
+	}
+	broadcast := make(net.IP, net.IPv4len)
+	server := make(net.IP, net.IPv4len)
+	for i := 0; i < net.IPv4len; i++ {
+		broadcast[i] = network[i] | ^mask[i]
+		server[i] = network[i]
+	}
+	// server address = network + 1 (only meaningful for subnets larger than /31)
+	server[3]++
+	switch {
+	case ip.Equal(network):
+		return true, "network address"
+	case ip.Equal(broadcast):
+		return true, "broadcast address"
+	case ip.Equal(server):
+		return true, "server address"
+	}
+	return false, ""
+}
+
+// openvpnNetMaskDotted returns the VPN subnet mask (from OVPN_NETWORK) in
+// dotted-quad form for ifconfig-push. Falls back to 255.255.255.0 — the historic
+// hardcoded value — if the network can't be parsed, so behaviour is unchanged
+// for the common /24 case.
+func openvpnNetMaskDotted() string {
+	_, n, err := net.ParseCIDR(*openvpnNetwork)
+	if err != nil || n == nil || len(n.Mask) != net.IPv4len {
+		return "255.255.255.0"
+	}
+	return fmt.Sprintf("%d.%d.%d.%d", n.Mask[0], n.Mask[1], n.Mask[2], n.Mask[3])
+}
+
 func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 
 	ccdErr := ""
@@ -640,6 +690,15 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 
 		if !ovpnNet.Contains(net.ParseIP(ccd.ClientAddress)) {
 			ccdErr = fmt.Sprintf("ClientAddress \"%s\" not belongs to openvpn server network", ccd.ClientAddress)
+			log.Debugf("modify ccd for user %s: %s", ccd.User, ccdErr)
+			return false, ccdErr
+		}
+
+		// Audit F29: refuse the subnet's reserved addresses — the network base,
+		// the OpenVPN server's own tun IP (network+1), and the broadcast. Handing
+		// any of these to a client breaks routing or collides with the server.
+		if reserved, why := reservedVPNAddress(ovpnNet, ccd.ClientAddress); reserved {
+			ccdErr = fmt.Sprintf("ClientAddress %q is reserved (%s) and cannot be assigned", ccd.ClientAddress, why)
 			log.Debugf("modify ccd for user %s: %s", ccd.User, ccdErr)
 			return false, ccdErr
 		}
