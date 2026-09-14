@@ -494,16 +494,24 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRevoke(commonName string) (err error) {
 		return
 	}
 
-	if secret.Annotations["revokedAt"] != "" {
-		log.Warnf("user (%s) already revoked", commonName)
-		return
-	}
+	// Audit F35: do NOT early-return when revokedAt is already set. A previous
+	// revoke may have stamped the annotation but then failed before the CRL was
+	// regenerated, published and verified — so the serial is missing from the CRL
+	// the OpenVPN process actually uses. A retry must be an idempotent
+	// reconciliation that always drives the downstream steps (index → CRL →
+	// verify → publish) to completion, not a no-op that lies "already revoked".
+	if secret.Annotations["revokedAt"] == "" {
+		if secret.Annotations == nil {
+			secret.Annotations = map[string]string{}
+		}
+		secret.Annotations["revokedAt"] = time.Now().Format(indexTxtDateFormat)
 
-	secret.Annotations["revokedAt"] = time.Now().Format(indexTxtDateFormat)
-
-	_, err = openVPNPKI.KubeClient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
-	if err != nil {
-		return
+		_, err = openVPNPKI.KubeClient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
+		if err != nil {
+			return
+		}
+	} else {
+		log.Warnf("user (%s) already marked revoked — reconciling CRL to completion", commonName)
 	}
 
 	err = openVPNPKI.indexTxtUpdate()

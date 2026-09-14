@@ -129,8 +129,30 @@ func (oAdmin *OvpnAdmin) mfaConfirmHandler(w http.ResponseWriter, r *http.Reques
 	// Enabling MFA invalidates every prior session for this user. The session
 	// that performed the enrollment was password-only (it predates MFA), so it
 	// must not keep operating as if it had cleared the second factor — the admin
-	// re-logs in through the TOTP step.
-	bumpUserEpoch(user)
+	// re-logs in through the TOTP step. Surface a persist failure (audit F21):
+	// if the epoch bump didn't reach disk, the old password-only sessions would
+	// revive after a restart.
+	if err := bumpUserEpoch(user); err != nil {
+		log.Errorf("mfaConfirm: session epoch bump not persisted for %s: %v", user, err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to finalize MFA enable")
+		return
+	}
+
+	// Audit F23: the epoch bump above invalidated the enrolling session's cookie.
+	// The admin just proved the second factor (verifyTOTPCode passed), so issue a
+	// FRESH MFA-satisfied session now — otherwise the browser's next authenticated
+	// request 401s, the 401 interceptor logs the user out, and the modal showing
+	// the one-time backup codes unmounts before they can save them.
+	token := signSession(user, true)
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !*insecureCookies,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(sessionTTL.Seconds()),
+	})
 
 	log.Infof("MFA: user %s confirmed TOTP setup", user)
 
@@ -238,75 +260,41 @@ func (oAdmin *OvpnAdmin) mfaLoginHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Single-use: mark the jti as consumed so the same intermediate token
-	// cannot be replayed (e.g. after a leaked browser history entry). The
-	// expiry tracked here MUST come from the token itself — using
-	// time.Now()+TTL would keep the entry alive past the token's own
-	// validity and prematurely garbage-collect older entries.
-	if !consumeMfaJti(jti, exp) {
-		recordLoginFailure(ip, user)
-		writeJSONError(w, http.StatusUnauthorized, "MFA token already used")
+	// Atomic verify-and-consume (audit F20): validating the code and recording
+	// its consumption happen under one store lock, so two concurrent requests
+	// can't both spend the same one-shot backup code, and an accepted TOTP step
+	// is marked used immediately (replay across adjacent windows is rejected).
+	// A persist failure fails closed — no session is issued and the code stays
+	// unspent — so nothing is counted-as-used only in memory.
+	//
+	// Audit F47: verify the CODE before consuming the intermediate token's jti.
+	// A wrong code (typo) must NOT burn the challenge — otherwise the user's
+	// immediate correct retry with the same token was rejected as "already used",
+	// silently locking them out until they went back to the password step.
+	res, err := oAdmin.mfaStore.verifyAndConsume(user, req.Code, time.Now())
+	if err != nil {
+		log.Errorf("mfaLogin: failed to persist MFA consumption for %s: %v", user, err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to record MFA state, please retry")
 		return
 	}
-
-	rec, exists := oAdmin.mfaStore.get(user)
-	if !exists || !rec.Enabled {
-		recordLoginFailure(ip, user)
-		writeJSONError(w, http.StatusUnauthorized, "MFA is not configured for this user")
-		return
-	}
-
-	// Replay protection: reject any TOTP code we already accepted for this
-	// user within the validity window (~90s covers the standard ±1 step
-	// tolerance pquerna/otp uses). Backup codes are excluded because they
-	// are one-shot via consumeBackupCode already.
-	if rec.LastUsedCode != "" && rec.LastUsedCode == req.Code && time.Now().Unix()-rec.LastUsedAt < 90 {
-		recordLoginFailure(ip, user)
-		writeJSONError(w, http.StatusUnauthorized, "code already used")
-		return
-	}
-
-	// Try TOTP code first, then backup code
-	codeValid := verifyTOTPCode(rec.Secret, req.Code)
-	backupUsed := false
-	if !codeValid {
-		if verifyBackupCode(req.Code, rec.BackupCodes) {
-			codeValid = true
-			backupUsed = true
-		}
-	}
-
-	if !codeValid {
+	switch res {
+	case mfaReject:
 		recordLoginFailure(ip, user)
 		time.Sleep(500 * time.Millisecond)
 		writeJSONError(w, http.StatusUnauthorized, "invalid TOTP or backup code")
 		return
+	case mfaOKBackup:
+		log.Infof("MFA: user %s used a backup code", user)
 	}
 
-	// Persist code usage state. For TOTP, remember the code for replay
-	// rejection; for backup codes, consume from the list so they can't be
-	// reused.
-	if backupUsed {
-		rec.BackupCodes = consumeBackupCode(req.Code, rec.BackupCodes)
-		log.Infof("MFA: user %s used a backup code (%d remaining)", user, len(rec.BackupCodes))
-	} else {
-		rec.LastUsedCode = req.Code
-		rec.LastUsedAt = time.Now().Unix()
-	}
-	if err := oAdmin.mfaStore.set(user, rec); err != nil {
-		if backupUsed {
-			// A backup code was accepted but we could not durably record its
-			// consumption. Fail closed: don't issue a session, so the code stays
-			// unspent (set() rolled back the in-memory list) and thus can't be
-			// replayed after a restart — the user simply retries.
-			log.Errorf("mfaLogin: failed to persist backup-code consumption for %s: %v", user, err)
-			writeJSONError(w, http.StatusInternalServerError, "failed to record MFA state, please retry")
-			return
-		}
-		// TOTP replay marker only: best-effort within-window guard. Refusing an
-		// otherwise-valid login over a lost marker write is a worse tradeoff, so
-		// log and continue.
-		log.Warnf("mfaLogin: failed to persist TOTP replay marker for %s: %v", user, err)
+	// Second factor verified — NOW consume the intermediate token so it can't be
+	// replayed (single-use). The second factor itself is already spent above, so
+	// this is a belt-and-suspenders guard on the token; a failure here means a
+	// genuine replay, so refuse to issue a session.
+	if !consumeMfaJti(jti, exp) {
+		recordLoginFailure(ip, user)
+		writeJSONError(w, http.StatusUnauthorized, "MFA token already used")
+		return
 	}
 
 	recordLoginSuccess(ip, user)

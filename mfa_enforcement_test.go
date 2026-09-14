@@ -115,6 +115,7 @@ func TestSessionEpoch_MfaEnableInvalidatesPriorSessions(t *testing.T) {
 	ensureSigningKey()
 
 	user := "epoch_mfa_user"
+	seedTestAdmin(t, user)
 	before := signSession(user, false)
 	if _, ok := verifySession(before); !ok {
 		t.Fatal("session must verify before the epoch bump")
@@ -140,6 +141,7 @@ func TestSessionEpoch_PasswordChangeInvalidatesPriorSessions(t *testing.T) {
 	ensureSigningKey()
 
 	user := "epoch_pw_user"
+	seedTestAdmin(t, user)
 	old := signSession(user, true)
 	if _, ok := verifySession(old); !ok {
 		t.Fatal("session must verify before the password change")

@@ -688,6 +688,42 @@ func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Reque
 	fmt.Fprintf(w, "%s", ccd)
 }
 
+// validateResolvedIPv4s rejects any resolved IP that is not a clean dotted-quad
+// IPv4. resolved_ips is a server-derived field, but a client may supply it over
+// the API (the "preserve" optimization), so it MUST be validated before being
+// rendered into CCD `push "route …"` directives — otherwise a value like
+// "1.2.3.4\npush \"dhcp-option DNS …\"" injects independent OpenVPN directives
+// (audit F05).
+func validateResolvedIPv4s(ips []string) error {
+	for _, ip := range ips {
+		if strings.ContainsAny(ip, " \t\r\n\"'#") {
+			return fmt.Errorf("resolved IP %q contains illegal characters", ip)
+		}
+		p := net.ParseIP(ip)
+		if p == nil || p.To4() == nil {
+			return fmt.Errorf("resolved IP %q is not a valid IPv4 address", ip)
+		}
+	}
+	return nil
+}
+
+// filterIPv4 keeps only clean dotted-quad IPv4 addresses. Used for
+// server-resolved results (a resolver can legitimately return AAAA/IPv6 or, in
+// theory, unexpected data): we silently drop what we can't render as an IPv4
+// push route rather than fail the operation.
+func filterIPv4(ips []string) []string {
+	out := ips[:0:0]
+	for _, ip := range ips {
+		if strings.ContainsAny(ip, " \t\r\n\"'#") {
+			continue
+		}
+		if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+			out = append(out, ip)
+		}
+	}
+	return out
+}
+
 func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
 	var ccd Ccd
@@ -696,12 +732,24 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&ccd)
-	if err != nil {
-		log.Errorln(err)
+	// Audit F45: a decode error must abort with 400 — continuing with a partially
+	// populated Ccd applied an attacker/typo's malformed body as a real change
+	// (e.g. wrong CustomRoutes type silently erased the user's existing routes and
+	// returned 200).
+	if err := json.NewDecoder(r.Body).Decode(&ccd); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
 	}
 	if err := validateUsername(ccd.User); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid username")
+		return
+	}
+	// Audit F06: a CCD may only be written for an EXISTING client certificate.
+	// Without this, a routes-scoped token could create arbitrary files in the CCD
+	// directory (reserved names are already blocked by validateUsername; this also
+	// stops writing CCD for a non-existent/never-issued CN).
+	if !checkUserExist(ccd.User) {
+		writeJSONError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
@@ -725,7 +773,13 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 		if len(route.ResolvedIPs) > 0 {
-			continue // client preserved them
+			// Client preserved resolved IPs — validate strictly so a crafted value
+			// cannot inject independent push directives (audit F05).
+			if err := validateResolvedIPv4s(route.ResolvedIPs); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid resolved IP: "+err.Error())
+				return
+			}
+			continue
 		}
 		if existing, ok := existingDomain[route.Domain]; ok && len(existing.ResolvedIPs) > 0 {
 			ccd.CustomRoutes[i].ResolvedIPs = existing.ResolvedIPs
@@ -740,7 +794,9 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 		if lerr != nil {
 			ccd.CustomRoutes[i].LastResolveErr = lerr.Error()
 		} else {
-			ccd.CustomRoutes[i].ResolvedIPs = ips
+			// Server-resolved: keep only clean IPv4 (drop IPv6/garbage) so nothing
+			// unrenderable enters the CCD (audit F05).
+			ccd.CustomRoutes[i].ResolvedIPs = filterIPv4(ips)
 			ccd.CustomRoutes[i].LastResolveErr = ""
 		}
 	}

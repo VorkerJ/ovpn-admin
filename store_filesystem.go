@@ -215,12 +215,19 @@ func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 
 	uniqHash := strings.ReplaceAll(uuid.New().String(), "-", "")
 
-	// 1. Rename the old entry in index.txt
+	// 1. Rename the old entry in index.txt AND cryptographically revoke it.
+	// CRITICAL (audit F01): renaming the DN alone hides the old cert from the UI
+	// but leaves it flag=V, so gen-crl never lists its serial and the rotated-out
+	// .ovpn keeps authenticating — worse than delete, because a fresh cert with
+	// the SAME CN now also exists. Mark the old serial R with a revocation date
+	// BEFORE the CRL is regenerated (mirrors the kubernetes backend).
 	usersFromIndexTxt := indexTxtParser(fRead(s.indexTxtPath))
 	for i := range usersFromIndexTxt {
 		if usersFromIndexTxt[i].DistinguishedName == "/CN="+commonName {
 			oldUserSerial = usersFromIndexTxt[i].SerialNumber
 			usersFromIndexTxt[i].DistinguishedName = "/CN=REVOKED-" + commonName + "-" + uniqHash
+			usersFromIndexTxt[i].Flag = "R"
+			usersFromIndexTxt[i].RevocationDate = time.Now().UTC().Format(indexTxtDateFormat)
 			oldUserIndex = i
 			oldFound = true
 			break
@@ -276,9 +283,17 @@ func (s *filesystemStore) RotateClient(commonName, newPassword string) error {
 		return fmt.Errorf("rotate: write index.txt after swap: %w", err)
 	}
 
-	// 5. Regenerate CRL
+	// 5. Regenerate CRL. A gen-crl failure means the old serial is NOT revoked,
+	// so we must NOT report success (audit F01): return the error.
 	if crlOut, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl"); err != nil {
-		log.Warnf("rotate: easyrsa gen-crl: %v: %s", err, crlOut)
+		return fmt.Errorf("rotate: easyrsa gen-crl: %w: %s", err, crlOut)
+	}
+
+	// Defense-in-depth: the rotated-out serial must now be listed in the CRL.
+	if oldUserSerial != "" {
+		if err := s.verifySerialInCRL(commonName, oldUserSerial); err != nil {
+			return fmt.Errorf("rotate: %w", err)
+		}
 	}
 
 	return nil

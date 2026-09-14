@@ -42,6 +42,11 @@ type mfaRecord struct {
 	Version      int      `json:"version,omitempty"`
 	LastUsedCode string   `json:"last_used_code,omitempty"`
 	LastUsedAt   int64    `json:"last_used_at,omitempty"`
+	// UsedTOTPSteps records the 30-second TOTP time-step counters already spent
+	// within the ±1 acceptance window. Tracking the set of used steps (not just a
+	// single last-used code) is what stops a TOTP replay across adjacent windows,
+	// e.g. current → previous → current (audit F20).
+	UsedTOTPSteps []int64 `json:"used_totp_steps,omitempty"`
 }
 
 // ── Secret encryption (AES-GCM) ──────────────────────────────────────────────
@@ -100,6 +105,12 @@ type mfaStore struct {
 	mu   sync.RWMutex
 	path string
 	data map[string]mfaRecord
+	// loadErr is set when an EXISTING store could not be read or parsed. The
+	// process must refuse to start in that case (audit F19): silently treating a
+	// corrupt/unreadable store as "no MFA configured" would issue password-only
+	// sessions and let an attacker who knows the password re-enroll the second
+	// factor. A missing file is NOT an error (first run).
+	loadErr error
 }
 
 func newMfaStore(path string) *mfaStore {
@@ -117,11 +128,18 @@ func (s *mfaStore) load() {
 	}
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
-		return // file doesn't exist yet — that's fine
+		if os.IsNotExist(err) {
+			return // file doesn't exist yet — that's fine (first run)
+		}
+		// An existing store we cannot read (EACCES, I/O error) must fail closed.
+		s.loadErr = fmt.Errorf("read MFA store %s: %w", s.path, err)
+		return
 	}
 	s.mu.Lock()
 	if err := json.Unmarshal(raw, &s.data); err != nil {
-		log.Warnf("mfaStore: failed to parse %s: %v", s.path, err)
+		// Corrupt store — fail closed rather than silently disabling MFA.
+		s.data = make(map[string]mfaRecord)
+		s.loadErr = fmt.Errorf("parse MFA store %s: %w", s.path, err)
 		s.mu.Unlock()
 		return
 	}
@@ -274,6 +292,125 @@ func verifyTOTPCode(secret, code string) bool {
 	return totp.Validate(code, secret)
 }
 
+// matchTOTPStep returns the 30-second time-step counter that `code` validates
+// against within the ±1-step acceptance window, or (0,false) if it is not a
+// currently-valid TOTP for secret. Skew:0 per step so the EXACT matched step is
+// known — that identity is what verifyAndConsume records to reject replays.
+func matchTOTPStep(secret, code string, now time.Time) (int64, bool) {
+	opts := totp.ValidateOpts{Period: 30, Skew: 0, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1}
+	for _, d := range []int64{-1, 0, 1} {
+		t := now.Add(time.Duration(d*30) * time.Second)
+		if ok, err := totp.ValidateCustom(code, secret, t, opts); err == nil && ok {
+			return t.Unix() / 30, true
+		}
+	}
+	return 0, false
+}
+
+// pruneTOTPSteps keeps only steps still inside (or just around) the current
+// acceptance window so the used-step set can't grow without bound.
+func pruneTOTPSteps(steps []int64, now time.Time) []int64 {
+	cur := now.Unix() / 30
+	out := steps[:0:0]
+	for _, s := range steps {
+		if cur-s <= 2 && s-cur <= 2 {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// mfaConsumeResult is the outcome of an atomic second-factor check.
+type mfaConsumeResult int
+
+const (
+	mfaReject mfaConsumeResult = iota
+	mfaOKTOTP
+	mfaOKBackup
+)
+
+// verifyAndConsume atomically validates a TOTP or backup code for user and, on
+// success, records its consumption while holding the store's write lock. This
+// closes the get→verify→consume→set race (audit F20): two concurrent requests
+// can no longer both spend the same one-shot backup code, and a TOTP step is
+// marked used the instant it is accepted so it cannot be replayed. It persists
+// the mutation atomically (rolling back the in-memory change on a write error)
+// so a lost write never leaves a code counted-as-spent only in memory.
+func (s *mfaStore) verifyAndConsume(user, code string, now time.Time) (mfaConsumeResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.data[user]
+	if !ok || !rec.Enabled {
+		return mfaReject, nil
+	}
+
+	// s.data holds the ENCRYPTED secret; decrypt a copy only for verification.
+	secret := rec.Secret
+	if rec.Version >= 1 && rec.Secret != "" {
+		pt, err := decryptSecret(rec.Secret)
+		if err != nil {
+			log.Errorf("mfaStore: decrypt failed for %s: %v", user, err)
+			return mfaReject, nil
+		}
+		secret = pt
+	}
+
+	// TOTP first.
+	if step, matched := matchTOTPStep(secret, code, now); matched {
+		for _, used := range rec.UsedTOTPSteps {
+			if used == step {
+				return mfaReject, nil // replay of an already-spent step
+			}
+		}
+		next := rec
+		next.UsedTOTPSteps = pruneTOTPSteps(append(append([]int64(nil), rec.UsedTOTPSteps...), step), now)
+		next.LastUsedCode = code
+		next.LastUsedAt = now.Unix()
+		if err := s.persistRecordLocked(user, rec, next); err != nil {
+			return mfaReject, err
+		}
+		return mfaOKTOTP, nil
+	}
+
+	// Backup code.
+	if verifyBackupCode(code, rec.BackupCodes) {
+		next := rec
+		next.BackupCodes = consumeBackupCode(code, append([]string(nil), rec.BackupCodes...))
+		if err := s.persistRecordLocked(user, rec, next); err != nil {
+			return mfaReject, err
+		}
+		return mfaOKBackup, nil
+	}
+
+	return mfaReject, nil
+}
+
+// persistRecordLocked stores next for user and writes the whole store to disk.
+// The caller MUST hold s.mu (write lock); it marshals directly rather than
+// calling save() (which would re-acquire the lock and deadlock). On a write
+// failure it rolls the in-memory record back to prev so memory and disk agree.
+func (s *mfaStore) persistRecordLocked(user string, prev, next mfaRecord) error {
+	s.data[user] = next
+	if s.path == "" {
+		return nil
+	}
+	raw, err := json.Marshal(s.data)
+	if err != nil {
+		s.data[user] = prev
+		return fmt.Errorf("marshal mfa store: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
+		s.data[user] = prev
+		return fmt.Errorf("create mfa store dir: %w", err)
+	}
+	if err := writeFileAtomicSecret(s.path, raw); err != nil {
+		s.data[user] = prev
+		return fmt.Errorf("write mfa store: %w", err)
+	}
+	return nil
+}
+
 // ── Backup codes ─────────────────────────────────────────────────────────────
 
 // backupCodeChars excludes ambiguous characters (0, O, I, 1, L).
@@ -331,6 +468,11 @@ type mfaTokenPayload struct {
 	Purpose string `json:"purpose"`
 	Exp     int64  `json:"exp"`
 	Jti     string `json:"jti,omitempty"`
+	// Epoch is the user's session epoch when this first-factor token was minted.
+	// verifyMfaToken rejects it once the epoch advances (password change / MFA
+	// enable), so a password change between the two login steps invalidates any
+	// in-flight MFA challenge (audit F22).
+	Epoch int64 `json:"e,omitempty"`
 }
 
 // signMfaToken mints an intermediate token issued after first-factor success
@@ -345,6 +487,7 @@ func signMfaToken(user string) string {
 		Purpose: "mfa",
 		Exp:     time.Now().Add(mfaTokenTTL).Unix(),
 		Jti:     base64.RawURLEncoding.EncodeToString(jtiBytes),
+		Epoch:   getUserEpoch(user),
 	}
 	data, _ := json.Marshal(p)
 	enc := base64.RawURLEncoding.EncodeToString(data)
@@ -374,6 +517,11 @@ func verifyMfaToken(token string) (user string, jti string, exp int64, ok bool) 
 		return "", "", 0, false
 	}
 	if time.Now().Unix() > p.Exp {
+		return "", "", 0, false
+	}
+	// Audit F22: reject a first-factor token minted before the user's epoch
+	// advanced (password change / MFA enable between the two login steps).
+	if p.Epoch != getUserEpoch(p.User) {
 		return "", "", 0, false
 	}
 	return p.User, p.Jti, p.Exp, true

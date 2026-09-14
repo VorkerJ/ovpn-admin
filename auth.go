@@ -326,51 +326,72 @@ func setTrustedProxies(spec string) {
 	}
 }
 
-// loadRevokedTokens reads the persisted blacklist from disk, discarding expired entries.
-func loadRevokedTokens() {
+// loadRevokedTokens reads the persisted blacklist from disk, discarding expired
+// entries. It fails closed (audit F21): a missing file is fine (first run), but
+// an EXISTING file that can't be read or parsed is an error the caller turns
+// into a startup fatal — silently starting with an empty blacklist would let
+// every previously-revoked session revalidate.
+func loadRevokedTokens() error {
 	if revokedTokensFile == "" {
-		return
+		return nil
 	}
 	data, err := os.ReadFile(revokedTokensFile)
 	if err != nil {
-		return // file doesn't exist yet — that's fine
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read revoked-tokens file %s: %w", revokedTokensFile, err)
 	}
 	revokedTokensMu.Lock()
 	defer revokedTokensMu.Unlock()
-	_ = json.Unmarshal(data, &revokedTokens)
+	if err := json.Unmarshal(data, &revokedTokens); err != nil {
+		return fmt.Errorf("parse revoked-tokens file %s: %w", revokedTokensFile, err)
+	}
 	now := time.Now().Unix()
 	for token, exp := range revokedTokens {
 		if exp < now {
 			delete(revokedTokens, token)
 		}
 	}
+	return nil
 }
 
-// loadSessionEpochs reads the persisted per-user session epochs from disk.
-func loadSessionEpochs() {
+// loadSessionEpochs reads the persisted per-user session epochs from disk. Fails
+// closed like loadRevokedTokens (audit F21): losing the epochs table silently
+// would revive every session revoked via an epoch bump (password change / MFA).
+func loadSessionEpochs() error {
 	if sessionEpochsFile == "" {
-		return
+		return nil
 	}
 	data, err := os.ReadFile(sessionEpochsFile)
 	if err != nil {
-		return // file doesn't exist yet — every user starts at epoch 0
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read session-epochs file %s: %w", sessionEpochsFile, err)
 	}
 	sessionEpochsMu.Lock()
 	defer sessionEpochsMu.Unlock()
-	_ = json.Unmarshal(data, &sessionEpochs)
+	if err := json.Unmarshal(data, &sessionEpochs); err != nil {
+		return fmt.Errorf("parse session-epochs file %s: %w", sessionEpochsFile, err)
+	}
+	return nil
 }
 
-// saveSessionEpochs persists the per-user session epochs to disk.
-func saveSessionEpochs() {
+// saveSessionEpochs persists the per-user session epochs to disk. Returns the
+// error (audit F21) so a credential mutation that bumps the epoch can refuse to
+// report success when the bump didn't reach disk.
+func saveSessionEpochs() error {
 	if sessionEpochsFile == "" {
-		return
+		return nil
 	}
 	sessionEpochsMu.Lock()
 	data, _ := json.Marshal(sessionEpochs)
 	sessionEpochsMu.Unlock()
 	if err := writeFileAtomicSecret(sessionEpochsFile, data); err != nil {
-		log.Warnf("failed to persist session epochs: %v", err)
+		return fmt.Errorf("persist session epochs: %w", err)
 	}
+	return nil
 }
 
 // getUserEpoch returns the current session epoch for user (0 if never bumped).
@@ -384,14 +405,26 @@ func getUserEpoch(user string) int64 {
 // session token issued before this call embeds the old epoch and is rejected by
 // verifySession afterwards. Called when the admin's password changes and when
 // MFA is enabled, so those actions kill all prior sessions.
-func bumpUserEpoch(user string) {
+// bumpUserEpoch increments the user's session epoch and persists it, returning
+// the persist error (audit F21). Callers (password change, MFA enable) MUST
+// propagate a non-nil error as a 5xx and roll back their own change: if the
+// bump is live in memory but not on disk, the revoked sessions revalidate after
+// a restart. On a persist failure the in-memory increment is rolled back so
+// memory and disk stay consistent.
+func bumpUserEpoch(user string) error {
 	if user == "" {
-		return
+		return nil
 	}
 	sessionEpochsMu.Lock()
 	sessionEpochs[user]++
 	sessionEpochsMu.Unlock()
-	saveSessionEpochs()
+	if err := saveSessionEpochs(); err != nil {
+		sessionEpochsMu.Lock()
+		sessionEpochs[user]--
+		sessionEpochsMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // saveRevokedTokens writes the current blacklist to disk. It returns an error
@@ -498,12 +531,20 @@ func initAuth() {
 		log.Fatalf("Failed to init session signing key: %v", err)
 	}
 
-	loadRevokedTokens()
+	// Fail closed (audit F21): a corrupt/unreadable EXISTING revocation state
+	// must abort startup rather than silently revive revoked sessions.
+	if err := loadRevokedTokens(); err != nil {
+		log.Fatalf("refusing to start — revoked-tokens blacklist could not be loaded: %v. "+
+			"Fix or restore the file; deleting it re-validates every revoked session.", err)
+	}
 
 	// Per-user session epochs — bumped on password change / MFA enable to
 	// invalidate every session issued before the change.
 	sessionEpochsFile = filepath.Join(stateDir, ".session_epochs.json")
-	loadSessionEpochs()
+	if err := loadSessionEpochs(); err != nil {
+		log.Fatalf("refusing to start — session-epochs table could not be loaded: %v. "+
+			"Fix or restore the file; deleting it re-validates sessions revoked by a password/MFA change.", err)
+	}
 
 	// Bound memory growth of the loginAttempts map. Entries are created on
 	// every distinct IP and per-username key; without the janitor a constant
@@ -869,7 +910,22 @@ func verifySession(token string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	// Audit F22: a session belonging to an admin who no longer exists (removed
+	// from htpasswd) must not stay valid until its natural TTL. Re-check the user
+	// against the live admin table on every request.
+	if !adminUserExists(p.User) {
+		return "", false
+	}
 	return p.User, true
+}
+
+// adminUserExists reports whether user is present in the currently-loaded admin
+// htpasswd table. Used to invalidate sessions/MFA challenges for removed admins.
+func adminUserExists(user string) bool {
+	adminAuthMu.RLock()
+	defer adminAuthMu.RUnlock()
+	_, ok := htpasswdUsers[user]
+	return ok
 }
 
 // sessionPayloadFromRequest returns the verified session payload carried by r's
@@ -1190,8 +1246,22 @@ func (oAdmin *OvpnAdmin) adminChangePasswordHandler(w http.ResponseWriter, r *ht
 
 	// Invalidate every session issued under the old password (including the one
 	// making this request). A stolen pre-change session cookie must not survive
-	// a password rotation.
-	bumpUserEpoch(user)
+	// a password rotation. If the epoch bump doesn't persist (audit F21), roll
+	// the in-memory password change back and fail: otherwise a restart would keep
+	// the new password but revive every old session.
+	if err := bumpUserEpoch(user); err != nil {
+		adminAuthMu.Lock()
+		if hadPrev {
+			htpasswdUsers[user] = prevHash
+		} else {
+			delete(htpasswdUsers, user)
+		}
+		adminPasswordMustChange = prevMustChange
+		adminAuthMu.Unlock()
+		log.Errorf("admin password change aborted — session epoch bump not persisted: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "не удалось сохранить смену пароля (отзыв сессий)")
+		return
+	}
 
 	if err := saveAdminHtpasswd(adminHtpasswdPersistPath); err != nil {
 		adminAuthMu.Lock()

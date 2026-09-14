@@ -151,10 +151,9 @@ func RunCLI(args []string) int {
 		_ = s.userExists(*checkUser) // upstream prints nothing here
 		return 0
 	case cHasPass.FullCommand():
-		if s.userActiveWithPassword(*hasPassUser) {
-			return 0
-		}
-		return 1
+		// Tri-state exit code so auth.sh can fail closed (audit F02):
+		//   0 = password required, 1 = cert-only (allow), 2 = error/denied.
+		return s.passwordStatus(*hasPassUser)
 	case cList.FullCommand():
 		s.printUsers(*listAll)
 		return 0
@@ -290,6 +289,37 @@ func (s *store) userActiveWithPassword(username string) bool {
 	return revoked == 0 && deleted == 0 && password != ""
 }
 
+// passwordStatus returns the auth.sh exit-code contract for username (audit F02):
+//
+//	0 — password REQUIRED: an active row with a non-empty password exists.
+//	1 — CERT-ONLY: no row at all, or an active row with no password → allow on cert.
+//	2 — ERROR/DENY: a DB error, or a revoked/deleted row → auth.sh must DENY.
+//
+// The critical fix is that a database failure returns 2 (deny), never 1
+// (allow): a broken users.db must not silently drop the second factor.
+func (s *store) passwordStatus(username string) int {
+	var revoked, deleted int
+	var password sql.NullString
+	err := s.db.QueryRow(
+		"SELECT password, revoked, deleted FROM users WHERE username = ?",
+		username,
+	).Scan(&password, &revoked, &deleted)
+	if err == sql.ErrNoRows {
+		return 1 // no entry — cert-only user, allow on certificate
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: has-password: db error: %v\n", BinName, err)
+		return 2 // DB error — deny (never treat as cert-only)
+	}
+	if revoked != 0 || deleted != 0 {
+		return 2 // revoked/deleted account must not authenticate
+	}
+	if password.Valid && password.String != "" {
+		return 0 // password required
+	}
+	return 1 // active, no password — cert-only
+}
+
 func (s *store) userDeleted(username string) bool {
 	var deleted int
 	_ = s.db.QueryRow("SELECT deleted FROM users WHERE username = ?", username).Scan(&deleted)
@@ -361,12 +391,24 @@ func (s *store) restoreUser(username string) (string, error) {
 	return "User restored", nil
 }
 
+// changePassword sets username's password, creating the row if the user is
+// currently cert-only (no entry yet). Upsert (not a bare UPDATE) so audit F04 is
+// closed: the caller no longer has to parse `check` stdout to decide between
+// create and update, and a change for an existing user can never fall through to
+// a failing INSERT. A revoked/deleted row is reactivated as an active
+// password-required account. Any DB error propagates (never swallowed as
+// success).
 func (s *store) changePassword(username, password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.db.Exec("UPDATE users SET password = ? WHERE username = ?", string(hash), username); err != nil {
+	if _, err := s.db.Exec(
+		`INSERT INTO users(username, password, secret, revoked, deleted, app_configured)
+		 VALUES(?, ?, '', 0, 0, 0)
+		 ON CONFLICT(username) DO UPDATE SET password = excluded.password, revoked = 0, deleted = 0`,
+		username, string(hash),
+	); err != nil {
 		return "", err
 	}
 	return "Password changed", nil

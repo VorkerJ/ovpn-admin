@@ -235,19 +235,27 @@ func defaultServerConfig() ServerConfig {
 		// each connect is gated live by ovpn-admin over the management
 		// interface. That gives instant revocation without waiting for CRL
 		// refresh, at the cost of a login/password prompt on every client.
-		MgmtClientAuth:             false,
+		MgmtClientAuth: false,
+		// PasswordAuth seeds from the legacy OVPN_AUTH env so an env-only deploy
+		// that asked for password auth actually gets it in the persisted config
+		// (audit F03) — otherwise the GUI/policy source and the env flag disagree.
+		PasswordAuth:               serverDefaultBool("OVPN_AUTH", false),
 		DomainRefreshIntervalHours: 24,
 		KeepaliveInterval:          10,
 		KeepaliveTimeout:           60,
 		MaxClients:                 0,
-		ClientToClient:             true,
-		DuplicateCN:                true,
-		Compression:                "",
-		Verb:                       3,
-		RedirectGateway:            false,
-		DNSServers:                 []string{"1.1.1.1", "8.8.8.8"},
-		PushExtra:                  []string{},
-		CustomDirectives:           []string{},
+		// Default OFF when the server-side firewall is enabled (audit F08):
+		// client-to-client would bypass the per-user FORWARD rules. Without the
+		// firewall it defaults ON (the classic behaviour where clients can reach
+		// each other).
+		ClientToClient:   !firewallEnforcementEnabled(),
+		DuplicateCN:      true,
+		Compression:      "",
+		Verb:             3,
+		RedirectGateway:  false,
+		DNSServers:       []string{"1.1.1.1", "8.8.8.8"},
+		PushExtra:        []string{},
+		CustomDirectives: []string{},
 		RedirectGatewayExclusions: []Subnet{
 			{Address: "192.168.0.0", Mask: "255.255.0.0", Description: "Home/office LAN"},
 			{Address: "10.0.0.0", Mask: "255.0.0.0", Description: "Private 10/8"},

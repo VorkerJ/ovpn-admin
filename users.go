@@ -417,6 +417,30 @@ func validateUsername(username string) error {
 	if strings.Contains(username, "/") || strings.Contains(username, "\\") {
 		return errors.New("Имя пользователя не может содержать слэши")
 	}
+	// Audit F07: reject reserved PKI identities. "server"/"ca" are the VPN
+	// server and CA certificates, NOT client accounts — without this guard a
+	// service token or admin could revoke/delete/rotate the server identity
+	// (stopping the VPN) or export the server private key through the
+	// client-config endpoint, and a client created with CN "server" would
+	// collide with the server cert. "REVOKED…" is the archival rename marker for
+	// rotated/deleted certs, never a real account. This is the single choke point
+	// every user endpoint and store method (BuildClient/SaveCcd/GetClientCert)
+	// funnels through.
+	switch strings.ToLower(username) {
+	case "server", "ca", "default":
+		return errors.New("Имя зарезервировано за сертификатом сервера/CA/DEFAULT и недоступно для клиентских операций")
+	}
+	if strings.HasPrefix(username, "REVOKED") {
+		return errors.New("Имя зарезервировано (архивный маркер отозванных сертификатов)")
+	}
+	// Audit F06: internal config blobs are stored in the CCD directory with a
+	// leading underscore (_server_config.json, _common_routes.json). A CN like
+	// "_server_config.json" would otherwise pass the regex and let ccd/apply
+	// overwrite the server config through SaveCcd. No legitimate client CN starts
+	// with "_".
+	if strings.HasPrefix(username, "_") {
+		return errors.New("Имя не может начинаться с подчёркивания (зарезервировано за служебными файлами)")
+	}
 	// Reject leading dashes and `--` sequences. easyrsa does not support a
 	// `--` end-of-options marker, so a username like "--whatever" would be
 	// parsed as a flag by the easyrsa CLI. Belt-and-suspenders alongside the
@@ -469,9 +493,12 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 		return false, ucErr
 	}
 
-	if *authByPassword {
+	// Audit F03: honour BOTH the legacy global env (*authByPassword — password
+	// required for everyone) and the runtime per-user PasswordAuth toggle
+	// (password optional; provision one only when the operator supplied it).
+	if *authByPassword || (oAdmin.passwordAuthActive() && password != "") {
 		if err := validatePassword(password); err != nil {
-			log.Debugf("userCreate: authByPassword(): %s", err.Error())
+			log.Debugf("userCreate: password validation: %s", err.Error())
 			return false, err.Error()
 		}
 	}
@@ -520,43 +547,30 @@ func (oAdmin *OvpnAdmin) userCreate(username, password string) (bool, string) {
 }
 
 func (oAdmin *OvpnAdmin) userChangePassword(username, password string) (error, string) {
-
-	if checkUserExist(username) {
-		// "check" is a predicate (is there a row for this user?) — a non-nil
-		// error just means "no row", which is expected and handled below, so we
-		// don't propagate it.
-		o, _ := runOpenvpnUser("check", "--db.path", *authDatabase, "--user", username)
-		log.Debug(o)
-
-		if err := validatePassword(password); err != nil {
-			log.Warningf("userChangePassword: %s", err.Error())
-			return err, err.Error()
-		}
-
-		if !strings.Contains(o, username) {
-			co, err := runOpenvpnUser("create", "--db.path", *authDatabase, "--user", username, "--password", password)
-			log.Debug(co)
-			if err != nil {
-				log.Errorf("userChangePassword: openvpn-user create %s: %v", username, err)
-				return err, mustJSONMsg("failed to create password entry")
-			}
-		}
-
-		o, err := runOpenvpnUser("change-password", "--db.path", *authDatabase, "--user", username, "--password", password)
-		log.Debug(o)
-		if err != nil {
-			// Don't report success on a failed change — the old password would
-			// still be in effect while the UI claimed it changed.
-			log.Errorf("userChangePassword: openvpn-user change-password %s: %v", username, err)
-			return err, mustJSONMsg("failed to change password")
-		}
-
-		log.Infof("Password for user %s was changed", username)
-
-		return nil, "Password changed"
+	// The PKI cert must exist; this is a real membership check, not a DB probe.
+	if !checkUserExist(username) {
+		return fmt.Errorf("user %q not found", username), mustJSONMsg(fmt.Sprintf("User %s not found", username))
 	}
 
-	return fmt.Errorf("user %q not found", username), mustJSONMsg(fmt.Sprintf("User %s not found", username))
+	if err := validatePassword(password); err != nil {
+		log.Warningf("userChangePassword: %s", err.Error())
+		return err, err.Error()
+	}
+
+	// Audit F04: do NOT parse `check` stdout to decide create-vs-update — the
+	// built-in openvpn-user `check` prints nothing, so the old code always tried
+	// to `create` an existing user and failed. `change-password` now upserts the
+	// row (create if cert-only, update otherwise), so one call handles both cases
+	// and any DB/CLI error is a genuine failure — never misread as "no user".
+	o, err := runOpenvpnUser("change-password", "--db.path", *authDatabase, "--user", username, "--password", password)
+	log.Debug(o)
+	if err != nil {
+		log.Errorf("userChangePassword: openvpn-user change-password %s: %v", username, err)
+		return err, mustJSONMsg("failed to change password")
+	}
+
+	log.Infof("Password for user %s was changed", username)
+	return nil, "Password changed"
 }
 
 func (oAdmin *OvpnAdmin) getUserStatistic(username string) []clientStatus {
@@ -627,10 +641,15 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 	if checkUserExist(username) {
 		// Validate the new password BEFORE any mutation, so a bad password can't
 		// leave the user with its old password already deleted / cert rotated.
-		if *authByPassword {
+		// Validate a supplied new password (required in global mode, optional in
+		// per-user mode); always clear any existing password row so the rotated
+		// account starts from a clean slate (audit F03).
+		if *authByPassword || (oAdmin.passwordAuthActive() && newPassword != "") {
 			if err := validatePassword(newPassword); err != nil {
 				return fmt.Errorf("rotate: invalid new password: %w", err), err.Error()
 			}
+		}
+		if oAdmin.passwordAuthActive() {
 			o, _ := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
 			log.Debug(o)
 		}

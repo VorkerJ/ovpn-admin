@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,23 @@ func newTestAdminCcd(t *testing.T, dir string) *OvpnAdmin {
 		store:        testFilesystemStore(dir),
 	}
 	app.templates = tplSub
+
+	// The CCD apply handler now requires the target to be an existing client
+	// (audit F06), and checkUserExist reads the GLOBAL indexTxtPath. Seed it in a
+	// SEPARATE temp dir (not the ccd dir, or the index.txt file would pollute CCD
+	// enumeration) with the CNs the CCD tests apply for.
+	idx := filepath.Join(t.TempDir(), "index.txt")
+	prev := indexTxtPath
+	idxCopy := idx
+	indexTxtPath = &idxCopy
+	t.Cleanup(func() { indexTxtPath = prev })
+	var lines string
+	for _, cn := range []string{"alice", "bob", "carol", "dave", "erin", "frank", "testuser"} {
+		lines += fmt.Sprintf("V\t990101000000Z\t\t01\tunknown\t/CN=%s\n", cn)
+	}
+	if err := os.WriteFile(idx, []byte(lines), 0o600); err != nil {
+		t.Fatalf("seed index.txt: %v", err)
+	}
 	return app
 }
 

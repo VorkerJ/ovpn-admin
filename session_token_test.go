@@ -20,6 +20,7 @@ import (
 // defeating MFA for anyone who knew the password.
 func TestMfaTokenIsNotASession(t *testing.T) {
 	ensureSigningKey()
+	seedTestAdmin(t, "admin")
 
 	mfa := signMfaToken("admin")
 	if _, ok := verifySession(mfa); ok {

@@ -83,6 +83,7 @@ func TestValidateAdminPassword(t *testing.T) {
 // must-change set, a normal endpoint is held with 412 and next is not called.
 func TestRequireAuth_ForcedChange_BlocksNonAllowlisted(t *testing.T) {
 	ensureSigningKey()
+	seedTestAdmin(t, "admin")
 	withMustChange(t, true)
 	app := &OvpnAdmin{}
 
@@ -112,6 +113,7 @@ func TestRequireAuth_ForcedChange_BlocksNonAllowlisted(t *testing.T) {
 // endpoint itself stays reachable so the admin can escape the gate.
 func TestRequireAuth_ForcedChange_AllowsChangeEndpoint(t *testing.T) {
 	ensureSigningKey()
+	seedTestAdmin(t, "admin")
 	withMustChange(t, true)
 	app := &OvpnAdmin{}
 

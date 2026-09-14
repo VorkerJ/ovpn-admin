@@ -237,6 +237,14 @@ func main() {
 			}
 		}
 		ovpnAdmin.mfaStore = newMfaStore(mfaPath)
+		// Fail closed (audit F19): if an EXISTING MFA store is corrupt or
+		// unreadable, refuse to start rather than serve password-only sessions
+		// that silently bypass the second factor.
+		if ovpnAdmin.mfaStore.loadErr != nil {
+			log.Fatalf("MFA: refusing to start — existing MFA store could not be loaded: %v. "+
+				"Fix the file's permissions/contents or restore it from backup; do NOT delete it "+
+				"(that would drop everyone's enrolled second factor).", ovpnAdmin.mfaStore.loadErr)
+		}
 		log.Infof("MFA: enabled, secrets at %s", mfaPath)
 		if fallbackToCwd {
 			log.Warnf("MFA: using CWD-relative secrets path %s — set --mfa.db-path or --admin.htpasswd-file to pin a stable absolute path", mfaPath)
