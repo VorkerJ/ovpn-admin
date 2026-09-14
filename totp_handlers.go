@@ -36,9 +36,17 @@ func (oAdmin *OvpnAdmin) mfaStatusHandler(w http.ResponseWriter, r *http.Request
 	if oAdmin.mfaStore != nil {
 		enabled = oAdmin.mfaStore.isEnabled(user)
 	}
-
+	// Audit F46: expose the server's ACTUAL policy so the UI can gate MFA-only
+	// actions (e.g. API-token creation) exactly the way the backend does — the
+	// button was disabled whenever the user hadn't enrolled, even on servers
+	// where MFA is off/optional and the API would have allowed it.
+	required := oAdmin.mfaStore != nil && (mfaRequired == nil || *mfaRequired)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"enabled": enabled,
+		"enabled":  enabled,
+		"required": required,
+		// can_manage_tokens mirrors requireAdminMfa's gate (adminHasMfa): true when
+		// MFA is satisfied for this session OR not required by the server.
+		"can_manage_tokens": oAdmin.adminHasMfa(r),
 	})
 }
 

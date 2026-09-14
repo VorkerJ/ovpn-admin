@@ -22,10 +22,11 @@ const newName = ref('')
 // create users and routes and must not be able to exfiltrate private keys.
 const allowConfigExport = ref(false)
 const creating = ref(false)
-// Creating a token requires an MFA-enabled admin session (server returns 412
-// otherwise). Mirror that in the UI so the button is disabled with an
-// explanation instead of failing on click.
-const mfaEnabled = ref(true)
+// Whether THIS server actually lets the current admin manage tokens. Audit F46:
+// gate on the server's real policy (can_manage_tokens) — true when MFA is
+// satisfied OR not required — instead of "has the user enrolled MFA", which
+// wrongly disabled the button on servers where MFA is off/optional.
+const canManageTokens = ref(true)
 const created = ref(null) // { name, token } — shown once
 const copied = ref(false)
 
@@ -59,7 +60,10 @@ watch(() => props.open, (o) => {
     allowConfigExport.value = false
     error.value = ''
     load()
-    fetchMfaStatus().then(s => { mfaEnabled.value = !!s?.enabled }).catch(() => {})
+    // Prefer the explicit capability; fall back to `enabled` for older backends.
+    fetchMfaStatus().then(s => {
+      canManageTokens.value = s?.can_manage_tokens ?? !!s?.enabled
+    }).catch(() => {})
   }
 })
 
@@ -156,10 +160,10 @@ function onClose() {
           @keyup.enter="create"
         >
       </div>
-      <Tooltip :text="!mfaEnabled ? 'Нужна включённая 2FA: Профиль → MFA Setup. Токены может создавать только админ с MFA.' : ''">
+      <Tooltip :text="!canManageTokens ? 'Нужна включённая 2FA: Профиль → MFA Setup. На этом сервере создавать токены может только админ с MFA.' : ''">
         <Button
           :loading="creating"
-          :disabled="creating || !newName.trim() || !mfaEnabled"
+          :disabled="creating || !newName.trim() || !canManageTokens"
           @click="create"
         >
           <KeyRound :size="14" />
@@ -185,7 +189,7 @@ function onClose() {
 
     <!-- MFA requirement notice — visible without hovering the disabled button -->
     <div
-      v-if="!mfaEnabled"
+      v-if="!canManageTokens"
       class="mb-4 flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400"
     >
       <ShieldAlert

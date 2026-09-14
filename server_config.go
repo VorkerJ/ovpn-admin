@@ -423,11 +423,8 @@ func validateServerConfig(cfg ServerConfig) error {
 			return fmt.Errorf("public_hostname must be a valid hostname or IP, got %q", cfg.PublicHostname)
 		}
 	}
-	if net.ParseIP(cfg.Network) == nil {
-		return fmt.Errorf("network %q is not a valid IP", cfg.Network)
-	}
-	if net.ParseIP(cfg.NetworkMask) == nil {
-		return fmt.Errorf("network_mask %q is not a valid mask", cfg.NetworkMask)
+	if err := validateIPv4NetworkMask(cfg.Network, cfg.NetworkMask); err != nil {
+		return fmt.Errorf("network/network_mask: %w", err)
 	}
 	if cfg.TunMTU < 576 || cfg.TunMTU > 9000 {
 		return fmt.Errorf("tun_mtu must be 576..9000, got %d", cfg.TunMTU)
@@ -1098,6 +1095,13 @@ func writeFileAtomicMode(path string, data []byte, perm os.FileMode) error {
 // serverConfigHandler dispatches GET / PUT on /api/server-config.
 func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Request) {
 	log.Info(r.RemoteAddr, " ", r.RequestURI)
+	// Audit F44: the route is registered unconditionally, but the store/manager
+	// only exist when the module is enabled — return a documented 503 instead of
+	// dereferencing nil and panicking the handler.
+	if oAdmin.serverConfigStore == nil || oAdmin.serverManager == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "server-config module is disabled")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		snap := oAdmin.serverConfigStore.snapshot()
@@ -1128,6 +1132,7 @@ func (oAdmin *OvpnAdmin) serverConfigHandler(w http.ResponseWriter, r *http.Requ
 		// render time; changing them requires a rewrite + kick to take effect).
 		preExclusions := oAdmin.serverConfigStore.snapshot().RedirectGatewayExclusions
 		preGlobalRedirect := oAdmin.serverConfigStore.snapshot().RedirectGateway
+		preMgmtClientAuth := oAdmin.serverConfigStore.snapshot().MgmtClientAuth
 		kind, err := oAdmin.serverManager.apply(r.Context(), cfg, updatedBy)
 		if err != nil {
 			log.Errorf("server-config: apply: %v", err)
