@@ -187,6 +187,13 @@ type Ccd struct {
 	// `push "route X Y net_gateway"` directive.
 	RedirectGateway bool `json:"RedirectGateway"`
 
+	// UserRedirectGateway is the user's OWN full-tunnel intent, kept separate from
+	// the effective RedirectGateway (which also reflects the global force). It is
+	// persisted as an explicit state marker so turning the GLOBAL toggle off
+	// reliably returns inheriting users to their own choice (audit F30). Render-
+	// and parse-time only — not part of the API payload.
+	UserRedirectGateway bool `json:"-"`
+
 	// RedirectGatewayExclusions — per-user EXTRA subnets that should bypass
 	// the VPN even when full-tunnel is on (e.g. a user's specific work VPN
 	// subnet on top of the typical 192.168/16 defaults). Globals from
@@ -500,7 +507,16 @@ func indexTxtParser(txt string) []indexTxtLine {
 		str := strings.Fields(v)
 		if len(str) > 0 {
 			switch {
-			// case strings.HasPrefix(str[0], "E"):
+			// Audit F38: an "E" (expired) line has the SAME layout as "V"
+			// (Flag Expiration Serial Filename DN, indices 0..4). Parse it as a
+			// first-class status so expired accounts stay visible and survive any
+			// parse→render round-trip instead of being silently dropped.
+			case strings.HasPrefix(str[0], "E"):
+				if len(str) < 5 {
+					log.Warnf("indexTxtParser: skipping malformed 'E' line: %q", v)
+					continue
+				}
+				indexTxt = append(indexTxt, indexTxtLine{Flag: str[0], ExpirationDate: str[1], SerialNumber: str[2], Filename: str[3], DistinguishedName: str[4], Identity: str[4][strings.Index(str[4], "=")+1:]})
 			case strings.HasPrefix(str[0], "V"):
 				// A valid "V" line has: Flag Expiration Serial Filename DN
 				// (indices 0..4). Guard the field count so a short/corrupt
@@ -533,7 +549,11 @@ func renderIndexTxt(data []indexTxtLine) string {
 			indexTxt += fmt.Sprintf("%s\t%s\t\t%s\t%s\t%s\n", line.Flag, line.ExpirationDate, line.SerialNumber, line.Filename, line.DistinguishedName)
 		case "R":
 			indexTxt += fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\n", line.Flag, line.ExpirationDate, line.RevocationDate, line.SerialNumber, line.Filename, line.DistinguishedName)
-			// case "E":
+		case "E":
+			// Audit F38: preserve expired entries on render (same layout as V) so a
+			// parse→render round-trip (revoke/rotate/delete rewrites the whole file)
+			// doesn't physically drop expired accounts from index.txt.
+			indexTxt += fmt.Sprintf("%s\t%s\t\t%s\t%s\t%s\n", line.Flag, line.ExpirationDate, line.SerialNumber, line.Filename, line.DistinguishedName)
 		}
 	}
 	return indexTxt

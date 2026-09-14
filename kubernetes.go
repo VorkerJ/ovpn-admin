@@ -50,7 +50,9 @@ type OpenVPNPKI struct {
 	ServerCertPEM    *bytes.Buffer
 	ClientCerts      []ClientCert
 	RevokedCerts     []RevokedCert
-	KubeClient       *kubernetes.Clientset
+	// kubernetes.Interface (not the concrete *Clientset) so tests can inject a
+	// fake clientset; *Clientset from NewForConfig satisfies it transparently.
+	KubeClient kubernetes.Interface
 }
 
 type ClientCert struct {
@@ -563,9 +565,11 @@ func (openVPNPKI *OpenVPNPKI) easyrsaUnrevoke(commonName string) (err error) {
 		return
 	}
 
-	err = openVPNPKI.easyrsaGenCRL()
-	if err != nil {
-		log.Error(err)
+	// Audit F36: do NOT swallow a gen-crl failure by overwriting err with the
+	// result of updateCRLOnDisk — a failed CRL rebuild means the unrevoke is not
+	// actually complete, so surface it.
+	if err = openVPNPKI.easyrsaGenCRL(); err != nil {
+		return
 	}
 
 	err = openVPNPKI.updateCRLOnDisk()
@@ -587,7 +591,12 @@ func (openVPNPKI *OpenVPNPKI) easyrsaRotate(commonName, newPassword string) (err
 	// the SAME CN now also exists. Set it BEFORE the Update so it is persisted,
 	// and BEFORE easyrsaGenCRL below picks it up from the secret list.
 	secret.Annotations["revokedAt"] = time.Now().Format(indexTxtDateFormat)
-	secret.Labels["name"] = "REVOKED" + commonName
+	// Audit F37: the archival `name` label must stay a valid Kubernetes label
+	// value (≤63 chars). Embedding the CN ("REVOKED"+CN) overflowed for long
+	// names, so the Update failed with a 422 and the cert could not be rotated.
+	// Use a short unique marker instead; the full CN is preserved in the
+	// commonName annotation above.
+	secret.Labels["name"] = "REVOKED-" + uniqHash
 	secret.Labels["revokedForever"] = "true"
 
 	_, err = openVPNPKI.KubeClient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
@@ -643,7 +652,11 @@ func (openVPNPKI *OpenVPNPKI) easyrsaDelete(commonName string) (err error) {
 	// CRL and the deleted user can reconnect with their old .ovpn. Set it
 	// BEFORE the Update so it persists and BEFORE easyrsaGenCRL picks it up.
 	secret.Annotations["revokedAt"] = time.Now().Format(indexTxtDateFormat)
-	secret.Labels["name"] = "REVOKED-" + commonName + "-" + uniqHash
+	// Audit F37: keep the `name` label within the 63-char Kubernetes limit —
+	// "REVOKED-"+CN+"-"+uuid overflowed for long CNs and failed the Update (422),
+	// making a valid long-named user undeletable. The full CN lives in the
+	// commonName annotation; the label just needs to be short and unique.
+	secret.Labels["name"] = "REVOKED-" + uniqHash
 	secret.Labels["revokedForever"] = "true"
 
 	_, err = openVPNPKI.KubeClient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})

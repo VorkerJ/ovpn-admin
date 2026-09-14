@@ -62,11 +62,10 @@ func validateCommonRoute(e CommonRouteEntry) error {
 		if e.Domain != "" {
 			return fmt.Errorf("domain must be empty for kind=ip")
 		}
-		if net.ParseIP(e.Address) == nil {
-			return fmt.Errorf("address %q is not a valid IP", e.Address)
-		}
-		if net.ParseIP(e.Mask) == nil {
-			return fmt.Errorf("mask %q is not a valid IP-format netmask", e.Mask)
+		// Audit F25: require IPv4 + contiguous mask + canonical network base
+		// (net.ParseIP alone lets IPv6 and non-contiguous masks through).
+		if err := validateIPv4NetworkMask(e.Address, e.Mask); err != nil {
+			return fmt.Errorf("common route: %w", err)
 		}
 		return nil
 	case "domain":

@@ -368,6 +368,41 @@ var allowedDirectivePrefixes = []string{
 	"rcvbuf ",
 }
 
+// validateIPv4NetworkMask verifies addr is an IPv4 network base and mask is a
+// contiguous IPv4 netmask, with addr canonical under mask (audit F25). Plain
+// net.ParseIP accepts IPv6 and non-contiguous masks (e.g. 255.0.255.0) that
+// OpenVPN cannot use — those must be rejected before they reach server.conf/CCD.
+func validateIPv4NetworkMask(addr, mask string) error {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return fmt.Errorf("%q is not a valid IP", addr)
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return fmt.Errorf("%q must be IPv4 (IPv6 not supported)", addr)
+	}
+	mip := net.ParseIP(mask)
+	if mip == nil {
+		return fmt.Errorf("%q is not a valid netmask", mask)
+	}
+	mv4 := mip.To4()
+	if mv4 == nil {
+		return fmt.Errorf("%q must be an IPv4 dotted-quad mask", mask)
+	}
+	m := net.IPv4Mask(mv4[0], mv4[1], mv4[2], mv4[3])
+	ones, bits := m.Size()
+	if bits == 0 {
+		return fmt.Errorf("%q is not a contiguous network mask", mask)
+	}
+	if ones < 0 || ones > 32 {
+		return fmt.Errorf("%q out of range", mask)
+	}
+	if network := v4.Mask(m); !network.Equal(v4) {
+		return fmt.Errorf("%q has host bits set under mask %q (canonical: %s)", addr, mask, network.String())
+	}
+	return nil
+}
+
 func validateServerConfig(cfg ServerConfig) error {
 	if cfg.Proto != "udp" && cfg.Proto != "tcp" {
 		return fmt.Errorf("proto must be udp or tcp, got %q", cfg.Proto)
@@ -726,16 +761,21 @@ func categorizeChanges(old, new ServerConfig) string {
 		return "hard"
 	}
 
-	// Soft = the openvpn process can reload via SIGHUP without dropping
-	// connected clients. Only fields with zero client-visible impact stay
-	// here (log verbosity, max-clients server-side cap, keepalive timings
-	// which OpenVPN re-applies at next ping). DomainRefreshIntervalHours
-	// is read live by the background scheduler — no openvpn restart at all.
+	// Audit F27: DomainRefreshIntervalHours is read LIVE by the background
+	// scheduler and needs no openvpn action at all — it must NOT trigger a reload.
+	// It was previously in the soft set, so changing only the refresh interval
+	// sent a SIGHUP and reconnected every client for nothing. It is handled by the
+	// "none" branch now (persisted, scheduler picks it up on its next tick).
+	//
+	// Soft = a SIGHUP reload of the openvpn process. NOTE (F27): SIGHUP re-reads
+	// the config and RESTARTS the tunnel — connected clients DO reconnect. These
+	// fields have no data-plane security impact, so a brief reconnect is
+	// acceptable, but it is not "seamless"; do not signal for anything that
+	// doesn't actually need openvpn to re-read its config.
 	soft := old.Verb != new.Verb ||
 		old.KeepaliveInterval != new.KeepaliveInterval ||
 		old.KeepaliveTimeout != new.KeepaliveTimeout ||
-		old.MaxClients != new.MaxClients ||
-		old.DomainRefreshIntervalHours != new.DomainRefreshIntervalHours
+		old.MaxClients != new.MaxClients
 	if soft {
 		return "soft"
 	}
@@ -786,6 +826,10 @@ func renderServerConfig(cfg ServerConfig, dcoAvailable, ccdEnabled bool) (string
 
 // serverManager — координирует render + reload openvpn-процесса.
 type serverManager struct {
+	// applyMu serializes the whole apply() cycle (audit F26): two concurrent
+	// saves must not interleave persist/render/reload and leave the JSON, the
+	// rendered server.conf and the in-memory store disagreeing.
+	applyMu        sync.Mutex
 	store          *serverConfigStore
 	persistBackend storage.Store
 	mgmtAddr       string
@@ -856,8 +900,22 @@ func (m *serverManager) waitMgmtReady(ctx context.Context) error {
 	}
 }
 
+// serverConfigEqualIgnoringBookkeeping reports whether two configs are identical
+// apart from the bookkeeping fields (UpdatedAt/UpdatedBy) and the Initialized
+// flag (handled separately). Used to skip a gratuitous persist on an identical
+// re-save in the "none" branch.
+func serverConfigEqualIgnoringBookkeeping(a, b ServerConfig) bool {
+	a.UpdatedAt, a.UpdatedBy, a.Initialized = "", "", false
+	b.UpdatedAt, b.UpdatedBy, b.Initialized = "", "", false
+	return reflect.DeepEqual(a, b)
+}
+
 // apply применяет новый конфиг: валидирует, рендерит, сохраняет, перезагружает.
 func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedBy string) (string, error) {
+	// Audit F26: serialize the entire cycle so concurrent applies can't interleave.
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+
 	if err := validateServerConfig(newCfg); err != nil {
 		ovpnServerConfigErrors.WithLabelValues("validate").Inc()
 		return "", fmt.Errorf("validate: %w", err)
@@ -866,22 +924,28 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 	current := m.store.snapshot()
 	kind := categorizeChanges(current, newCfg)
 	if kind == "none" {
-		// Даже если openvpn-параметры не изменились, факт явного
-		// сохранения должен пометить конфиг как инициализированный
-		// (admin осознанно подтвердил defaults).
-		if newCfg.Initialized && !current.Initialized {
-			current.Initialized = true
-			current.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-			current.UpdatedBy = updatedBy
-			// Durable-commit BEFORE flipping the in-memory store: persist the
-			// JSON source of truth first, so a restart can't silently revert
-			// the "initialized" acknowledgement while the API reported success.
-			if err := m.persist(current); err != nil {
-				ovpnServerConfigErrors.WithLabelValues("persist").Inc()
-				return "", fmt.Errorf("%w: persist initialized flag: %v", errServerConfigPersist, err)
-			}
-			m.store.replace(current)
+		// "none" means no OpenVPN RELOAD is required — NOT that nothing changed.
+		// Persisted metadata that doesn't touch server.conf (the public endpoint
+		// used to render .ovpn files, the refresh interval, the initialized flag)
+		// may still have changed and MUST be saved (audit F24). Previously this
+		// branch persisted `current`, silently discarding endpoint edits the API
+		// reported as saved. But if NOTHING changed (an identical re-save), skip
+		// the write entirely — no gratuitous persist, and no nil-backend deref.
+		wantInitialized := newCfg.Initialized || current.Initialized
+		if serverConfigEqualIgnoringBookkeeping(current, newCfg) && current.Initialized == wantInitialized {
+			return "none", nil
 		}
+		newCfg.Initialized = wantInitialized
+		newCfg.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		newCfg.UpdatedBy = updatedBy
+		// Durable-commit BEFORE flipping the in-memory store: persist the JSON
+		// source of truth first, so a restart can't silently revert what the API
+		// reported as success.
+		if err := m.persist(newCfg); err != nil {
+			ovpnServerConfigErrors.WithLabelValues("persist").Inc()
+			return "", fmt.Errorf("%w: persist server config: %v", errServerConfigPersist, err)
+		}
+		m.store.replace(newCfg)
 		return "none", nil
 	}
 
@@ -904,11 +968,18 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 	}
 
 	// server.conf is a derived artifact of the now-durable config; write it
-	// only after the JSON is committed. A failure here is still a commit
-	// failure from the caller's perspective (the running openvpn won't pick up
-	// the change), so surface it as 5xx and leave the in-memory store untouched.
+	// only after the JSON is committed. A failure here is still a commit failure
+	// from the caller's perspective — and audit F26: the JSON is ALREADY persisted,
+	// so leaving it means the rejected config becomes active on the next restart.
+	// Roll the durable JSON back to the previous config so disk, memory and the
+	// rendered server.conf stay consistent.
 	if err := writeFileAtomic(m.confPath, []byte(rendered)); err != nil {
 		ovpnServerConfigErrors.WithLabelValues("write").Inc()
+		if rbErr := m.persist(current); rbErr != nil {
+			// Rollback itself failed — surface both; disk now holds newCfg JSON
+			// but server.conf was not updated, so the operator must intervene.
+			log.Errorf("server-config: write conf failed AND rollback of persisted JSON failed: write=%v rollback=%v", err, rbErr)
+		}
 		return "", fmt.Errorf("%w: write conf: %v", errServerConfigPersist, err)
 	}
 

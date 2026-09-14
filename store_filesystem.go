@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -147,65 +148,60 @@ func (s *filesystemStore) RevokeClient(commonName string) error {
 func (s *filesystemStore) UnrevokeClient(commonName string) error {
 	usersFromIndexTxt := indexTxtParser(fRead(s.indexTxtPath))
 	for i := range usersFromIndexTxt {
-		if usersFromIndexTxt[i].DistinguishedName == "/CN="+commonName {
-			if usersFromIndexTxt[i].Flag == "R" {
-				usersFromIndexTxt[i].Flag = "V"
-				usersFromIndexTxt[i].RevocationDate = ""
-
-				serial := usersFromIndexTxt[i].SerialNumber
-
-				// The revoked cert lives at exactly one path
-				// (revoked/certs_by_serial/<serial>.crt) but must be restored to
-				// TWO destinations: pki/issued/<cn>.crt AND
-				// pki/certs_by_serial/<serial>.pem. Copy then delete — the
-				// previous code called fMove twice with the same source, so the
-				// second move silently failed because the source was already
-				// gone, leaving certs_by_serial/ inconsistent.
-				srcRevokedCert := fmt.Sprintf("%s/pki/revoked/certs_by_serial/%s.crt", s.easyrsaDirPath, serial)
-				dstIssued := fmt.Sprintf("%s/pki/issued/%s.crt", s.easyrsaDirPath, commonName)
-				dstBySerial := fmt.Sprintf("%s/pki/certs_by_serial/%s.pem", s.easyrsaDirPath, serial)
-
-				if err := fCopy(srcRevokedCert, dstIssued); err != nil {
-					log.Errorf("UnrevokeClient: copy to issued/: %v", err)
-				}
-				if err := fCopy(srcRevokedCert, dstBySerial); err != nil {
-					log.Errorf("UnrevokeClient: copy to certs_by_serial/: %v", err)
-				}
-				if err := fDelete(srcRevokedCert); err != nil {
-					log.Errorf("UnrevokeClient: delete revoked cert: %v", err)
-				}
-
-				if err := fMove(
-					fmt.Sprintf("%s/pki/revoked/private_by_serial/%s.key", s.easyrsaDirPath, serial),
-					fmt.Sprintf("%s/pki/private/%s.key", s.easyrsaDirPath, commonName),
-				); err != nil {
-					log.Error(err)
-				}
-				if err := fMove(
-					fmt.Sprintf("%s/pki/revoked/reqs_by_serial/%s.req", s.easyrsaDirPath, serial),
-					fmt.Sprintf("%s/pki/reqs/%s.req", s.easyrsaDirPath, commonName),
-				); err != nil {
-					log.Error(err)
-				}
-
-				if err := fWrite(s.indexTxtPath, renderIndexTxt(usersFromIndexTxt)); err != nil {
-					log.Error(err)
-				}
-
-				if crlOut, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl"); err != nil {
-					log.Warnf("unrevoke: easyrsa gen-crl: %v: %s", err, crlOut)
-				}
-
-				break
-			}
+		if usersFromIndexTxt[i].DistinguishedName != "/CN="+commonName {
+			continue
 		}
-	}
+		if usersFromIndexTxt[i].Flag != "R" {
+			return nil // not revoked — nothing to do
+		}
 
-	// Write final state (covers the case where nothing was revoked — still safe).
-	if err := fWrite(s.indexTxtPath, renderIndexTxt(usersFromIndexTxt)); err != nil {
-		log.Error(err)
+		serial := usersFromIndexTxt[i].SerialNumber
+
+		// The revoked cert lives at exactly one path
+		// (revoked/certs_by_serial/<serial>.crt) but must be restored to TWO
+		// destinations: pki/issued/<cn>.crt AND pki/certs_by_serial/<serial>.pem.
+		srcRevokedCert := fmt.Sprintf("%s/pki/revoked/certs_by_serial/%s.crt", s.easyrsaDirPath, serial)
+		dstIssued := fmt.Sprintf("%s/pki/issued/%s.crt", s.easyrsaDirPath, commonName)
+		dstBySerial := fmt.Sprintf("%s/pki/certs_by_serial/%s.pem", s.easyrsaDirPath, serial)
+		keySrc := fmt.Sprintf("%s/pki/revoked/private_by_serial/%s.key", s.easyrsaDirPath, serial)
+		keyDst := fmt.Sprintf("%s/pki/private/%s.key", s.easyrsaDirPath, commonName)
+
+		// Audit F36: the cert AND private key restores are CRITICAL — without them
+		// the "unrevoked" user cannot actually connect / get a working .ovpn. If
+		// any critical step fails, do NOT flip the flag to V and do NOT report
+		// success; leave the entry R so the operator sees the real failure and can
+		// retry. The .req restore is non-critical (not needed to connect).
+		if err := fCopy(srcRevokedCert, dstIssued); err != nil {
+			return fmt.Errorf("unrevoke %s: restore cert to issued/: %w", commonName, err)
+		}
+		if err := fCopy(srcRevokedCert, dstBySerial); err != nil {
+			return fmt.Errorf("unrevoke %s: restore cert to certs_by_serial/: %w", commonName, err)
+		}
+		if err := fMove(keySrc, keyDst); err != nil {
+			return fmt.Errorf("unrevoke %s: restore private key: %w", commonName, err)
+		}
+		if err := fDelete(srcRevokedCert); err != nil {
+			log.Warnf("unrevoke %s: cleanup revoked cert copy (non-fatal): %v", commonName, err)
+		}
+		if err := fMove(
+			fmt.Sprintf("%s/pki/revoked/reqs_by_serial/%s.req", s.easyrsaDirPath, serial),
+			fmt.Sprintf("%s/pki/reqs/%s.req", s.easyrsaDirPath, commonName),
+		); err != nil {
+			log.Warnf("unrevoke %s: restore req (non-fatal): %v", commonName, err)
+		}
+
+		// Critical restores succeeded — now flip to V and persist.
+		usersFromIndexTxt[i].Flag = "V"
+		usersFromIndexTxt[i].RevocationDate = ""
+		if err := fWrite(s.indexTxtPath, renderIndexTxt(usersFromIndexTxt)); err != nil {
+			return fmt.Errorf("unrevoke %s: write index.txt: %w", commonName, err)
+		}
+		if crlOut, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl"); err != nil {
+			return fmt.Errorf("unrevoke %s: easyrsa gen-crl: %w: %s", commonName, err, crlOut)
+		}
+		return nil
 	}
-	return nil
+	return nil // CN not found — nothing to unrevoke
 }
 
 func (s *filesystemStore) RotateClient(commonName, newPassword string) error {

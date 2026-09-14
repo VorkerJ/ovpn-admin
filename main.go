@@ -298,8 +298,10 @@ func main() {
 			}
 		}
 		ovpnAdmin.commonRoutes.replace(initial)
-
-		go ovpnAdmin.runCommonRoutesScheduler()
+		// Audit F34: do NOT start the scheduler here — templates and the
+		// server-config store are not initialised yet, so its first pass could
+		// dereference a nil embedded FS (getCcdTemplate) or run with a nil config.
+		// It is started AFTER templates are ready (see startCommonRoutesScheduler).
 	}
 
 	if *serverConfigEnabled {
@@ -411,6 +413,13 @@ func main() {
 		log.Fatalf("cannot create sub-FS for templates: %v", err)
 	}
 	ovpnAdmin.templates = tplSub
+
+	// Audit F34: start the DNS-refresh scheduler only now that templates AND the
+	// server-config store are fully initialised, so its first pass can never race
+	// on a nil embedded FS or a nil config.
+	if *commonRoutesEnabled {
+		go ovpnAdmin.runCommonRoutesScheduler()
+	}
 
 	staticSub, err := fs.Sub(staticFS, "frontend/static")
 	if err != nil {

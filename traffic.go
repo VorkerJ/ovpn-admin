@@ -35,10 +35,20 @@ import (
 // so an ovpn-admin restart while a user stays connected does not re-count the
 // already-elapsed part of that session.
 type sessionSnapshot struct {
+	username                string
 	connectedSince          string
 	connectedSinceFormatted string
 	realAddress             string
 	rx, tx                  uint64
+}
+
+// sessionID identifies ONE live connection. duplicate-cn lets a single username
+// hold several concurrent sessions on distinct real addresses / connect times;
+// keying baselines by (username, connectedSince, realAddress) rather than
+// username alone stops those sessions from clobbering each other's baseline and
+// re-counting the same bytes every poll (audit F39).
+func sessionID(username, connectedSince, realAddress string) string {
+	return username + "\x00" + connectedSince + "\x00" + realAddress
 }
 
 type trafficAccountant struct {
@@ -162,13 +172,25 @@ CREATE TABLE IF NOT EXISTS traffic_monthly(
   PRIMARY KEY(username, month)
 );
 CREATE TABLE IF NOT EXISTS session_state(
-  username            TEXT PRIMARY KEY,
-  connected_since     TEXT,
+  username            TEXT NOT NULL,
+  connected_since     TEXT NOT NULL DEFAULT '',
   connected_since_fmt TEXT,
-  real_address        TEXT,
+  real_address        TEXT NOT NULL DEFAULT '',
   rx                  INTEGER NOT NULL DEFAULT 0,
-  tx                  INTEGER NOT NULL DEFAULT 0
+  tx                  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(username, connected_since, real_address)
 );`
+	// Audit F39: migrate an old session_state (PRIMARY KEY username) to the
+	// composite PK. session_state holds only ephemeral live-session baselines, so
+	// dropping it on upgrade is safe — at worst the currently-elapsed session is
+	// counted once more. Do this BEFORE the CREATE IF NOT EXISTS below.
+	var existingDDL string
+	_ = db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='session_state'").Scan(&existingDDL)
+	if existingDDL != "" && !strings.Contains(existingDDL, "PRIMARY KEY(username, connected_since, real_address)") {
+		if _, err := db.Exec("DROP TABLE session_state"); err != nil {
+			return err
+		}
+	}
 	_, err := db.Exec(ddl)
 	return err
 }
@@ -187,7 +209,8 @@ func (ta *trafficAccountant) loadSessions() {
 		if err := rows.Scan(&name, &s.connectedSince, &s.connectedSinceFormatted, &s.realAddress, &s.rx, &s.tx); err != nil {
 			continue
 		}
-		ta.session[name] = s
+		s.username = name
+		ta.session[sessionID(name, s.connectedSince, s.realAddress)] = s
 	}
 }
 
@@ -218,12 +241,13 @@ func (ta *trafficAccountant) update(clients []clientStatus) {
 			// recording it just leaves a phantom "UNDEF" row in the stats.
 			continue
 		}
-		seen[c.CommonName] = struct{}{}
+		sid := sessionID(c.CommonName, c.ConnectedSince, c.RealAddress)
+		seen[sid] = struct{}{}
 		rx := parseUint(c.BytesReceived)
 		tx := parseUint(c.BytesSent)
 
 		var addRx, addTx uint64
-		prev, ok := ta.session[c.CommonName]
+		prev, ok := ta.session[sid]
 		if !ok || prev.connectedSince != c.ConnectedSince {
 			// New session (reconnect) or first sighting: the whole current
 			// session counter is traffic we have not counted yet.
@@ -252,7 +276,8 @@ func (ta *trafficAccountant) update(clients []clientStatus) {
 			}
 		}
 
-		ta.session[c.CommonName] = sessionSnapshot{
+		ta.session[sid] = sessionSnapshot{
+			username:                c.CommonName,
 			connectedSince:          c.ConnectedSince,
 			connectedSinceFormatted: c.ConnectedSinceFormatted,
 			realAddress:             c.RealAddress,
@@ -262,10 +287,8 @@ func (ta *trafficAccountant) update(clients []clientStatus) {
 		if _, err := ta.db.Exec(
 			`INSERT INTO session_state(username, connected_since, connected_since_fmt, real_address, rx, tx)
 			 VALUES(?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(username) DO UPDATE SET
-			   connected_since = excluded.connected_since,
+			 ON CONFLICT(username, connected_since, real_address) DO UPDATE SET
 			   connected_since_fmt = excluded.connected_since_fmt,
-			   real_address = excluded.real_address,
 			   rx = excluded.rx, tx = excluded.tx`,
 			c.CommonName, c.ConnectedSince, c.ConnectedSinceFormatted, c.RealAddress, rx, tx,
 		); err != nil {
@@ -274,12 +297,17 @@ func (ta *trafficAccountant) update(clients []clientStatus) {
 	}
 
 	// Forget sessions that are no longer connected so a later reconnect is
-	// treated as a fresh session (and its full counter counted once).
-	for name := range ta.session {
-		if _, still := seen[name]; !still {
-			delete(ta.session, name)
-			if _, err := ta.db.Exec("DELETE FROM session_state WHERE username = ?", name); err != nil {
-				log.Warnf("traffic: session cleanup %q failed: %v", name, err)
+	// treated as a fresh session (and its full counter counted once). Keyed by
+	// the composite session id so one CN's ended session doesn't drop another
+	// concurrent session of the same CN (audit F39).
+	for sid, s := range ta.session {
+		if _, still := seen[sid]; !still {
+			delete(ta.session, sid)
+			if _, err := ta.db.Exec(
+				"DELETE FROM session_state WHERE username = ? AND connected_since = ? AND real_address = ?",
+				s.username, s.connectedSince, s.realAddress,
+			); err != nil {
+				log.Warnf("traffic: session cleanup %q failed: %v", s.username, err)
 			}
 		}
 	}
@@ -370,17 +398,23 @@ func (ta *trafficAccountant) snapshot(month string) trafficResponse {
 	// fold in live-session state; a user connected now but absent from the
 	// selected month (e.g. viewing a past month) still appears with a live
 	// indicator and zero month bytes.
-	for name, s := range ta.session {
+	// A CN may have several concurrent sessions (duplicate-cn); ta.session is now
+	// keyed by session id, so AGGREGATE per username — sum the live counters and
+	// keep one representative connect time / address (audit F39).
+	for _, s := range ta.session {
+		name := s.username
 		r, ok := rowByUser[name]
 		if !ok {
 			r = &trafficRow{User: name, AllTimeBytes: allTime[name]}
 			rowByUser[name] = r
 		}
 		r.Connected = true
-		r.SessionRxBytes = s.rx
-		r.SessionTxBytes = s.tx
-		r.ConnectedSince = s.connectedSinceFormatted
-		r.RealAddress = s.realAddress
+		r.SessionRxBytes += s.rx
+		r.SessionTxBytes += s.tx
+		if r.ConnectedSince == "" {
+			r.ConnectedSince = s.connectedSinceFormatted
+			r.RealAddress = s.realAddress
+		}
 	}
 
 	for _, r := range rowByUser {

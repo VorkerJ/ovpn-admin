@@ -28,6 +28,12 @@ func (oAdmin *OvpnAdmin) getCcdTemplate() (*template.Template, error) {
 		}
 		return t, nil
 	}
+	// Audit F34 (defense-in-depth): a nil embedded FS (e.g. a background pass that
+	// somehow runs before main sets ovpnAdmin.templates) must return an error, not
+	// panic inside fs.ReadFile's nil interface dispatch.
+	if oAdmin.templates == nil {
+		return nil, fmt.Errorf("ccd template FS not initialized yet")
+	}
 	data, err := fs.ReadFile(oAdmin.templates, "ccd.tpl")
 	if err != nil {
 		return nil, fmt.Errorf("ccd template not found in embedded templates: %w", err)
@@ -98,12 +104,44 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 	domainOrder := []string{}
 	var ipRoutes []ccdRoute
 
+	// Audit F30: the user's own redirect intent comes from the explicit
+	// `# __user_redirect__:on|off` state line, NOT the rendered redirect-gateway
+	// push (which also reflects the global force). Fall back to the legacy push
+	// marker only when no state line is present (old CCDs).
+	var sawRedirectState, userRedirect, sawRedirectPush bool
+	seedDomain := func(domain, description string) *ccdRoute {
+		entry, exists := domainEntries[domain]
+		if !exists {
+			entry = &ccdRoute{Kind: "domain", Domain: domain, Description: description}
+			domainEntries[domain] = entry
+			domainOrder = append(domainOrder, domain)
+		}
+		return entry
+	}
+
 	for _, v := range txtLinesArray {
 		str := strings.Fields(v)
 		if len(str) == 0 {
 			continue
 		}
 		switch {
+		case strings.HasPrefix(str[0], "#"):
+			// State/declaration comment lines (audit F30/F31). OpenVPN ignores
+			// them; we use them to carry provenance the rendered directives can't.
+			content := strings.TrimSpace(strings.TrimPrefix(v, "#"))
+			if rest, ok := strings.CutPrefix(content, "__user_redirect__:"); ok {
+				sawRedirectState = true
+				userRedirect = strings.TrimSpace(rest) == "on"
+				continue
+			}
+			if rest, ok := strings.CutPrefix(content, "__user_domain_decl__:"); ok {
+				fields := strings.Fields(strings.TrimSpace(rest))
+				if len(fields) > 0 {
+					seedDomain(fields[0], strings.TrimSpace(strings.Join(fields[1:], " ")))
+				}
+				continue
+			}
+			continue
 		case strings.HasPrefix(str[0], "ifconfig-push"):
 			// A valid directive is `ifconfig-push ADDR MASK` — need at least a
 			// 2nd field. A malformed line without one would panic on str[1];
@@ -131,9 +169,13 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 				continue
 			}
 
-			// `redirect-gateway def1` — only when the directive literally is it.
+			// `redirect-gateway def1` — the rendered EFFECT. Audit F30: do not set
+			// the personal flag from it (it also reflects the global force); the
+			// authoritative user intent is the __user_redirect__ state line above.
+			// Track it only as a legacy fallback for CCDs written before state
+			// lines existed.
 			if pf[0] == "redirect-gateway" && strings.HasPrefix(comment, "__redirect_gateway__") {
-				ccd.RedirectGateway = true
+				sawRedirectPush = true
 				continue
 			}
 			// Everything else we recognise is a `route ...` directive.
@@ -190,29 +232,33 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 					}
 					domain := fields[0]
 					description := strings.TrimSpace(strings.Join(fields[1:], " "))
-					entry, exists := domainEntries[domain]
-					if !exists {
-						entry = &ccdRoute{
-							Kind:        "domain",
-							Domain:      domain,
-							Description: description,
-						}
-						domainEntries[domain] = entry
-						domainOrder = append(domainOrder, domain)
-					}
+					entry := seedDomain(domain, description)
 					entry.ResolvedIPs = append(entry.ResolvedIPs, addr)
 				}
 				continue
 			}
 
-			// Plain per-user IP route. The comment is its free-text description.
+			// Plain per-user IP route. Audit F32: when the same (addr,mask) is also
+			// a common/domain route, mergePushRoutes joins provenance into the
+			// comment ("desc,__common__:tag …"). Keep only the personal free-text
+			// part as the description — leaving a reserved marker in it would make
+			// the next save fail validateCcd. The route itself always survives (a
+			// forged marker in a description must not make a route silently vanish).
 			ipRoutes = append(ipRoutes, ccdRoute{
 				Kind:        "ip",
 				Address:     addr,
 				Mask:        mask,
-				Description: comment,
+				Description: personalDescription(comment),
 			})
 		}
+	}
+
+	// Audit F30: the explicit state line is authoritative; the legacy push marker
+	// is only a fallback for CCDs written before state lines existed.
+	if sawRedirectState {
+		ccd.RedirectGateway = userRedirect
+	} else {
+		ccd.RedirectGateway = sawRedirectPush
 	}
 
 	ccd.CustomRoutes = append(ccd.CustomRoutes, ipRoutes...)
@@ -220,6 +266,23 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 		ccd.CustomRoutes = append(ccd.CustomRoutes, *domainEntries[d])
 	}
 	return ccd
+}
+
+// personalDescription returns the free-text, user-authored part of a merged CCD
+// push comment, dropping any reserved-marker provenance segments that
+// mergePushRoutes may have appended (e.g. "desc,__common__:tag ..."). Audit F32:
+// keeping a reserved marker in a per-user route's Description makes the next save
+// fail validateCcd.
+func personalDescription(comment string) string {
+	var keep []string
+	for _, seg := range strings.Split(comment, ",") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" || descriptionHasReservedMarker(seg) {
+			continue
+		}
+		keep = append(keep, seg)
+	}
+	return strings.TrimSpace(strings.Join(keep, ","))
 }
 
 func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bool, string) {
@@ -230,6 +293,12 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 	if !ccdValid {
 		return false, "something goes wrong"
 	}
+
+	// Audit F30: capture the user's OWN full-tunnel intent BEFORE the global
+	// override below, and persist it as an explicit state marker. This is what
+	// lets a later global-off return the user to their own choice instead of
+	// leaving them stuck full-tunnel.
+	ccd.UserRedirectGateway = ccd.RedirectGateway
 
 	ccd.CommonRoutes = commonExpanded
 	// Dedupe so duplicate IPs (typical when several domains resolve to
