@@ -5,6 +5,80 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.66] — 2026-09-14
+
+Third-party security & logic audit remediation — all 48 findings addressed,
+committed as five themed phases. ~49 regression tests added
+(`audit_phase1..5_test.go`, `internal/ovpnuser`). No external API/CLI breaking
+changes; `client_to_client` is now rejected while the server-side firewall is on,
+and `password_auth` is rejected on the kubernetes.secrets backend.
+
+### Fixed — access control & revocation (phase 1)
+
+- **Filesystem cert rotation now revokes the old serial** (F01) — rotate marked
+  the DN `REVOKED-…` but left the old cert `V`, so the rotated-out `.ovpn` kept
+  authenticating; it now enters the CRL (parity with the k8s backend) and rotate
+  fails if the serial isn't in the regenerated CRL.
+- **VPN password auth fails closed** (F02–F04) — `has-password` is now tri-state
+  (required / cert-only / error) and any users.db error DENIES rather than
+  silently dropping the second factor; the password policy source is unified
+  across create/rotate/delete/revoke and seeded from `OVPN_AUTH`; changing an
+  existing user's password no longer parses CLI stdout (upsert).
+- **CCD hardening** (F05, F06) — resolved IPs are validated as clean IPv4 (no
+  directive injection), and `ccd/apply` reserves the internal config names and
+  requires an existing client.
+- **Server/CA identity is off-limits to client endpoints** (F07) — a single
+  choke point rejects `server`/`ca`/`REVOKED…`/`_…`/`DEFAULT` for all user ops.
+- **MFA & sessions** (F19–F22) — a corrupt/unreadable MFA store fails startup
+  closed; TOTP/backup codes are verified-and-consumed atomically with per-step
+  replay tracking; epoch/blacklist persistence errors propagate; a deleted admin's
+  session and pre-change MFA challenges are invalidated.
+- **k8s revoke is idempotent** (F35) — a retry after a partial failure rebuilds
+  and re-verifies the CRL instead of no-oping.
+
+### Fixed — actual access termination (phase 2)
+
+- Firewall: `client-to-client` refused while enforcement is on (F08); partial
+  rule installs roll back and the default-deny survives a failed re-init (F09);
+  reconcile reconverges live sessions and retries stuck deletes (F10).
+- Management: duplicate-CN sessions get distinct addresses (F11); a torn status
+  read is treated as UNKNOWN, not "no clients" (F12); kills are ack-checked and
+  revoke/rotate report unterminated sessions honestly, rotate now kills too (F13);
+  the mgmt-client-auth supervisor starts/stops on toggle (F14).
+- The DNS scheduler no longer resurrects a route deleted mid-refresh (F33).
+
+### Fixed — production deployment (phase 3)
+
+- Compose firewall default off with docs (F15); `crlFix`/`configure.sh` keep the
+  shared PKI dir group-writable + setgid (F16); `fsGroup` applies without a PVC
+  (F17); `password_auth` rejected on the k8s backend (F18); `ifconfig-push` uses
+  the real subnet mask (F28); reserved static IPs (network/server/broadcast)
+  rejected (F29); the CRL is renewed on a schedule and readiness flags expiry
+  (F40); the frontend builds with a relative base path (F41); govulncheck gates
+  image/release publication (F42); backup docs list all three state locations and
+  the firewall default is corrected (F43).
+
+### Fixed — declarative vs generated state (phase 4)
+
+- Public-endpoint edits persist even with no reload (F24); strict IPv4 +
+  contiguous-mask validation (F25); a failed apply rolls the durable JSON back and
+  apply is serialized (F26); a refresh-interval change no longer signals a reload
+  (F27); user full-tunnel intent is stored separately so global-off reverts
+  inheriting users (F30); unresolved domains survive a round trip (F31); a
+  personal route coinciding with a common route keeps a clean description (F32);
+  the scheduler starts after templates are ready (F34); unrevoke reports restore
+  failures (F36); long CNs stay deletable on k8s (label ≤63) (F37); expired (E)
+  index entries are preserved (F38); duplicate-CN traffic isn't double-counted
+  (F39); archived CCDs no longer reserve static IPs (F48).
+
+### Fixed — UI, recovery & release gates (phase 5)
+
+- Confirming MFA issues a fresh session so the one-time backup codes stay visible
+  (F23); the server-config endpoint returns 503 (not a panic) when the module is
+  disabled (F44); a malformed CCD apply body is rejected with 400 (F45); the token
+  UI gates on the server's actual policy (F46); a mistyped MFA code no longer
+  burns the challenge (F47).
+
 ## [2.0.65] — 2026-09-08
 
 ### Fixed
