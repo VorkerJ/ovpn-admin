@@ -5,6 +5,80 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.67] — 2026-09-15
+
+Re-audit (2026-09-14) remediation. A re-review of the released 2.0.66 reported 20
+residual/partial issues (N01–N20); all are addressed, plus a deep sibling pass
+that closed four sister code paths where only the primary endpoint had been
+fixed. 23 regression tests added (`audit_reaudit_test.go`). No external API/CLI
+breaking changes. N06 (single-dispatcher mgmt-client-auth) remains a documented
+architectural limitation (workaround mode), not fixed here.
+
+### Fixed — credential & session integrity
+
+- **Rotate/delete revoke the cert before dropping the password** (N01) — the old
+  order removed the password row first, so a PKI failure left the old cert valid
+  with no password: a silent downgrade to cert-only. Cert-first means a failure
+  aborts with both credentials intact, or leaves password-auth fail-closed.
+- **`killUserSessions` and the disconnect endpoint use the LIVE mgmt console**
+  (N05 + sibling) — both decided off the ~28s cache and could falsely confirm
+  termination off a stale-empty snapshot; they now query live and report an
+  error (503) when the poll can't be completed.
+- **Durable-write races closed** (N09 + sibling) — session epochs, the logout
+  blacklist, and the MFA store marshalled under a read lock then wrote outside
+  it, so concurrent writers could drop an update on disk (revoked sessions /
+  enrollments reviving after a restart); each now marshals+writes under the write
+  lock, matching the API-token store.
+- **MFA store deletion fails closed** (N08) — a durable enrollment marker is kept
+  alongside the secrets store; a missing store while the marker lists enrolled
+  users aborts startup instead of silently reverting to password-only.
+- **MFA enable bumps the epoch before persisting** (N10) — a bump failure now
+  leaves MFA disabled (recoverable) instead of enabled-without-backup-codes.
+
+### Fixed — route/firewall injection & isolation
+
+- **Client-supplied resolved IPs are never trusted** (N02 + sibling) — both the
+  common-routes endpoints and the per-user CCD apply endpoint re-resolve domains
+  server-side and validate the answer; a caller can no longer point a domain
+  route at arbitrary destinations the per-client firewall would then ACCEPT.
+- **Startup validates the saved server config** (N03) — the durable
+  `_server_config.json` is now run through the same validator as the API before
+  rendering `server.conf`, so a stored `client_to_client`+firewall or
+  k8s+`password_auth` config can't bypass F08/F18 at boot (fail-closed).
+- **Firewall chain rebuild is fail-closed** (N04) — `initChain` detaches the
+  FORWARD jump before flushing (no open window) and installs the DROP before
+  re-attaching; connect/reconcile install rules via `applyDiff` (no rollback that
+  could orphan an ACCEPT).
+- **Per-user CCD route validation hardened** (N12/N13) — static-address checks
+  use the runtime VPN network (server-config), and personal IP routes require a
+  contiguous IPv4 mask + canonical base (rejecting IPv6/non-contiguous).
+
+### Fixed — CRL, PKI & storage consistency
+
+- **crlFix actually sets setgid** (N07) — `os.ModeSetgid`, not the raw octal
+  (which Go silently drops); the CCD directory is also chowned/chmod'd for GID
+  2000 in `configure.sh`.
+- **Unrevoke reconciles the CRL** (N14) — a prior unrevoke that flipped the flag
+  to V but failed at gen-crl is now healed (serial re-checked and CRL regenerated).
+- **k8s temp-revoke keeps its static-IP reservation** (N15) — only permanently
+  archived secrets (`revokedForever`) free the address; a temporarily revoked
+  user's IP is held so unrevoke can't collide.
+- **Readiness rejects a corrupt CRL** (N17) — a non-empty but unparseable
+  `crl.pem` now fails `/readyz` instead of reporting ready.
+
+### Fixed — reporting & migration
+
+- **Unconfirmed soft reload is not reported as applied** (N16) — a failed SIGHUP
+  returns `soft-pending`; the UI and README no longer promise "applied without
+  restart" or an OpenVPN-runtime rollback that doesn't exist.
+- **Legacy full-tunnel migration** (N18) — a pre-state-line CCD's redirect push
+  is treated as personal only when the global force is off, so disabling the
+  global force doesn't cement it as a personal choice.
+- **Legacy `_`-prefixed clients stay manageable** (N19) — existing CNs starting
+  with `_` can be revoked/deleted/rotated/exported again; the exact internal blob
+  names (`_server_config.json`, `_common_routes.json`) remain reserved.
+- **Static IP can't collide with a live dynamic client** (N20, best-effort).
+
 ## [2.0.66] — 2026-09-14
 
 Third-party security & logic audit remediation — all 48 findings addressed,
