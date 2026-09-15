@@ -26,7 +26,7 @@ Simple web UI to manage OpenVPN users, their certificates & routes in Kubernetes
 * (optionally) Specifying a Kubernetes LoadBalancer in front of the OpenVPN server (auto-defined `remote` in `client.conf.tpl`)
 * (optionally) Storing certificates and other files in Kubernetes Secrets
 * **Server-side route enforcement** — when enabled (default in Helm), ovpn-admin installs per-client iptables rules so that each VPN client can only reach destinations explicitly allowed via per-user CCD routes or global Common Routes. Requires `NET_ADMIN` capability.
-* **Editable server config** — proto, port, MTU, cipher, DCO, DNS push, custom directives через web UI без `helm upgrade`. Hybrid reload (SIGHUP soft / SIGTERM hard) с автоматическим rollback при невалидной конфигурации.
+* **Editable server config** — proto, port, MTU, cipher, DCO, DNS push, custom directives через web UI без `helm upgrade`. Конфигурация валидируется до записи (невалидная отклоняется, `server.conf` не перезаписывается); при ошибке записи durable-JSON откатывается. Применение — hybrid reload: SIGHUP (soft, с переинициализацией и возможным кратким переподключением клиентов) или перезапуск процесса (hard). Если live-reload не подтверждён, UI сообщает, что изменения применятся при следующем рестарте (не «применено без рестарта»).
 * **Auto-kick on policy change** — when a CCD or server-config edit affects what gets pushed to clients, ovpn-admin disconnects the affected sessions via the management interface so they reconnect and pick up the new directives immediately (no waiting for the operator to ping the user).
 
 ## Screenshots

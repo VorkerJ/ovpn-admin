@@ -58,7 +58,12 @@ async function save() {
     if (r.reload_kind === 'hard') {
       notify('Сохранено. OpenVPN перезапущен — клиенты переподключатся.', 'success')
     } else if (r.reload_kind === 'soft') {
-      notify('Сохранено. Изменения применены без рестарта.', 'success')
+      // SIGHUP reload: OpenVPN re-reads the config and re-initialises, so
+      // connected clients may briefly reconnect.
+      notify('Сохранено. Применено через перезагрузку конфигурации (SIGHUP) — клиенты могут кратковременно переподключиться.', 'success')
+    } else if (r.reload_kind === 'soft-pending') {
+      // Audit N16: config saved, but the live reload could not be confirmed.
+      notify('Сохранено, но перезагрузку не удалось подтвердить — изменения применятся при следующем рестарте OpenVPN.', 'warning')
     } else {
       notify('Настройки сохранены.', 'success')
     }

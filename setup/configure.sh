@@ -108,6 +108,14 @@ fi
 [ ! -e /etc/openvpn/pki ] && ln -s $EASY_RSA_LOC/pki /etc/openvpn/pki
 
 mkdir -p /etc/openvpn/ccd
+# Audit N07: CCD files are written by ovpn-admin (non-root, member of GID 2000)
+# on every user/route change and read by the privilege-dropped openvpn (user
+# nobody) at each client connect. Give the shared group write + setgid (new CCD
+# files inherit GID 2000) and world traverse/read (nobody must read the 0644 CCD
+# files). Without this a fresh /etc/openvpn/ccd is root:root 0755 and ovpn-admin
+# cannot write per-user configs.
+chown root:2000 /etc/openvpn/ccd 2>/dev/null || true
+chmod 2775 /etc/openvpn/ccd 2>/dev/null || true
 
 # server.conf is now rendered by ovpn-admin into /etc/openvpn-dynamic/server.conf
 # Allow ovpn-admin (non-root, member of GID 2000) to write here.
