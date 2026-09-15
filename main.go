@@ -349,6 +349,18 @@ func main() {
 			hardReloadSelfExit: *serverConfigHardReloadSelfExit,
 		}
 
+		// Audit N03: the durable _server_config.json is applied at startup WITHOUT
+		// the API-layer validator, so a config saved before F08/F18 existed (or
+		// hand-edited) could render a server.conf that bypasses client isolation
+		// (client-to-client together with the firewall) or references a missing
+		// auth script (kubernetes.secrets + password_auth). Validate the
+		// fully-assembled config here and refuse to render an insecure one — the
+		// same check the save endpoint enforces. Fail-closed: the operator fixes the
+		// stored config rather than the process silently starting an unsafe server.
+		if verr := validateServerConfig(initial); verr != nil {
+			log.Fatalf("server-config: refusing to start with an invalid saved config (%v); fix %s and restart", verr, *serverConfigPath)
+		}
+
 		// Render initial server.conf at startup (openvpn-container waits for this file)
 		rendered, err := renderServerConfig(initial, dcoAvailable, *ccdEnabled)
 		if err != nil {
@@ -665,7 +677,17 @@ func buildReadinessChecker(store storage.Store, ovpnAdmin *OvpnAdmin) readinessC
 			// Audit F40: an EXPIRED CRL makes OpenVPN reject every new handshake.
 			// Surface it via readiness (the renewal loop keeps it fresh; this is
 			// the safety net if renewal ever fails).
-			if nextUpdate, perr := crlNextUpdate(path); perr == nil && time.Now().After(nextUpdate) {
+			//
+			// Audit N17: a non-empty but UNPARSEABLE crl.pem (truncated / corrupt)
+			// makes OpenVPN reject every new handshake too. The old code only acted
+			// when perr == nil, so a corrupt CRL passed readiness (green) while VPN
+			// connects failed. Treat a parse error as not-ready, and only check
+			// NextUpdate after a successful parse.
+			nextUpdate, perr := crlNextUpdate(path)
+			if perr != nil {
+				return fmt.Errorf("crl.pem unparseable: %w", perr)
+			}
+			if time.Now().After(nextUpdate) {
 				return fmt.Errorf("crl.pem expired at %s", nextUpdate.Format(time.RFC3339))
 			}
 			return nil

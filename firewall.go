@@ -179,22 +179,29 @@ func (fc *firewallController) initChain() error {
 	// всплывёт ниже на -F (flush несуществующей цепочки тоже падает).
 	_ = fc.iptCmd("-N", fc.chainName)
 
-	// 2. Очищаем содержимое
+	// 2. Audit N04: DETACH the chain from FORWARD before flushing it. On a repeat
+	// init the FORWARD→chain jump already exists, so flushing (step 3) would leave
+	// the chain momentarily EMPTY while packets still traverse it — a fail-OPEN
+	// window where the previous default-deny is gone but the new one isn't in yet.
+	// Unlinking first means during the rebuild VPN forward traffic follows the
+	// FORWARD policy, and we re-link only once the chain is fully rebuilt
+	// (DROP + stateful-return). Best-effort: the jump may not exist yet.
+	_ = fc.iptCmd("-D", "FORWARD", "-j", fc.chainName)
+
+	// 3. Очищаем содержимое
 	if err := fc.iptCmd("-F", fc.chainName); err != nil {
 		return fmt.Errorf("flush %s: %w", fc.chainName, err)
 	}
 
-	// 3. Catch-all DROP FIRST after the flush (audit F09). The flush at step 2
-	// removed the previous default-deny, so the chain is momentarily open; install
-	// the DROP before anything else so that if a LATER step fails the chain is
-	// still fail-CLOSED (all VPN traffic dropped) rather than fail-OPEN. The DROP
-	// stays at the tail of the chain because the stateful-return and per-session
-	// ACCEPTs below are INSERTED above it.
+	// 4. Catch-all DROP FIRST (audit F09). Install the DROP before anything else so
+	// that if a LATER step fails the chain is still fail-CLOSED (all VPN traffic
+	// dropped) rather than fail-OPEN. The DROP stays at the tail of the chain
+	// because the stateful-return and per-session ACCEPTs are INSERTED above it.
 	if err := fc.installCatchAllDrop(); err != nil {
 		return fmt.Errorf("install catch-all DROP: %w", err)
 	}
 
-	// 4. Stateful-return ABOVE the DROP (insert at position 1).
+	// 5. Stateful-return ABOVE the DROP (insert at position 1).
 	if err := fc.iptCmd("-I", fc.chainName, "1",
 		"-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED",
 		"-j", "ACCEPT",
@@ -202,9 +209,10 @@ func (fc *firewallController) initChain() error {
 		return fmt.Errorf("insert stateful-return: %w", err)
 	}
 
-	// 5. Прыжок из FORWARD (вставляем в начало, чтобы не зависеть от других правил)
-	// -C проверяет существование; если нет — -I добавляет. Done LAST so the chain
-	// is fully built (DROP + stateful-return) before any traffic is routed into it.
+	// 6. Re-attach the jump from FORWARD LAST, now that the chain is fully built
+	// (DROP + stateful-return). -C checks existence; -I adds it at the front so it
+	// doesn't depend on other FORWARD rules. (We unconditionally deleted it in
+	// step 2, so -C normally fails and -I re-adds exactly one jump.)
 	if err := fc.iptCmd("-C", "FORWARD", "-j", fc.chainName); err != nil {
 		if err := fc.iptCmd("-I", "FORWARD", "1", "-j", fc.chainName); err != nil {
 			return fmt.Errorf("insert FORWARD jump: %w", err)
@@ -262,6 +270,29 @@ func (fc *firewallController) installRulesFor(cn, vpnIP string, cidrs []string) 
 		added = append(added, cidr)
 	}
 	return nil
+}
+
+// installSessionRules registers (or reuses) the session for (cn, vpnIP) and
+// converges its ACCEPT rules to cidrs via applyDiff. Audit N04: applyDiff is
+// insert-only for a fresh session and records in s.AllowedCIDRs exactly which
+// rules actually went live, so a partial failure leaves a fail-CLOSED (fewer
+// ACCEPTs) session that a later reconcile finishes by inserting ONLY the missing
+// CIDRs. It never performs the rollback `-D` that installRulesFor used — whose
+// own failure could leave an orphan ACCEPT that a subsequent reconnect then
+// duplicated (and a single disconnect left behind). Caller holds fc.mu.
+func (fc *firewallController) installSessionRules(cn, vpnIP string, cidrs []string) {
+	key := sessionKey{CN: cn, VpnIP: vpnIP}
+	s := fc.sessions[key]
+	if s == nil {
+		s = &fwSession{CN: cn, VpnIP: vpnIP, pendingDeletes: map[string]struct{}{}}
+		fc.sessions[key] = s
+	}
+	if err := fc.applyDiff(s, cidrs); err != nil {
+		// Session is kept with only the CIDRs actually installed (fail-closed);
+		// reconcile retries the rest.
+		log.Warnf("firewall: install rules for %s (%s): %v", cn, vpnIP, err)
+	}
+	s.RulesInstalled = true
 }
 
 // uninstallRulesFor удаляет ACCEPT-правила сессии. Catch-all DROP не трогаем — он остаётся последним.
@@ -540,14 +571,11 @@ func (fc *firewallController) handleEvent(ev fwEvent) {
 			log.Warnf("firewall: computeAllowedCIDRs(%s) on connect: %v", ev.CN, err)
 			return
 		}
-		if err := fc.installRulesFor(ev.CN, ev.VpnIP, cidrs); err != nil {
-			// Fail-CLOSED: НЕ помечаем сессию установленной. Оставляем её вне
-			// fc.sessions, чтобы следующий reconcile (selfHealLoop) повторил
-			// установку правил, вместо того чтобы навсегда пропустить её.
-			log.Warnf("firewall: installRulesFor(%s): %v", ev.CN, err)
-			return
-		}
-		fc.sessions[sessionKey{CN: ev.CN, VpnIP: ev.VpnIP}] = &fwSession{CN: ev.CN, VpnIP: ev.VpnIP, AllowedCIDRs: cidrs, RulesInstalled: true}
+		// Audit N04: install via applyDiff (insert-only for a fresh session), which
+		// records exactly which ACCEPTs went live and never does a rollback -D — so
+		// a mid-failure leaves a fail-closed partial session that reconcile
+		// finishes, with no orphan/duplicate ACCEPT.
+		fc.installSessionRules(ev.CN, ev.VpnIP, cidrs)
 
 	case EvDisconnect:
 		// Match by CN; when the event carries a VPN IP, match that session only.
@@ -679,11 +707,9 @@ func (fc *firewallController) reconcileLocked() {
 			log.Warnf("firewall: reconcile compute(%s): %v", key.CN, err)
 			continue
 		}
-		if err := fc.installRulesFor(key.CN, c.VirtualAddress, cidrs); err != nil {
-			log.Warnf("firewall: reconcile install(%s): %v", key.CN, err)
-			continue
-		}
-		fc.sessions[key] = &fwSession{CN: key.CN, VpnIP: c.VirtualAddress, AllowedCIDRs: cidrs, RulesInstalled: true}
+		// Audit N04: use the applyDiff-based installer (see EvConnect) so a partial
+		// failure never orphans/duplicates an ACCEPT.
+		fc.installSessionRules(key.CN, c.VirtualAddress, cidrs)
 	}
 	ovpnFirewallReconciles.Inc()
 }

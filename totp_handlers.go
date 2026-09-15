@@ -125,24 +125,26 @@ func (oAdmin *OvpnAdmin) mfaConfirmHandler(w http.ResponseWriter, r *http.Reques
 
 	rec.Enabled = true
 	rec.BackupCodes = hashedCodes
+
+	// Audit N10: bump the session epoch BEFORE persisting the enable. The old
+	// order (set() then bumpUserEpoch()) meant an epoch-bump failure AFTER a
+	// successful set() left MFA durably ENABLED while the 500 response withheld the
+	// backup codes — the admin ended up with a second factor enrolled but no
+	// recovery codes. Bumping first means a failure here (or of set() below) leaves
+	// MFA still DISABLED, which is fully recoverable: the admin re-logs in and
+	// retries enrollment, getting a fresh set of codes.
+	if err := bumpUserEpoch(user); err != nil {
+		log.Errorf("mfaConfirm: session epoch bump not persisted for %s: %v", user, err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to finalize MFA enable")
+		return
+	}
+
 	// Commit-then-respond: only hand out backup codes and a 200 once the enable
 	// is durably persisted. set() rolls back the in-memory record on failure, so
 	// a lost write leaves MFA disabled (not half-enabled) and the user retries.
 	if err := oAdmin.mfaStore.set(user, rec); err != nil {
 		log.Errorf("mfaConfirm: failed to persist MFA enable for %s: %v", user, err)
 		writeJSONError(w, http.StatusInternalServerError, "failed to enable MFA")
-		return
-	}
-
-	// Enabling MFA invalidates every prior session for this user. The session
-	// that performed the enrollment was password-only (it predates MFA), so it
-	// must not keep operating as if it had cleared the second factor — the admin
-	// re-logs in through the TOTP step. Surface a persist failure (audit F21):
-	// if the epoch bump didn't reach disk, the old password-only sessions would
-	// revive after a restart.
-	if err := bumpUserEpoch(user); err != nil {
-		log.Errorf("mfaConfirm: session epoch bump not persisted for %s: %v", user, err)
-		writeJSONError(w, http.StatusInternalServerError, "failed to finalize MFA enable")
 		return
 	}
 

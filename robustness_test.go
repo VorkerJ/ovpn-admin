@@ -158,27 +158,38 @@ func writeIndexTxtWithUser(t *testing.T, username string) string {
 
 // TestUserDelete_PropagatesOpenvpnUserError verifies that when the password-auth
 // openvpn-user delete step fails, userDeleteHandler returns a non-200 instead of
-// swallowing the failure and reporting success (FINDING #4).
+// swallowing the failure and reporting success (FINDING #4). Audit N01: the cert
+// is deleted FIRST (so this needs a working PKI store), then the password step
+// fails — and the failure must still surface as a non-200.
 func TestUserDelete_PropagatesOpenvpnUserError(t *testing.T) {
 	origRun := runOpenvpnUser
 	origAuth := *authByPassword
 	origIdx := *indexTxtPath
 	origDb := *authDatabase
+	origEasy := *easyrsaDirPath
 	t.Cleanup(func() {
 		runOpenvpnUser = origRun
 		*authByPassword = origAuth
 		*indexTxtPath = origIdx
 		*authDatabase = origDb
+		*easyrsaDirPath = origEasy
 	})
 
-	*indexTxtPath = writeIndexTxtWithUser(t, "alice")
+	caCert, caKey := testCA(t)
+	cert := testClientCert(t, caCert, caKey, "alice")
+	serial := fmt.Sprintf("%X", cert.SerialNumber)
+	crl := crlWithSerial(t, serial)
+	store := fsTestEnv(t, 0 /*revoke ok*/, vLine(serial, "alice"), crl)
+
+	*indexTxtPath = store.indexTxtPath
+	*easyrsaDirPath = store.easyrsaDirPath
 	*authByPassword = true
 	*authDatabase = filepath.Join(t.TempDir(), "users.db")
 	runOpenvpnUser = func(args ...string) (string, error) {
 		return "boom", fmt.Errorf("simulated openvpn-user failure")
 	}
 
-	app := &OvpnAdmin{}
+	app := &OvpnAdmin{store: store}
 	req := httptest.NewRequest(http.MethodPost, "/api/user/delete", bytes.NewReader([]byte(`{"username":"alice"}`)))
 	rec := httptest.NewRecorder()
 	app.userDeleteHandler(rec, req)

@@ -352,8 +352,10 @@ func (oAdmin *OvpnAdmin) isUserAuthorized(cn string) (bool, string) {
 	}
 	// Allowed CN charset is enforced at user-creation time by validateUsername.
 	// We re-check here to defend against an attacker who somehow obtains a
-	// cert with an exotic CN — be conservative.
-	if err := validateUsername(cn); err != nil {
+	// cert with an exotic CN — be conservative. Audit N19: use the existing-client
+	// validator so a legacy CN starting with "_" is still allowed to connect (it
+	// exists in the PKI); the exact internal blob names remain rejected.
+	if err := validateExistingUsername(cn); err != nil {
 		return false, "invalid common name format"
 	}
 	dn := "/CN=" + cn
@@ -625,7 +627,18 @@ func splitEnvKV(s string) (string, string, bool) {
 // live session is a no-op success. Callers use the returned error to report
 // honestly whether live access was actually cut, instead of assuming it.
 func (oAdmin *OvpnAdmin) killUserSessions(username string) error {
-	connected, connections := isUserConnected(username, oAdmin.snapshotActiveClients())
+	// Audit N05: query the LIVE mgmt console, not the cached snapshot. The cache
+	// (snapshotActiveClients) is refreshed on a ~28s poll and can be empty or
+	// stale exactly when we revoke/delete/rotate — reporting "no live session"
+	// off a stale-empty cache would falsely confirm termination while the user
+	// keeps tunnelling. If the live poll cannot be completed (mgmt unreachable /
+	// torn response), return an error so the caller reports the kill as NOT
+	// confirmed rather than assuming success.
+	active, ok := oAdmin.mgmtGetActiveClients()
+	if !ok {
+		return fmt.Errorf("cannot confirm live sessions for %q: management interface unreachable or returned an incomplete status", username)
+	}
+	connected, connections := isUserConnected(username, active)
 	if !connected {
 		return nil
 	}

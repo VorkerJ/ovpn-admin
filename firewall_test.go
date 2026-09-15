@@ -211,10 +211,14 @@ func TestInstallRulesFor_FailClosedOnError(t *testing.T) {
 	}
 }
 
-// TestConnect_DoesNotMarkSessionInstalledOnError proves the caller no longer
-// records a session as installed when installRulesFor fails — so a later
-// reconcile retries instead of skipping it forever.
-func TestConnect_DoesNotMarkSessionInstalledOnError(t *testing.T) {
+// TestConnect_FailClosedOnInstallError proves the audit-N04 contract: when every
+// ACCEPT insert fails on connect, the session is recorded but with NO allowed
+// CIDRs (fail-closed — the catch-all DROP blocks all its traffic), so a later
+// reconcile finishes the install by inserting only the missing rules. The old
+// design left the session UNrecorded; the applyDiff-based installer records it
+// with the actually-installed set and never performs a rollback -D (which could
+// orphan an ACCEPT).
+func TestConnect_FailClosedOnInstallError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	app := &OvpnAdmin{
@@ -225,7 +229,7 @@ func TestConnect_DoesNotMarkSessionInstalledOnError(t *testing.T) {
 	}
 	_, vpnNet, _ := net.ParseCIDR("172.16.100.0/24")
 	iptMock := func(args ...string) error {
-		// Any ACCEPT insert fails → installRulesFor errors.
+		// Any ACCEPT insert fails.
 		if len(args) > 0 && args[0] == "-I" {
 			return fmt.Errorf("iptables: simulated failure")
 		}
@@ -236,10 +240,17 @@ func TestConnect_DoesNotMarkSessionInstalledOnError(t *testing.T) {
 	fc.handleEvent(fwEvent{Kind: EvConnect, CN: "alice", VpnIP: "172.16.100.5"})
 
 	fc.mu.Lock()
-	_, ok := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]
-	fc.mu.Unlock()
+	s, ok := fc.sessions[sessionKey{CN: "alice", VpnIP: "172.16.100.5"}]
+	allowed := 0
 	if ok {
-		t.Fatal("session must NOT be recorded when installRulesFor fails (so reconcile retries)")
+		allowed = len(s.AllowedCIDRs)
+	}
+	fc.mu.Unlock()
+	if !ok {
+		t.Fatal("session must be recorded (fail-closed) so reconcile can finish the install")
+	}
+	if allowed != 0 {
+		t.Fatalf("no ACCEPT should be recorded when every insert failed (fail-closed); got %d allowed CIDRs", allowed)
 	}
 }
 

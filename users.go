@@ -171,7 +171,7 @@ func (oAdmin *OvpnAdmin) userStatisticHandler(w http.ResponseWriter, r *http.Req
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
@@ -224,7 +224,7 @@ func (oAdmin *OvpnAdmin) userRotateHandler(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
@@ -245,7 +245,7 @@ func (oAdmin *OvpnAdmin) userDeleteHandler(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
@@ -266,7 +266,7 @@ func (oAdmin *OvpnAdmin) userRevokeHandler(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
@@ -287,7 +287,7 @@ func (oAdmin *OvpnAdmin) userUnrevokeHandler(w http.ResponseWriter, r *http.Requ
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
@@ -312,7 +312,7 @@ func (oAdmin *OvpnAdmin) userChangePasswordHandler(w http.ResponseWriter, r *htt
 		writeJSONError(w, http.StatusNotImplemented, "password auth disabled")
 		return
 	}
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
@@ -345,7 +345,7 @@ func (oAdmin *OvpnAdmin) userRemovePasswordHandler(w http.ResponseWriter, r *htt
 		writeJSONError(w, http.StatusNotImplemented, "password auth disabled")
 		return
 	}
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
@@ -371,7 +371,7 @@ func (oAdmin *OvpnAdmin) userShowConfigHandler(w http.ResponseWriter, r *http.Re
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Невалидное имя пользователя")
 		return
 	}
@@ -387,7 +387,7 @@ func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if err := validateUsername(req.Username); err != nil {
+	if err := validateExistingUsername(req.Username); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid username")
 		return
 	}
@@ -397,7 +397,20 @@ func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	connected, connections := isUserConnected(req.Username, oAdmin.snapshotActiveClients())
+	// Audit N05 (sibling of killUserSessions): a "disconnect now" action must
+	// decide off the LIVE mgmt console, not the ~28s cache. Off a stale-empty
+	// cache this endpoint would report "disconnected: 0 / ok" while the user is
+	// actually still tunnelling. If the live poll can't be completed, say so
+	// instead of falsely confirming there was nothing to disconnect.
+	active, ok := oAdmin.mgmtGetActiveClients()
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"ok":    false,
+			"error": "cannot confirm live sessions: management interface unreachable or returned an incomplete status",
+		})
+		return
+	}
+	connected, connections := isUserConnected(req.Username, active)
 	if !connected {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "disconnected": 0})
 		return
@@ -423,7 +436,35 @@ func (oAdmin *OvpnAdmin) userDisconnectHandler(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// internalCcdBlobNames are the reserved basenames of the server's own config
+// blobs stored alongside CCD files. A client CN equal to one of these must never
+// reach SaveCcd/DeleteClient (audit F06/N19), or a client endpoint could
+// overwrite or delete the server config / common-routes state.
+var internalCcdBlobNames = map[string]bool{
+	"_server_config.json": true,
+	"_common_routes.json": true,
+}
+
+// validateUsername validates a CN for CREATING a new client (strictest form):
+// it additionally rejects ANY leading underscore, which is reserved for the
+// server's internal blobs. This is the choke point BuildClient/SaveCcd funnel
+// through.
 func validateUsername(username string) error {
+	return validateUsernameCommon(username, false)
+}
+
+// validateExistingUsername validates a CN for operations on an ALREADY EXISTING
+// client (revoke/unrevoke/delete/rotate/config-export/disconnect). Audit N19:
+// older versions allowed CNs starting with "_", so such clients may exist in the
+// PKI and MUST stay manageable (an operator has to be able to revoke/delete
+// them). Only the exact internal blob names (_server_config.json,
+// _common_routes.json) remain reserved, so a client endpoint can never touch the
+// server-config/common-routes files.
+func validateExistingUsername(username string) error {
+	return validateUsernameCommon(username, true)
+}
+
+func validateUsernameCommon(username string, allowExistingUnderscore bool) error {
 	if username == "" || username == "." || username == ".." {
 		return errors.New("Имя пользователя не может быть пустым или состоять только из точек")
 	}
@@ -449,9 +490,15 @@ func validateUsername(username string) error {
 	// Audit F06: internal config blobs are stored in the CCD directory with a
 	// leading underscore (_server_config.json, _common_routes.json). A CN like
 	// "_server_config.json" would otherwise pass the regex and let ccd/apply
-	// overwrite the server config through SaveCcd. No legitimate client CN starts
-	// with "_".
-	if strings.HasPrefix(username, "_") {
+	// overwrite the server config through SaveCcd. These exact names are ALWAYS
+	// reserved, even for management of existing clients.
+	if internalCcdBlobNames[username] {
+		return errors.New("Имя зарезервировано за служебным файлом сервера и недоступно для клиентских операций")
+	}
+	// A leading underscore is reserved for internal blobs on CREATE. For
+	// management of an already-existing client we allow it (audit N19), because
+	// the exact reserved blob names are rejected above.
+	if strings.HasPrefix(username, "_") && !allowExistingUnderscore {
 		return errors.New("Имя не может начинаться с подчёркивания (зарезервировано за служебными файлами)")
 	}
 	// Reject leading dashes and `--` sequences. easyrsa does not support a
@@ -663,14 +710,22 @@ func (oAdmin *OvpnAdmin) userRotate(username, newPassword string) (error, string
 				return fmt.Errorf("rotate: invalid new password: %w", err), err.Error()
 			}
 		}
-		if oAdmin.passwordAuthActive() {
-			o, _ := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
-			log.Debug(o)
-		}
 
+		// Audit N01: rotate the CERTIFICATE first, THEN touch the password row.
+		// The old order dropped the password before RotateClient, so a PKI failure
+		// left the user with the old cert still valid but no password — a silent
+		// downgrade from cert+password to cert-only. Rotating first means a PKI
+		// failure aborts with BOTH old credentials intact (the rotate simply didn't
+		// happen); and if the password step below fails AFTER a successful rotate,
+		// password auth is left blocked (fail-closed), never downgraded.
 		if err := oAdmin.store.RotateClient(username, newPassword); err != nil {
 			log.Error(err)
 			return fmt.Errorf("error rotating user: %w", err), err.Error()
+		}
+
+		if oAdmin.passwordAuthActive() {
+			o, _ := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username)
+			log.Debug(o)
 		}
 
 		if oAdmin.passwordAuthActive() && newPassword != "" {
@@ -712,20 +767,12 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 			log.Warnf("userDelete: %s live session termination not confirmed: %v", username, killErr)
 		}
 
-		if oAdmin.passwordAuthActive() {
-			// Propagate a failed password-DB delete: previously this was
-			// swallowed, so a locked/denied users.db returned 200 while the
-			// user's password entry (and thus VPN access) survived. Abort
-			// before deleting the cert so the state stays consistent and the
-			// handler reports a non-200.
-			if o, err := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username); err != nil {
-				log.Errorf("userDelete: openvpn-user delete %s: %v", username, err)
-				return err, mustJSONMsg(fmt.Sprintf("Failed to delete password entry for user %s: %v", username, err))
-			} else {
-				log.Debug(o)
-			}
-		}
-
+		// Audit N01: revoke/delete the CERTIFICATE first. The old order deleted the
+		// password row before DeleteClient, so a PKI failure left the cert still
+		// valid but the password gone — a silent downgrade to cert-only. Deleting
+		// the cert first means a PKI failure aborts with BOTH credentials intact
+		// (no change); and once the cert is revoked, the user cannot connect at all,
+		// so a subsequent password-DB delete failure is safe (fail-closed).
 		if err := oAdmin.store.DeleteClient(username); err != nil {
 			// Do NOT report success on failure — the client was still there and
 			// tunnelling. Surface the error so the UI shows it (this used to be
@@ -733,6 +780,18 @@ func (oAdmin *OvpnAdmin) userDelete(username string) (error, string) {
 			// while the user stayed in the list).
 			log.Errorf("userDelete: DeleteClient(%s): %v", username, err)
 			return err, mustJSONMsg(fmt.Sprintf("Failed to delete user %s: %v", username, err))
+		}
+
+		if oAdmin.passwordAuthActive() {
+			// The cert is already revoked above, so the user cannot connect
+			// regardless; still, propagate a failed password-DB delete so the
+			// operator can clean up the orphaned row instead of seeing a false 200.
+			if o, err := runOpenvpnUser("delete", "--force", "--db.path", *authDatabase, "--user", username); err != nil {
+				log.Errorf("userDelete: openvpn-user delete %s: %v", username, err)
+				return err, mustJSONMsg(fmt.Sprintf("User %s cert deleted but password-entry removal failed: %v", username, err))
+			} else {
+				log.Debug(o)
+			}
 		}
 
 		crlFix()
@@ -765,6 +824,22 @@ func (oAdmin *OvpnAdmin) checkStaticAddressIsFree(staticAddress string, username
 					return false
 				}
 			}
+		}
+	}
+
+	// Audit N20: the CCD scan above only covers OTHER STATIC reservations. A
+	// live client that got this same address dynamically from the VPN pool holds
+	// no static CCD, so without this check we would happily pin it as a static IP
+	// for another user — producing an address collision the moment OpenVPN tries
+	// to place both on the tun, and mismatched per-client firewall rules. Reject
+	// an address that is currently in use by a different connected client.
+	for _, c := range oAdmin.snapshotActiveClients() {
+		if c.CommonName == username {
+			continue
+		}
+		if c.VirtualAddress == staticAddress {
+			log.Warnf("IP %s currently in use by connected client %s (dynamic)", staticAddress, c.CommonName)
+			return false
 		}
 	}
 

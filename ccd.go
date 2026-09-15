@@ -257,8 +257,18 @@ func (oAdmin *OvpnAdmin) parseCcd(username string) Ccd {
 	// is only a fallback for CCDs written before state lines existed.
 	if sawRedirectState {
 		ccd.RedirectGateway = userRedirect
+	} else if sawRedirectPush {
+		// Audit N18 (legacy migration): a CCD written before __user_redirect__
+		// state lines carries only the rendered redirect-gateway push, which is
+		// AMBIGUOUS — it may reflect the GLOBAL full-tunnel force rather than the
+		// user's own choice. Infer personal intent from it ONLY when the global
+		// force is currently OFF (then the push could only have been personal).
+		// While the global force is on we default the personal flag to false, so a
+		// later global toggle-off does not silently leave the user stuck in
+		// full-tunnel (cementing the global as if it were personal).
+		ccd.RedirectGateway = !oAdmin.globalRedirectGateway()
 	} else {
-		ccd.RedirectGateway = sawRedirectPush
+		ccd.RedirectGateway = false
 	}
 
 	ccd.CustomRoutes = append(ccd.CustomRoutes, ipRoutes...)
@@ -328,7 +338,7 @@ func (oAdmin *OvpnAdmin) modifyCcd(ccd Ccd, commonExpanded []ccdCommonRoute) (bo
 	// Audit F28: render ifconfig-push with the real VPN subnet mask, not a
 	// hardcoded /24 — a non-/24 server network otherwise gives every static
 	// client the wrong netmask.
-	ccd.ClientMask = openvpnNetMaskDotted()
+	ccd.ClientMask = oAdmin.clientMaskDotted()
 
 	t, tErr := oAdmin.getCcdTemplate()
 	if tErr != nil {
@@ -504,9 +514,10 @@ func (oAdmin *OvpnAdmin) refreshCommonRoutesOnce(ctx context.Context) {
 
 	// Resolve DNS OUTSIDE the store lock (it is slow), keyed by route ID.
 	type resolveResult struct {
-		ips []string
-		err error
-		at  string
+		domain string
+		ips    []string
+		err    error
+		at     string
 	}
 	resolved := map[string]resolveResult{}
 	for _, r := range current.Routes {
@@ -514,7 +525,7 @@ func (oAdmin *OvpnAdmin) refreshCommonRoutesOnce(ctx context.Context) {
 			continue
 		}
 		ips, derr := domainResolver(ctx, r.Domain)
-		resolved[r.ID] = resolveResult{ips: filterIPv4(ips), err: derr, at: time.Now().UTC().Format(time.RFC3339)}
+		resolved[r.ID] = resolveResult{domain: r.Domain, ips: filterIPv4(ips), err: derr, at: time.Now().UTC().Format(time.RFC3339)}
 	}
 	if len(resolved) == 0 {
 		return
@@ -533,6 +544,14 @@ func (oAdmin *OvpnAdmin) refreshCommonRoutesOnce(ctx context.Context) {
 		for i := range cfg.Routes {
 			res, ok := resolved[cfg.Routes[i].ID]
 			if !ok || cfg.Routes[i].Kind != "domain" {
+				continue
+			}
+			// Audit N11: the DNS answer belongs to the domain we actually resolved.
+			// If the route's domain changed while DNS was in flight (an admin edit
+			// under the store lock we just re-acquired), applying the OLD answer would
+			// bind stale IPs to the NEW domain. Skip it; the next tick resolves the
+			// new domain.
+			if cfg.Routes[i].Domain != res.domain {
 				continue
 			}
 			cfg.Routes[i].LastResolveAt = res.at
@@ -671,6 +690,10 @@ func (oAdmin *OvpnAdmin) refreshAllUserDomains(ctx context.Context) {
 				continue
 			}
 			ccd.CustomRoutes[i].LastResolveErr = ""
+			// Audit N02 (consistency): keep only clean IPv4, same as every other
+			// resolve path (userApplyCcdHandler, refreshCommonRoutesOnce) — nothing
+			// unrenderable enters the CCD even if the resolver misbehaves.
+			ips = filterIPv4(ips)
 			if !sameIPSet(route.ResolvedIPs, ips) {
 				ccd.CustomRoutes[i].ResolvedIPs = ips
 				changed = true
@@ -722,12 +745,51 @@ func reservedVPNAddress(ovpnNet *net.IPNet, addr string) (bool, string) {
 	return false, ""
 }
 
-// openvpnNetMaskDotted returns the VPN subnet mask (from OVPN_NETWORK) in
-// dotted-quad form for ifconfig-push. Falls back to 255.255.255.0 — the historic
-// hardcoded value — if the network can't be parsed, so behaviour is unchanged
-// for the common /24 case.
-func openvpnNetMaskDotted() string {
+// effectiveVPNNet returns the VPN subnet in effect at RUNTIME. Audit N12: when
+// the server-config module is active and initialized, the operator may have
+// changed the network via the UI (persisted in _server_config.json), so THAT
+// value — not the startup --ovpn.network flag — is authoritative for CCD
+// rendering and static-IP validation. Falls back to the flag when server-config
+// is off or not yet initialized.
+//
+// NOTE: the per-client FIREWALL still pins its vpnNet at startup from
+// --ovpn.network (main.go); a runtime network change needs a restart to move the
+// firewall's default-deny subnet. CCD rendering and validateCcd, which this
+// method feeds, DO track the runtime value.
+func (oAdmin *OvpnAdmin) effectiveVPNNet() (*net.IPNet, error) {
+	if oAdmin.serverConfigStore != nil {
+		cfg := oAdmin.serverConfigStore.snapshot()
+		if cfg.Initialized && cfg.Network != "" && cfg.NetworkMask != "" {
+			ip := net.ParseIP(cfg.Network).To4()
+			mip := net.ParseIP(cfg.NetworkMask).To4()
+			if ip != nil && mip != nil {
+				mask := net.IPv4Mask(mip[0], mip[1], mip[2], mip[3])
+				return &net.IPNet{IP: ip.Mask(mask), Mask: mask}, nil
+			}
+		}
+	}
 	_, n, err := net.ParseCIDR(*openvpnNetwork)
+	if err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// globalRedirectGateway reports whether the server-wide "force full-tunnel"
+// toggle is currently on. Nil-safe when the server-config module is off.
+func (oAdmin *OvpnAdmin) globalRedirectGateway() bool {
+	if oAdmin.serverConfigStore != nil {
+		return oAdmin.serverConfigStore.snapshot().RedirectGateway
+	}
+	return false
+}
+
+// clientMaskDotted returns the VPN subnet mask (runtime-effective, see
+// effectiveVPNNet) in dotted-quad form for ifconfig-push. Falls back to
+// 255.255.255.0 — the historic hardcoded value — if the network can't be
+// resolved, so behaviour is unchanged for the common /24 case.
+func (oAdmin *OvpnAdmin) clientMaskDotted() string {
+	n, err := oAdmin.effectiveVPNNet()
 	if err != nil || n == nil || len(n.Mask) != net.IPv4len {
 		return "255.255.255.0"
 	}
@@ -739,13 +801,17 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 	ccdErr := ""
 
 	if ccd.ClientAddress != "dynamic" {
-		_, ovpnNet, err := net.ParseCIDR(*openvpnNetwork)
+		// Audit N12: validate the static address against the RUNTIME VPN network
+		// (server-config UI value when set), not just the startup flag — otherwise
+		// after an operator changes the subnet, membership checks use the stale
+		// startup network.
+		ovpnNet, err := oAdmin.effectiveVPNNet()
 		if err != nil || ovpnNet == nil {
-			// A bad OVPN_NETWORK would leave ovpnNet nil and panic the later
+			// A bad network would leave ovpnNet nil and panic the later
 			// ovpnNet.Contains call. Fail the request cleanly instead — the
 			// value is also validated at startup by validateOpenvpnNetwork.
-			log.Errorf("validateCcd: invalid OVPN_NETWORK %q: %v", *openvpnNetwork, err)
-			return false, fmt.Sprintf("server misconfigured: invalid OVPN_NETWORK %q", *openvpnNetwork)
+			log.Errorf("validateCcd: invalid VPN network: %v", err)
+			return false, "server misconfigured: invalid VPN network"
 		}
 
 		if !oAdmin.checkStaticAddressIsFree(ccd.ClientAddress, ccd.User) {
@@ -800,12 +866,12 @@ func (oAdmin *OvpnAdmin) validateCcd(ccd Ccd) (bool, string) {
 				return false, ccdErr
 			}
 		case "ip", "":
-			if net.ParseIP(route.Address) == nil {
-				ccdErr = fmt.Sprintf("CustomRoute.Address %q must be a valid IP address", route.Address)
-				return false, ccdErr
-			}
-			if net.ParseIP(route.Mask) == nil {
-				ccdErr = fmt.Sprintf("CustomRoute.Mask %q must be a valid IP address", route.Mask)
+			// Audit N13: net.ParseIP alone accepts IPv6 and non-contiguous masks,
+			// which cannot render as a valid IPv4 `route ADDR MASK` push directive.
+			// Enforce IPv4 + contiguous mask + canonical network base, same as
+			// common routes (F25).
+			if err := validateIPv4NetworkMask(route.Address, route.Mask); err != nil {
+				ccdErr = fmt.Sprintf("CustomRoute %q/%q: %v", route.Address, route.Mask, err)
 				return false, ccdErr
 			}
 		default:
@@ -859,11 +925,11 @@ func (oAdmin *OvpnAdmin) userShowCcdHandler(w http.ResponseWriter, r *http.Reque
 }
 
 // validateResolvedIPv4s rejects any resolved IP that is not a clean dotted-quad
-// IPv4. resolved_ips is a server-derived field, but a client may supply it over
-// the API (the "preserve" optimization), so it MUST be validated before being
-// rendered into CCD `push "route …"` directives — otherwise a value like
-// "1.2.3.4\npush \"dhcp-option DNS …\"" injects independent OpenVPN directives
-// (audit F05).
+// IPv4. resolved_ips is a server-derived field and (audit N02) is no longer
+// accepted from clients on any path; this is the defense-in-depth check applied
+// to SERVER-resolved answers before they are rendered into CCD `push "route …"`
+// directives — so nothing like "1.2.3.4\npush \"dhcp-option DNS …\"" (F05) or a
+// non-IPv4 token can reach the rendered config even if a resolver misbehaves.
 func validateResolvedIPv4s(ips []string) error {
 	for _, ip := range ips {
 		if strings.ContainsAny(ip, " \t\r\n\"'#") {
@@ -942,15 +1008,19 @@ func (oAdmin *OvpnAdmin) userApplyCcdHandler(w http.ResponseWriter, r *http.Requ
 		if route.Kind != "domain" || route.Domain == "" {
 			continue
 		}
-		if len(route.ResolvedIPs) > 0 {
-			// Client preserved resolved IPs — validate strictly so a crafted value
-			// cannot inject independent push directives (audit F05).
-			if err := validateResolvedIPv4s(route.ResolvedIPs); err != nil {
-				writeJSONError(w, http.StatusBadRequest, "invalid resolved IP: "+err.Error())
-				return
-			}
-			continue
-		}
+		// Audit N02 (sibling of the common-routes fix): NEVER trust client-supplied
+		// ResolvedIPs for a per-user domain route. They render into the user's
+		// `push "route …"` lines AND into the per-client firewall ACCEPTs, so
+		// accepting them lets a caller (or a routes-scoped token) point a domain
+		// route at arbitrary destinations the domain never resolved to — bypassing
+		// server-side route enforcement. The old code accepted them after only a
+		// charset check (which blocks directive injection but NOT arbitrary valid
+		// IPs). Discard the client's copy and populate authoritatively below:
+		// carry over the SERVER's own stored IPs when the domain is unchanged,
+		// otherwise re-resolve server-side.
+		ccd.CustomRoutes[i].ResolvedIPs = nil
+		ccd.CustomRoutes[i].LastResolveAt = ""
+		ccd.CustomRoutes[i].LastResolveErr = ""
 		if existing, ok := existingDomain[route.Domain]; ok && len(existing.ResolvedIPs) > 0 {
 			ccd.CustomRoutes[i].ResolvedIPs = existing.ResolvedIPs
 			ccd.CustomRoutes[i].LastResolveAt = existing.LastResolveAt

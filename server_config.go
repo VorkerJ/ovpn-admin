@@ -994,7 +994,14 @@ func (m *serverManager) apply(ctx context.Context, newCfg ServerConfig, updatedB
 	case "soft":
 		ovpnServerConfigReloads.WithLabelValues("soft").Inc()
 		if err := m.softReload(); err != nil {
+			// Audit N16: the config is durably persisted, but the live SIGHUP reload
+			// was NOT confirmed (mgmt unreachable, etc.). Do NOT report it as
+			// applied — return a distinct "soft-pending" kind so the operator is told
+			// the change only takes effect at the next OpenVPN restart, instead of a
+			// misleading "applied without restart".
 			log.Warnf("soft reload (SIGHUP) failed: %v — config saved, will pick up at next restart", err)
+			ovpnServerConfigErrors.WithLabelValues("reload").Inc()
+			return "soft-pending", nil
 		}
 		return "soft", nil
 	case "hard":

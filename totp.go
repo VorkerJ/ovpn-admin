@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -104,7 +105,12 @@ func decryptSecret(ciphertext string) (string, error) {
 type mfaStore struct {
 	mu   sync.RWMutex
 	path string
-	data map[string]mfaRecord
+	// markerPath records, durably and separately from the secrets store, the set
+	// of usernames that have MFA enabled (audit N08). If the secrets store file
+	// goes missing while this marker still lists enrolled users, the store was
+	// lost/deleted and load() fails closed instead of treating it as a first run.
+	markerPath string
+	data       map[string]mfaRecord
 	// loadErr is set when an EXISTING store could not be read or parsed. The
 	// process must refuse to start in that case (audit F19): silently treating a
 	// corrupt/unreadable store as "no MFA configured" would issue password-only
@@ -118,8 +124,63 @@ func newMfaStore(path string) *mfaStore {
 		path: path,
 		data: make(map[string]mfaRecord),
 	}
+	if path != "" {
+		s.markerPath = path + ".enrolled"
+	}
 	s.load()
 	return s
+}
+
+// enrolledMarkerUsers reads the durable enrollment marker. Returns an empty set
+// when the marker is absent (never anyone enrolled), or an error when it exists
+// but can't be read/parsed (audit N08: treat that as fail-closed).
+func (s *mfaStore) enrolledMarkerUsers() (map[string]bool, error) {
+	if s.markerPath == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(s.markerPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var users []string
+	if err := json.Unmarshal(raw, &users); err != nil {
+		return nil, err
+	}
+	m := make(map[string]bool, len(users))
+	for _, u := range users {
+		m[u] = true
+	}
+	return m, nil
+}
+
+// writeEnrolledMarkerLocked rewrites the marker to list exactly the
+// currently-enabled users. The caller MUST hold s.mu (write lock) so the marker
+// is written under the same lock as the store itself (audit N09) — otherwise a
+// concurrent update could interleave and leave the marker inconsistent with the
+// store. Best-effort: a failure only weakens future lost-store detection, so it
+// is logged, not fatal.
+func (s *mfaStore) writeEnrolledMarkerLocked() {
+	if s.markerPath == "" {
+		return
+	}
+	var users []string
+	for u, rec := range s.data {
+		if rec.Enabled {
+			users = append(users, u)
+		}
+	}
+	sort.Strings(users)
+	raw, err := json.Marshal(users)
+	if err != nil {
+		log.Warnf("mfaStore: marshal enrollment marker: %v", err)
+		return
+	}
+	if err := writeFileAtomicSecret(s.markerPath, raw); err != nil {
+		log.Warnf("mfaStore: persist enrollment marker %s: %v", s.markerPath, err)
+	}
 }
 
 func (s *mfaStore) load() {
@@ -129,7 +190,20 @@ func (s *mfaStore) load() {
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return // file doesn't exist yet — that's fine (first run)
+			// Audit N08: a MISSING store is only a genuine first run if nobody was
+			// ever enrolled. If the durable enrollment marker still lists enrolled
+			// users, the secrets store was lost or deleted — fail closed (loadErr =>
+			// fatal at startup) rather than silently issuing password-only sessions
+			// and letting an attacker who knows the password re-enroll the 2nd factor.
+			marker, merr := s.enrolledMarkerUsers()
+			if merr != nil {
+				s.loadErr = fmt.Errorf("read MFA enrollment marker %s: %w", s.markerPath, merr)
+				return
+			}
+			if len(marker) > 0 {
+				s.loadErr = fmt.Errorf("MFA store %s is missing but the enrollment marker lists %d enrolled user(s) — the store was lost or deleted; refusing to start with MFA silently disabled (restore the store, or delete %s to intentionally reset MFA)", s.path, len(marker), s.markerPath)
+			}
+			return // no marker (or empty) — genuine first run
 		}
 		// An existing store we cannot read (EACCES, I/O error) must fail closed.
 		s.loadErr = fmt.Errorf("read MFA store %s: %w", s.path, err)
@@ -176,13 +250,26 @@ func (s *mfaStore) load() {
 // save persists the store to disk. It returns an error so callers that enable
 // or tear down MFA can refuse to report success on a lost write (a non-persisted
 // enable would silently disable MFA after a restart).
+// save takes the lock and persists. Used by the startup migration path.
 func (s *mfaStore) save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
+}
+
+// saveLocked marshals AND writes while the caller holds s.mu (write lock). Audit
+// N09 (sibling of the session-epochs/blacklist fix): the old code marshalled
+// under a read lock, released it, then wrote outside any lock — so two
+// concurrent set()/delete() calls could marshal different snapshots and have the
+// older writer's file write land last, dropping a just-persisted enrollment
+// (which would silently disable that user's MFA after a restart). Serializing
+// mutate+marshal+write under the write lock closes that window; matches the
+// apiTokenStore pattern (its save also runs under the caller's lock).
+func (s *mfaStore) saveLocked() error {
 	if s.path == "" {
 		return nil
 	}
-	s.mu.RLock()
 	raw, err := json.Marshal(s.data)
-	s.mu.RUnlock()
 	if err != nil {
 		log.Warnf("mfaStore: failed to marshal: %v", err)
 		return fmt.Errorf("marshal mfa store: %w", err)
@@ -237,38 +324,42 @@ func (s *mfaStore) set(username string, rec mfaRecord) error {
 		rec.Secret = enc
 		rec.Version = 1
 	}
+	// Audit N09: mutate + persist + marker under a single write-lock hold so a
+	// concurrent set/delete can't lose an update on disk.
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	prev, had := s.data[username]
 	s.data[username] = rec
-	s.mu.Unlock()
-	if err := s.save(); err != nil {
-		s.mu.Lock()
+	if err := s.saveLocked(); err != nil {
 		if had {
 			s.data[username] = prev
 		} else {
 			delete(s.data, username)
 		}
-		s.mu.Unlock()
 		return err
 	}
+	// Audit N08: keep the durable enrollment marker in sync so a later store
+	// deletion is detectable at startup.
+	s.writeEnrolledMarkerLocked()
 	return nil
 }
 
 func (s *mfaStore) delete(username string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	prev, had := s.data[username]
 	delete(s.data, username)
-	s.mu.Unlock()
-	if err := s.save(); err != nil {
+	if err := s.saveLocked(); err != nil {
 		// Roll back so a failed persist doesn't leave MFA disabled in memory
 		// but re-enabled on disk (it would resurrect after a restart).
-		s.mu.Lock()
 		if had {
 			s.data[username] = prev
 		}
-		s.mu.Unlock()
 		return err
 	}
+	// Audit N08: an intentional disable must prune the marker, so it doesn't later
+	// look like a lost store for a user who legitimately turned MFA off.
+	s.writeEnrolledMarkerLocked()
 	return nil
 }
 

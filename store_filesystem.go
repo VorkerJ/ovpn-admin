@@ -152,7 +152,34 @@ func (s *filesystemStore) UnrevokeClient(commonName string) error {
 			continue
 		}
 		if usersFromIndexTxt[i].Flag != "R" {
-			return nil // not revoked — nothing to do
+			// Audit N14: index.txt says the cert is valid (V), but a PREVIOUS
+			// unrevoke may have flipped the flag and then failed at gen-crl — so the
+			// serial can still be listed in crl.pem and OpenVPN keeps rejecting the
+			// client. Don't just return nil (the old behaviour made the retry a
+			// no-op, leaving the user stuck). Reconcile: if the serial is still in
+			// the CRL, regenerate it so the now-valid cert is honoured.
+			serial := usersFromIndexTxt[i].SerialNumber
+			if serial == "" {
+				return nil
+			}
+			crlPath := fmt.Sprintf("%s/pki/crl.pem", s.easyrsaDirPath)
+			present, err := crlContainsSerialHex(crlPath, serial)
+			if err != nil {
+				// Can't read/parse the CRL — surface it rather than claim success.
+				return fmt.Errorf("unrevoke %s: check CRL: %w", commonName, err)
+			}
+			if !present {
+				return nil // already consistent — cert valid and not in CRL
+			}
+			if crlOut, err := runEasyrsa(s.easyrsaDirPath, s.easyrsaBinPath, "gen-crl"); err != nil {
+				return fmt.Errorf("unrevoke %s: reconcile gen-crl: %w: %s", commonName, err, crlOut)
+			}
+			if present, err := crlContainsSerialHex(crlPath, serial); err != nil {
+				return fmt.Errorf("unrevoke %s: re-check CRL: %w", commonName, err)
+			} else if present {
+				return fmt.Errorf("unrevoke %s: serial %s still present in CRL after regen", commonName, serial)
+			}
+			return nil
 		}
 
 		serial := usersFromIndexTxt[i].SerialNumber
@@ -365,7 +392,10 @@ func (s *filesystemStore) DeleteClient(commonName string) error {
 func (s *filesystemStore) GetClientCert(commonName string) (cert, key string) {
 	// Defence-in-depth: validate before string-concatenating into a path.
 	// All current handlers already validate, but a future caller might not.
-	if err := validateUsername(commonName); err != nil {
+	// Audit N19: use the existing-client validator so a legacy CN starting with
+	// "_" can still have its cert/key read (config export); the exact internal
+	// blob names stay rejected.
+	if err := validateExistingUsername(commonName); err != nil {
 		return "", ""
 	}
 	cert = fRead(s.easyrsaDirPath + "/pki/issued/" + commonName + ".crt")

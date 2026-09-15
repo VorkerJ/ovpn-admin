@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,13 @@ func testFilesystemStore(dir string) *filesystemStore {
 	}
 }
 
+// indexTxtPathTestMu serializes tests that swap the GLOBAL indexTxtPath through
+// newTestAdminCcd. Production code reads *indexTxtPath lock-free (checkUserExist),
+// so two parallel tests swapping it would race on the pointer (go test -race).
+// Holding this for the whole test body (released in cleanup) makes such tests run
+// one at a time instead of racing — correctness over a little test parallelism.
+var indexTxtPathTestMu sync.Mutex
+
 // newTestAdminCcd returns an OvpnAdmin with embedded templates and an empty commonRoutes store.
 func newTestAdminCcd(t *testing.T, dir string) *OvpnAdmin {
 	t.Helper()
@@ -52,10 +60,14 @@ func newTestAdminCcd(t *testing.T, dir string) *OvpnAdmin {
 	// SEPARATE temp dir (not the ccd dir, or the index.txt file would pollute CCD
 	// enumeration) with the CNs the CCD tests apply for.
 	idx := filepath.Join(t.TempDir(), "index.txt")
+	indexTxtPathTestMu.Lock()
 	prev := indexTxtPath
 	idxCopy := idx
 	indexTxtPath = &idxCopy
-	t.Cleanup(func() { indexTxtPath = prev })
+	t.Cleanup(func() {
+		indexTxtPath = prev
+		indexTxtPathTestMu.Unlock()
+	})
 	var lines string
 	for _, cn := range []string{"alice", "bob", "carol", "dave", "erin", "frank", "testuser"} {
 		lines += fmt.Sprintf("V\t990101000000Z\t\t01\tunknown\t/CN=%s\n", cn)

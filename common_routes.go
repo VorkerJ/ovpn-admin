@@ -278,6 +278,25 @@ func resolveOneDomain(ctx context.Context, domain string) ([]string, error) {
 // domainResolver — переменная для возможности подмены в тестах.
 var domainResolver = resolveOneDomain
 
+// resolveDomainForStore resolves a domain to a validated IPv4 set for storage /
+// render. Audit N02: it re-resolves server-side (never accepting a client's
+// ResolvedIPs) and validates the answer with filterIPv4 + validateResolvedIPv4s
+// before returning it, so a failed OR invalid resolution yields an empty IP set
+// plus an error string — never stale or attacker-chosen IPs in the rendered
+// routes / firewall rules.
+func resolveDomainForStore(ctx context.Context, domain string) (ips []string, at string, resolveErr string) {
+	at = time.Now().UTC().Format(time.RFC3339)
+	raw, derr := domainResolver(ctx, domain)
+	if derr != nil {
+		return nil, at, derr.Error()
+	}
+	v4 := filterIPv4(raw)
+	if verr := validateResolvedIPv4s(v4); verr != nil {
+		return nil, at, verr.Error()
+	}
+	return v4, at, ""
+}
+
 // refreshAllDomains итерирует cfg, резолвит каждый kind=domain.
 // Возвращает: (изменённый cfg, changed?, resolvedCount, failedCount).
 func refreshAllDomains(ctx context.Context, cfg CommonRoutesConfig, now time.Time) (CommonRoutesConfig, bool, int, int) {
@@ -504,6 +523,15 @@ func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.
 		return
 	}
 	in.ID = uuid.New().String()
+	// Audit N02: NEVER trust client-supplied resolution state. ResolvedIPs are
+	// rendered verbatim into every client's CCD as push routes and into the
+	// per-client firewall ACCEPTs; accepting them from the request body lets a
+	// caller inject arbitrary destinations (e.g. by sending a domain that fails to
+	// resolve so the server-side resolve below cannot overwrite them). Discard the
+	// client's copy and let the server resolve authoritatively.
+	in.ResolvedIPs = nil
+	in.LastResolveAt = ""
+	in.LastResolveErr = ""
 	if err := validateCommonRoute(in); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -514,14 +542,7 @@ func (oAdmin *OvpnAdmin) handleCreateCommonRoute(w http.ResponseWriter, r *http.
 			return &commonRouteError{http.StatusConflict, "duplicate entry"}
 		}
 		if in.Kind == "domain" {
-			ips, derr := domainResolver(r.Context(), in.Domain)
-			in.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
-			if derr != nil {
-				in.LastResolveErr = derr.Error()
-			} else {
-				in.ResolvedIPs = ips
-				in.LastResolveErr = ""
-			}
+			in.ResolvedIPs, in.LastResolveAt, in.LastResolveErr = resolveDomainForStore(r.Context(), in.Domain)
 		}
 		cfg.Routes = append(cfg.Routes, in)
 		return nil
@@ -548,6 +569,12 @@ func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.
 		return
 	}
 	in.ID = id
+	// Audit N02: discard any client-supplied resolution state (see
+	// handleCreateCommonRoute). Below we either carry over the SERVER's own stored
+	// IPs (unchanged domain) or re-resolve authoritatively.
+	in.ResolvedIPs = nil
+	in.LastResolveAt = ""
+	in.LastResolveErr = ""
 	if err := validateCommonRoute(in); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -565,19 +592,14 @@ func (oAdmin *OvpnAdmin) handleUpdateCommonRoute(w http.ResponseWriter, r *http.
 			return &commonRouteError{http.StatusNotFound, "not found"}
 		}
 
-		// preserve DNS state if domain didn't change
+		// preserve DNS state if domain didn't change (this is the SERVER's own
+		// previously-resolved+validated set, not client input)
 		if in.Kind == "domain" && cfg.Routes[idx].Kind == "domain" && cfg.Routes[idx].Domain == in.Domain {
 			in.ResolvedIPs = cfg.Routes[idx].ResolvedIPs
 			in.LastResolveAt = cfg.Routes[idx].LastResolveAt
 			in.LastResolveErr = cfg.Routes[idx].LastResolveErr
 		} else if in.Kind == "domain" {
-			ips, derr := domainResolver(r.Context(), in.Domain)
-			in.LastResolveAt = time.Now().UTC().Format(time.RFC3339)
-			if derr != nil {
-				in.LastResolveErr = derr.Error()
-			} else {
-				in.ResolvedIPs = ips
-			}
+			in.ResolvedIPs, in.LastResolveAt, in.LastResolveErr = resolveDomainForStore(r.Context(), in.Domain)
 		}
 
 		if isDuplicateCommonRoute(removeAt(*cfg, idx), in) {

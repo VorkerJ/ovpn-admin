@@ -381,13 +381,21 @@ func loadSessionEpochs() error {
 // saveSessionEpochs persists the per-user session epochs to disk. Returns the
 // error (audit F21) so a credential mutation that bumps the epoch can refuse to
 // report success when the bump didn't reach disk.
-func saveSessionEpochs() error {
+// saveSessionEpochsLocked marshals AND writes the epochs file while the caller
+// holds sessionEpochsMu. Audit N09: the previous split (marshal under lock,
+// release, then write) let a concurrent bump marshal a NEWER snapshot and write
+// it, then have an older writer's file write land last and overwrite it —
+// dropping a just-persisted epoch bump, so those revoked sessions revalidated
+// after a restart. Holding the lock across marshal+write serializes the whole
+// read-modify-persist so disk can never regress.
+func saveSessionEpochsLocked() error {
 	if sessionEpochsFile == "" {
 		return nil
 	}
-	sessionEpochsMu.Lock()
-	data, _ := json.Marshal(sessionEpochs)
-	sessionEpochsMu.Unlock()
+	data, err := json.Marshal(sessionEpochs)
+	if err != nil {
+		return fmt.Errorf("marshal session epochs: %w", err)
+	}
 	if err := writeFileAtomicSecret(sessionEpochsFile, data); err != nil {
 		return fmt.Errorf("persist session epochs: %w", err)
 	}
@@ -415,28 +423,31 @@ func bumpUserEpoch(user string) error {
 	if user == "" {
 		return nil
 	}
+	// Audit N09: increment AND persist under a single lock hold, so concurrent
+	// bumps can't interleave marshal/write and lose an update on disk. On a
+	// persist failure roll the in-memory increment back so memory and disk stay
+	// consistent.
 	sessionEpochsMu.Lock()
+	defer sessionEpochsMu.Unlock()
 	sessionEpochs[user]++
-	sessionEpochsMu.Unlock()
-	if err := saveSessionEpochs(); err != nil {
-		sessionEpochsMu.Lock()
+	if err := saveSessionEpochsLocked(); err != nil {
 		sessionEpochs[user]--
-		sessionEpochsMu.Unlock()
 		return err
 	}
 	return nil
 }
 
-// saveRevokedTokens writes the current blacklist to disk. It returns an error
-// so the logout path can surface a lost write instead of a lying success — a
-// non-persisted revocation lets the session revalidate after a restart.
-func saveRevokedTokens() error {
+// saveRevokedTokensLocked marshals AND writes the blacklist while the caller
+// holds revokedTokensMu. Audit N09: same read-modify-persist race as the session
+// epochs — a concurrent revocation could otherwise marshal a newer map and have
+// an older writer overwrite the file last, dropping a just-recorded revocation
+// (which would then revalidate after a restart). Holding the lock across
+// marshal+write serializes it.
+func saveRevokedTokensLocked() error {
 	if revokedTokensFile == "" {
 		return nil
 	}
-	revokedTokensMu.Lock()
 	data, err := json.Marshal(revokedTokens)
-	revokedTokensMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("marshal revoked tokens: %w", err)
 	}
@@ -987,9 +998,13 @@ func revokeToken(token string) error {
 		}
 	}
 	revokedTokens[mac] = exp
+	// Audit N09: persist while STILL holding the lock so a concurrent revocation
+	// can't marshal a newer map and have this call overwrite the file last,
+	// dropping its entry.
+	err := saveRevokedTokensLocked()
 	revokedTokensMu.Unlock()
 
-	return saveRevokedTokens()
+	return err
 }
 
 // sessionSecret returns the HMAC signing key as a base64 string. The key is

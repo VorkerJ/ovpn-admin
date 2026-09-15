@@ -740,7 +740,11 @@ func getOvpnCaCertExpireDate() time.Time {
 // owner+group rwx (setgid so new files inherit the shared group) and grants
 // other r-x — enough for `nobody` to traverse pki/ and read the 0644 crl.pem.
 func crlFix() {
-	err := os.Chmod(*easyrsaDirPath+"/pki", 0o2775)
+	// Audit N07: os.Chmod maps the setgid bit from os.ModeSetgid, NOT from the raw
+	// octal 0o2000 — passing 0o2775 sets only 0775 and SILENTLY drops setgid, so
+	// new files under pki/ stop inheriting the shared group and the non-root
+	// ovpn-admin loses write access after a revoke. Use the FileMode flag.
+	err := os.Chmod(*easyrsaDirPath+"/pki", os.ModeSetgid|0o775)
 	if err != nil {
 		log.Error(err)
 	}

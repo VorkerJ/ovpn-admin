@@ -66,12 +66,14 @@ func (s *kubernetesStore) ListCcdSecrets() ([]storage.CcdSecret, error) {
 
 	var result []storage.CcdSecret
 	for _, secret := range secrets.Items {
-		// Audit F48: skip ARCHIVED (revoked/rotated/deleted) secrets. They keep
-		// type=clientAuth but represent a former cert; treating their leftover CCD
-		// as a live allocation permanently reserves the old static IP — so a
-		// rotated user couldn't keep their own address and a deleted user's address
-		// was never freed. Live allocations only.
-		if secret.Annotations["revokedAt"] != "" || secret.Labels["revokedForever"] == "true" {
+		// Audit F48 + N15: skip only PERMANENTLY archived secrets (rotated/deleted,
+		// which set revokedForever) — those never come back and MUST free their
+		// static IP. A TEMPORARILY revoked user (revokedAt set, revokedForever
+		// unset) may be unrevoked later and must KEEP its static-IP reservation in
+		// the meantime; otherwise another user could be assigned that address and
+		// the unrevoke would silently collide. Skipping ALL revokedAt (the old
+		// behaviour) freed a temp-revoked user's IP prematurely.
+		if secret.Labels["revokedForever"] == "true" {
 			continue
 		}
 		ccd := secret.Data["ccd"]
