@@ -171,6 +171,21 @@ func (oAdmin *OvpnAdmin) mgmtConnectedUsersParser(text, serverName string) []cli
 // guarantee termination (revoke/rotate) propagate/surface this instead of
 // logging an unverified "killed".
 func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) error {
+	username = strings.NewReplacer("\n", "", "\r", "").Replace(username)
+
+	// Audit N06: if the mgmt-client-auth loop owns this console, route the kill
+	// through it instead of opening a second (refused) connection.
+	if b := oAdmin.lookupBroker(serverName); b != nil {
+		resp, err := b.exec("kill "+username, mgmtRespSingleLine, 5*time.Second)
+		if err != nil {
+			return fmt.Errorf("kill %s on %s via mgmt broker: %w", username, serverName, err)
+		}
+		if !strings.Contains(resp, "SUCCESS:") {
+			return fmt.Errorf("kill %s on %s not acknowledged: %q", username, serverName, strings.TrimSpace(resp))
+		}
+		return nil
+	}
+
 	conn, err := net.DialTimeout("tcp", oAdmin.mgmtInterfaces[serverName], 5*time.Second)
 	if err != nil {
 		log.Errorf("openvpn mgmt interface for %s is not reachable by addr %s", serverName, oAdmin.mgmtInterfaces[serverName])
@@ -187,7 +202,6 @@ func (oAdmin *OvpnAdmin) mgmtKillUserConnection(username, serverName string) err
 	// picks up new routes on their next natural reconnect.
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	oAdmin.mgmtRead(conn) // read welcome message
-	username = strings.NewReplacer("\n", "", "\r", "").Replace(username)
 	if _, werr := fmt.Fprintf(conn, "kill %s\n", username); werr != nil {
 		return fmt.Errorf("write kill %s to %s: %w", username, serverName, werr)
 	}
@@ -212,6 +226,25 @@ func (oAdmin *OvpnAdmin) mgmtGetActiveClients() ([]clientStatus, bool) {
 	ok := true
 
 	for srv, addr := range oAdmin.mgmtInterfaces {
+		// Audit N06: if the mgmt-client-auth loop owns this console, poll through
+		// it. A broker error or a response without an END line is "unknown" (ok=false)
+		// — same fail-safe contract as the direct path (audit F12).
+		if b := oAdmin.lookupBroker(srv); b != nil {
+			text, err := b.exec("status 1", mgmtRespUntilEnd, 10*time.Second)
+			if err != nil {
+				log.Warnf("mgmt status for %s via broker failed: %v — treating as unknown", srv, err)
+				ok = false
+				continue
+			}
+			if !mgmtHasEndLine(text) {
+				log.Warnf("mgmt status for %s via broker incomplete (no END) — treating as unknown", srv)
+				ok = false
+				continue
+			}
+			activeClients = append(activeClients, oAdmin.mgmtConnectedUsersParser(text, srv)...)
+			continue
+		}
+
 		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 		if err != nil {
 			log.Warnf("openvpn mgmt interface for %s is not reachable by addr %s", srv, addr)
@@ -508,13 +541,10 @@ func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(ctx context.Context, serverName, add
 		}
 	}
 
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("read: %w", err)
-		}
-		line = strings.TrimRight(line, "\r\n")
-
+	// onAsync handles one ">"-prefixed real-time notification line. Unchanged
+	// auth logic from before N06 — writes to conn happen only from this (owner)
+	// goroutine, so they never race the synchronous-command writes below.
+	onAsync := func(line string) error {
 		switch {
 		case strings.HasPrefix(line, ">CLIENT:CONNECT,"), strings.HasPrefix(line, ">CLIENT:REAUTH,"):
 			body := line
@@ -525,17 +555,17 @@ func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(ctx context.Context, serverName, add
 			}
 			parts := strings.SplitN(body, ",", 2)
 			if len(parts) != 2 {
-				continue
+				return nil
 			}
 			cid, kid := parts[0], parts[1]
 			if !reCIDKID.MatchString(cid) || !reCIDKID.MatchString(kid) {
 				log.Warnf("mgmt-client-auth[%s]: drop event with non-numeric cid=%q kid=%q", serverName, cid, kid)
-				continue
+				return nil
 			}
 			if len(inflight) >= maxInflight {
 				// Backpressure: deny immediately rather than queue forever.
 				_, _ = fmt.Fprintf(conn, "client-deny %s %s \"server overloaded\"\n", cid, kid)
-				continue
+				return nil
 			}
 			// If OpenVPN sends a fresh CONNECT/REAUTH for an existing cid,
 			// discard the stale block and replace.
@@ -557,7 +587,7 @@ func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(ctx context.Context, serverName, add
 			// OpenVPN emits them strictly in order between the CLIENT:CONNECT
 			// header and CLIENT:ENV,END terminator.
 			if len(inflight) == 0 {
-				continue
+				return nil
 			}
 			cur := inflight[len(inflight)-1]
 			if body == "END" {
@@ -577,7 +607,7 @@ func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(ctx context.Context, serverName, add
 					log.Warnf("mgmt-client-auth[%s]: deny CN=%s cid=%s: %s", serverName, cn, cur.cid, reason)
 				}
 				removeInflight(cur.cid)
-				continue
+				return nil
 			}
 			if k, v, ok := splitEnvKV(body); ok {
 				// Cap env size per pending block (defense against a
@@ -586,6 +616,91 @@ func (oAdmin *OvpnAdmin) mgmtClientAuthLoop(ctx context.Context, serverName, add
 					cur.env[k] = v
 				}
 			}
+		}
+		return nil
+	}
+
+	// Audit N06: become the single OWNER of this console and multiplex sync
+	// commands (status/kill/signal/version) over the same connection, so other
+	// consumers don't have to open a second (refused) connection while we hold it.
+	b := newMgmtBroker()
+	oAdmin.registerBroker(serverName, b)
+	defer oAdmin.unregisterBroker(serverName, b)
+	defer close(b.done)
+
+	// A dedicated reader goroutine feeds every line to the owner select loop, so
+	// the loop can also accept commands without blocking on conn.Read. It unblocks
+	// when the ctx watcher above closes conn (toggle off / shutdown).
+	lines := make(chan string)
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			line, rerr := reader.ReadString('\n')
+			if rerr != nil {
+				readErr <- rerr
+				return
+			}
+			select {
+			case lines <- strings.TrimRight(line, "\r\n"):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	const perCmdTimeout = 10 * time.Second
+	var inflightCmd *mgmtCmd
+	var buf []string
+	var cmdTimeout <-chan time.Time
+	finish := func(r mgmtResult) {
+		inflightCmd.resp <- r
+		inflightCmd = nil
+		buf = nil
+		cmdTimeout = nil
+	}
+	for {
+		// Accept a new command only while idle — OpenVPN replies are untagged, so
+		// exactly one command may be outstanding at a time.
+		var idleCmds chan mgmtCmd
+		if inflightCmd == nil {
+			idleCmds = b.cmds
+		}
+		select {
+		case <-ctx.Done():
+			if inflightCmd != nil {
+				finish(mgmtResult{err: fmt.Errorf("mgmt connection closing")})
+			}
+			return ctx.Err()
+		case rerr := <-readErr:
+			if inflightCmd != nil {
+				finish(mgmtResult{err: fmt.Errorf("mgmt connection closed: %w", rerr)})
+			}
+			return fmt.Errorf("read: %w", rerr)
+		case line := <-lines:
+			if strings.HasPrefix(line, ">") {
+				if aerr := onAsync(line); aerr != nil {
+					return aerr
+				}
+				continue
+			}
+			if inflightCmd != nil {
+				buf = append(buf, line)
+				if inflightCmd.isComplete(line) {
+					finish(mgmtResult{text: strings.Join(buf, "\n")})
+				}
+			}
+			// else: a non-async line with no command outstanding — ignore.
+		case c := <-idleCmds:
+			cc := c
+			if _, werr := fmt.Fprintf(conn, "%s\n", cc.line); werr != nil {
+				cc.resp <- mgmtResult{err: fmt.Errorf("write %q: %w", cc.line, werr)}
+				return fmt.Errorf("write command: %w", werr)
+			}
+			inflightCmd = &cc
+			buf = nil
+			cmdTimeout = time.After(perCmdTimeout)
+		case <-cmdTimeout:
+			finish(mgmtResult{err: fmt.Errorf("mgmt command %q timed out", inflightCmd.line)})
 		}
 	}
 }

@@ -841,6 +841,12 @@ type serverManager struct {
 	// exiting would bounce the admin UI ("front") while openvpn keeps running
 	// the old config ("back"). Default false.
 	hardReloadSelfExit bool
+
+	// brokerExec, when set, routes a mgmt command through the mgmt-client-auth
+	// broker if it currently owns the console (audit N06). It returns
+	// handled=false when no broker is active, so sendSignal falls back to a direct
+	// dial (the common mgmt-client-auth OFF case). Wired from main.go.
+	brokerExec func(cmd string, isComplete func(string) bool, timeout time.Duration) (resp string, handled bool, err error)
 }
 
 func (m *serverManager) softReload() error {
@@ -848,6 +854,20 @@ func (m *serverManager) softReload() error {
 }
 
 func (m *serverManager) sendSignal(sig string) error {
+	// Audit N06: when mgmt-client-auth holds the single-client console, a direct
+	// dial here is refused; route the signal through the broker instead.
+	if m.brokerExec != nil {
+		if resp, handled, err := m.brokerExec("signal "+sig, mgmtRespSingleLine, 3*time.Second); handled {
+			if err != nil {
+				return fmt.Errorf("signal %s via mgmt broker: %w", sig, err)
+			}
+			if strings.HasPrefix(strings.TrimSpace(resp), "ERROR") {
+				return fmt.Errorf("mgmt error: %s", strings.TrimSpace(resp))
+			}
+			return nil
+		}
+	}
+
 	conn, err := net.DialTimeout("tcp", m.mgmtAddr, 3*time.Second)
 	if err != nil {
 		return fmt.Errorf("connect mgmt %s: %w", m.mgmtAddr, err)

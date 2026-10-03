@@ -74,6 +74,45 @@ type OvpnAdmin struct {
 	// non-nil exactly while the supervisor goroutines are running.
 	mgmtAuthMu     sync.Mutex
 	mgmtAuthCancel context.CancelFunc
+
+	// mgmtBrokers holds the live broker per mgmt interface while the
+	// mgmt-client-auth loop owns that console (audit N06). Sync console ops
+	// (status/kill/signal/version) route through the broker when present, and
+	// fall back to a direct dial otherwise. Guarded by mgmtBrokersMu so it can be
+	// read on hot paths (firewall poll, CCD kick) without contending on the
+	// supervisor lifecycle lock.
+	mgmtBrokersMu sync.RWMutex
+	mgmtBrokers   map[string]*mgmtBroker
+}
+
+// registerBroker publishes b as the owner of serverName's console. Called by the
+// auth loop once connected.
+func (oAdmin *OvpnAdmin) registerBroker(serverName string, b *mgmtBroker) {
+	oAdmin.mgmtBrokersMu.Lock()
+	if oAdmin.mgmtBrokers == nil {
+		oAdmin.mgmtBrokers = map[string]*mgmtBroker{}
+	}
+	oAdmin.mgmtBrokers[serverName] = b
+	oAdmin.mgmtBrokersMu.Unlock()
+}
+
+// unregisterBroker removes b iff it is still the current broker for serverName
+// (a reconnect may have already installed a newer one).
+func (oAdmin *OvpnAdmin) unregisterBroker(serverName string, b *mgmtBroker) {
+	oAdmin.mgmtBrokersMu.Lock()
+	if oAdmin.mgmtBrokers[serverName] == b {
+		delete(oAdmin.mgmtBrokers, serverName)
+	}
+	oAdmin.mgmtBrokersMu.Unlock()
+}
+
+// lookupBroker returns the live broker for serverName, or nil when no auth loop
+// owns that console (the common mgmt-client-auth OFF case).
+func (oAdmin *OvpnAdmin) lookupBroker(serverName string) *mgmtBroker {
+	oAdmin.mgmtBrokersMu.RLock()
+	b := oAdmin.mgmtBrokers[serverName]
+	oAdmin.mgmtBrokersMu.RUnlock()
+	return b
 }
 
 // updateClients refreshes the cached clients slice under clientsMu.

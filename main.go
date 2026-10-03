@@ -347,6 +347,16 @@ func main() {
 			dcoAvailable:       dcoAvailable,
 			ccdEnabled:         *ccdEnabled,
 			hardReloadSelfExit: *serverConfigHardReloadSelfExit,
+			// Audit N06: route reload signals through the mgmt-client-auth broker
+			// when it owns the console; nil-broker ⇒ handled=false ⇒ direct dial.
+			brokerExec: func(cmd string, isComplete func(string) bool, timeout time.Duration) (string, bool, error) {
+				b := ovpnAdmin.lookupBroker("main")
+				if b == nil {
+					return "", false, nil
+				}
+				resp, err := b.exec(cmd, isComplete, timeout)
+				return resp, true, err
+			},
 		}
 
 		// Audit N03: the durable _server_config.json is applied at startup WITHOUT
@@ -700,6 +710,13 @@ func buildReadinessChecker(store storage.Store, ovpnAdmin *OvpnAdmin) readinessC
 			addr, ok := ovpnAdmin.mgmtInterfaces["main"]
 			if !ok {
 				return fmt.Errorf("no 'main' mgmt interface configured")
+			}
+			// Audit N06: when mgmt-client-auth owns the single-client console, a
+			// direct dial here is refused even though the console is perfectly
+			// healthy — the live broker IS proof of a working mgmt connection, so
+			// treat it as ready instead of probing a second (refused) connection.
+			if ovpnAdmin.lookupBroker("main") != nil {
+				return nil
 			}
 			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 			if err != nil {
