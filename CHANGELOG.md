@@ -5,6 +5,29 @@ All notable changes to ovpn-admin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.68] — 2026-10-04
+
+Closes the re-audit's last open finding — the review is now 20/20.
+
+### Fixed — N06 (F14): single-dispatcher for the management console
+
+The OpenVPN management console serves one TCP client at a time. With
+`management-client-auth` on, ovpn-admin held a persistent connection for
+`>CLIENT:` auth events, so every other consumer (status polls, kicks, reload
+signals, readiness) could not open its own connection and silently contended.
+
+A new `mgmtBroker` now makes the auth connection the single OWNER of the console
+and multiplexes over it: async `>CLIENT:` notifications are answered by the auth
+loop, while synchronous commands (`status`/`kill`/`signal`) are written one at a
+time and their replies collected, with interleaved async lines still routed to
+the auth handler. `mgmtKillUserConnection`, `mgmtGetActiveClients`,
+`serverManager.sendSignal` and the `/readyz` mgmt probe route through the broker
+when it owns the console, and fall back to a direct short-lived dial otherwise —
+so with `management-client-auth` OFF (the default) behaviour is unchanged. New
+regression test `TestReauditMgmtBrokerMultiplexesAuthAndCommands` exercises an
+auth event plus a concurrent `status` and `kill` on one fake console; full
+`-race` suite clean.
+
 ## [2.0.67] — 2026-09-15
 
 Re-audit (2026-09-14) remediation. A re-review of the released 2.0.66 reported 20
